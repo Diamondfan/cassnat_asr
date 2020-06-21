@@ -6,8 +6,8 @@
 data=/home/ruchao/Database/LibriSpeech/
 lm_data=/home/ruchao/Database/LibriSpeech/libri_lm
 
-stage=4
-end_stage=10
+stage=5
+end_stage=5
 featdir=data/fbank
 
 unit=wp
@@ -56,7 +56,6 @@ dict=data/dict/vocab_${unit}.txt ; mkdir -p data/dict
 bpemodel=data/dict/bpemodel_${bpemode}_${nbpe}
 if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then  
   echo "Create a dictionary..."
-  echo "<UNK> 1" > $dict
   all_text=data/train_text
   ( for f in $train_set; do cat data/$f/text; done ) | sort -k1 > $all_text
   
@@ -66,7 +65,7 @@ if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
         --model_prefix=$bpemodel --input_sentence_size=100000000
 
     spm_encode --model=${bpemodel}.model --output_format=piece < data/dict/input.txt | tr ' ' '\n' | \
-        sort | uniq | awk '{print $0" "NR+1 }' >> $dict
+        sort | uniq | awk '{print $0 }' > $dict
   else
     echo "Not ImplementedError"; exit 1
   fi
@@ -75,7 +74,6 @@ if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
     paste -d " " <(awk '{print $1}' data/$part/text) <(cut -f 2- -d" " data/$part/text \
             | spm_encode --model=${bpemodel}.model --output_format=piece) \
             > data/$part/token.scp
-    cat data/$part/token.scp | utils/sym2int.pl --map-oov "<UNK>" -f 2- $dict > data/$part/tokenid.scp
   done
   echo "[Stage 3] Dictionary and Transcription Finished."
 fi
@@ -90,8 +88,19 @@ fi
 if [ $stage -le 5 ] && [ $end_stage -ge 5 ]; then
 
   CUDA_VISIBLE_DEVICES="0" asr_train.py \
+    --exp_dir exp \
+    --train_config conf/transformer.yaml \
     --data_config conf/data.yaml \
-    --config \
+    --batch_size 16 \
+    --epochs 100 \
+    --learning_rate 0.0002 \
+    --opt_type "normal" \
+    --weight_decay 0.00001 \
+    --label_smooth 0.1 \
+    --ctc_alpha 0.3 \
+    --print_freq 200
+    
+
   echo "[Stage 5] ASR Training Finished."
 fi
 

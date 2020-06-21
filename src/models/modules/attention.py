@@ -2,9 +2,11 @@
 # 2020 Ruchao Fan
 
 import torch
+import math
 import torch.nn as nn
 import numpy as np
 from models.modules.utils import clones
+import torch.nn.functional as F
 
 def attention(query, key, value, mask=None, dropout=None):
     "Compute 'Scaled Dot Product Attention'"

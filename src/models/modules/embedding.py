@@ -39,7 +39,7 @@ class ConvEmbedding(nn.Module):
     """
     Mapping input features to embeddings and downsample with 4.
     """
-    def __init__(self, input_size, d_model):
+    def __init__(self, input_size, d_model, dropout):
         super(ConvEmbedding, self).__init__()
 
         self.conv = nn.Sequential(
@@ -48,14 +48,16 @@ class ConvEmbedding(nn.Module):
                     nn.Conv2d(d_model, d_model, 3, 2, 1),
                     nn.ReLU(), )
         
-        self.linear_out = nn.Linear(d_model * (((input_size-1)//2) // 2 + 1), d_model)
+        self.linear_out = nn.Sequential(
+                            nn.Linear(d_model * (((input_size-1)//2) // 2 + 1), d_model),
+                            PositionalEncoding(d_model, dropout) )
 
     def forward(self, x, mask):
         "mask needs to be revised to downsample version"
-        x = x.unsqueenze(1)
+        x = x.unsqueeze(1)
         x = self.conv(x)
         b, c, t, d = x.size()
-        x = x.transpose(1,2).contiguous().view(b, t, c*d)
+        x = self.linear_out(x.transpose(1,2).contiguous().view(b, t, c*d))
         mask = mask[:, :, ::2][:, :, ::2]
         return x, mask
 
