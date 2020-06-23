@@ -43,13 +43,13 @@ class ConvEmbedding(nn.Module):
         super(ConvEmbedding, self).__init__()
 
         self.conv = nn.Sequential(
-                    nn.Conv2d(1, d_model, 3, 2, 1),
+                    nn.Conv2d(1, 32, 3, 2, 1),
                     nn.ReLU(),
-                    nn.Conv2d(d_model, d_model, 3, 2, 1),
+                    nn.Conv2d(32, 64, 3, 2, 1),
                     nn.ReLU(), )
         
         self.linear_out = nn.Sequential(
-                            nn.Linear(d_model * (((input_size-1)//2) // 2 + 1), d_model),
+                            nn.Linear(64 * (((input_size-1)//2) // 2 + 1), d_model),
                             PositionalEncoding(d_model, dropout) )
 
     def forward(self, x, mask):

@@ -1,3 +1,7 @@
+
+vocab_file: data/dict/vocab_wp.txt
+global_cmvn: data/fbank/cmvn.ark
+
 #model configuration
 input_size: 240
 N_enc: 8
@@ -12,10 +16,12 @@ vocab_size: 4990
 left_ctx: 0
 right_ctx: 2
 skip_frame: 1
-
-noam_factor: 5.0
-noam_warmup: 25000
 padding_idx: 0
 
 use_gpu: True
 
+#beam_decode
+beam_width: 8
+length_penalty: 0.1
+T: 1.0
+ 

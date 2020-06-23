@@ -31,6 +31,7 @@ def main():
     parser.add_argument("--use_cmvn", default=False, action='store_true', help="Use cmvn or not")
     parser.add_argument("--batch_size", default=32, type=int, help="Training minibatch size")
     parser.add_argument("--epochs", default=30, type=int, help="Number of training epochs")
+    parser.add_argument("--save_epoch", default=20, type=int, help="Starting to save the model")
     parser.add_argument("--learning_rate", default=0.0002, type=float, help="Initial learning rate")
     parser.add_argument("--opt_type", default='normal', type=str, help="Type of optimizer, normal or noam")
     parser.add_argument("--anneal_lr_ratio", default=0.5, type=float, help="Learning rate decay ratio, used when opt_type='normal'")
@@ -109,6 +110,10 @@ def main():
     criterion_ctc = torch.nn.CTCLoss(reduction='mean')
     criterion_att = LabelSmoothing(args.vocab_size, args.padding_idx, args.label_smooth)
 
+    ## 4. Start training iteratively
+    best_wer = 100
+    early_stop = 3
+    stop = 0
     for epoch in range(start_epoch, args.epochs):
         if args.opt_type == "normal" and epoch > args.anneal_lr_epoch:
             for param_group in optimizer.param_groups:
@@ -123,10 +128,25 @@ def main():
 
         print("Epoch {} done, Train Loss: {:.4f}, Train WER: {:.4f} Valid Loss: {:.4f} Valid WER: {:.4f}".format(epoch, train_loss, train_wer, valid_loss, valid_wer), flush=True) 
         
-        output_file=args.exp_dir + '/model.' + str(epoch) + '.mdl'
-        checkpoint = {'epoch': epoch, 'optimizer': optimizer.state_dict(),
-                        'state_dict': model.state_dict()}
-        torch.save(checkpoint, output_file)
+        if epoch > args.save_epoch:
+            output_file=args.exp_dir + '/model.' + str(epoch) + '.mdl'
+            checkpoint = {'epoch': epoch, 'optimizer': optimizer.state_dict(),
+                            'state_dict': model.state_dict()}
+            torch.save(checkpoint, output_file)
+
+        if valid_wer < best_wer:
+            best_wer = valid_wer
+            output_file=args.exp_dir + '/best_model.mdl'
+            checkpoint = {'epoch': epoch, 'optimizer': optimizer.state_dict(),
+                            'state_dict': model.state_dict()}
+            torch.save(checkpoint, output_file)
+            stop = 0
+        else:
+            stop += 1
+        
+        if stop >= early_stop:
+            print("Early stop since valid_wer doesn't decrease")
+            break
 
 def subsequent_mask(size):
     ret = torch.ones(size, size, dtype=torch.uint8)
@@ -139,11 +159,13 @@ def run_epoch(epoch, dataloader, model, criterion_ctc, criterion_att, args, opti
     att_losses = util.AverageMeter('AttLoss', ":.4e")
     ctc_wers = util.AverageMeter('CtcWer', ':.4f')
     att_wers = util.AverageMeter('AttWer', ':.4f')
-    progress = util.ProgressMeter(len(dataloader), batch_time, losses, ctc_losses, att_losses, ctc_wers, att_wers, prefix="Epoch: [{}]".format(epoch))
+    token_speed = util.AverageMeter('TokenSpeed', ":.2f")
+    progress = util.ProgressMeter(len(dataloader), batch_time, losses, ctc_losses, att_losses, ctc_wers, att_wers, token_speed, prefix="Epoch: [{}]".format(epoch))
     
     end = time.time()
     
     for i, data in enumerate(dataloader):
+        start = time.time()
         utt_list, feats, labels, feat_sizes, label_sizes = data
         src, src_mask = feats, (feats[:,:,0] != args.padding_idx).unsqueeze(1)
         tgt, tgt_label = labels[:,:-1], labels[:,1:]
@@ -181,6 +203,7 @@ def run_epoch(epoch, dataloader, model, criterion_ctc, criterion_att, args, opti
         ctc_losses.update(ctc_loss.item(), tokens)
         att_losses.update(att_loss.item(), tokens)
         batch_time.update(time.time() - end)
+        token_speed.update(tokens/(time.time()-start))
 
         if i % args.print_freq == 0:
             progress.print(i)

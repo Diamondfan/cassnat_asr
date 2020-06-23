@@ -86,26 +86,50 @@ if [ $stage -le 4 ] && [ $end_stage -ge 4 ]; then
 fi
 
 if [ $stage -le 5 ] && [ $end_stage -ge 5 ]; then
+  exp=exp/transformer_960h_normal
 
-  CUDA_VISIBLE_DEVICES="0" asr_train.py \
-    --exp_dir exp \
+  CUDA_VISIBLE_DEVICES="1" asr_train.py \
+    --exp_dir $exp \
     --train_config conf/transformer.yaml \
     --data_config conf/data.yaml \
-    --batch_size 16 \
-    --epochs 100 \
+    --batch_size 32 \
+    --epochs 15 \
+    --save_epoch 10 \
+    --anneal_lr_epoch 9 \
+    --anneal_lr_ratio 0.5 \
     --learning_rate 0.0002 \
     --opt_type "normal" \
     --weight_decay 0.00001 \
     --label_smooth 0.1 \
     --ctc_alpha 0.3 \
-    --print_freq 200
+    --print_freq 200 > $exp/train.log 2>&1 &
     
 
   echo "[Stage 5] ASR Training Finished."
 fi
 
 if [ $stage -le 6 ] && [ $end_stage -ge 6 ]; then
-
+  # This is a very simple first version, only test on test_clean 
+  exp=exp/transformer_960h
+  
+  CUDA_VISIBLE_DEVICES="1" test.py \
+    --test_config conf/test.yaml \
+    --data_path 'data/test_clean/feats.scp' \
+    --resume_model $exp/test.mdl \
+    --result_file $exp/test_clean_recog.scp \
+    --batch_size 8 \
+    --ctc_weight 0.3 \
+    --rnnlm None \
+    --lm_weight 0.0 \
+    --max_decode_step 100 \
+    --print_freq 100 
+  
+  text2trn.py $exp/test_clean_recog.scp $exp/test_clean_hyp.trn
+  text2trn.py data/test_clean/token.scp $exp/test_clean_ref.trn
+ 
+  spm_decode --model=${bpemodel}.model --input_format=piece < $exp/test_clean_hyp.trn | sed -e "s/▁/ /g" > $exp/hyp.wrd.trn
+  spm_decode --model=${bpemodel}.model --input_format=piece < $exp/test_clean_ref.trn | sed -e "s/▁/ /g" > $exp/ref.wrd.trn
+  sclite -r $exp/ref.wrd.trn -h $exp/hyp.wrd.trn -i rm -o all stdout > $exp/result.wrd.txt
   echo "[Stage 6] Decoding Finished."
 fi
 
