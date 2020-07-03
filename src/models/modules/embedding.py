@@ -43,14 +43,15 @@ class ConvEmbedding(nn.Module):
         super(ConvEmbedding, self).__init__()
 
         self.conv = nn.Sequential(
-                    nn.Conv2d(1, 32, 3, 2, 1),
+                    nn.Conv2d(1, 64, 3, 2, 1),
                     nn.ReLU(),
-                    nn.Conv2d(32, 64, 3, 2, 1),
+                    nn.Conv2d(64, 128, 3, 2, 1),
                     nn.ReLU(), )
+
+        self.d_model = d_model 
         
-        self.linear_out = nn.Sequential(
-                            nn.Linear(64 * (((input_size-1)//2) // 2 + 1), d_model),
-                            PositionalEncoding(d_model, dropout) )
+        self.linear_out = nn.Linear(128 * (((input_size-1)//2) // 2 + 1), d_model)
+        self.pos_enc = PositionalEncoding(d_model, dropout)
 
     def forward(self, x, mask):
         "mask needs to be revised to downsample version"
@@ -58,6 +59,7 @@ class ConvEmbedding(nn.Module):
         x = self.conv(x)
         b, c, t, d = x.size()
         x = self.linear_out(x.transpose(1,2).contiguous().view(b, t, c*d))
+        x = self.pos_enc(x * math.sqrt(self.d_model))
         mask = mask[:, :, ::2][:, :, ::2]
         return x, mask
 

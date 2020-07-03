@@ -16,6 +16,7 @@ import utils.util as util
 from data.vocab import Vocab
 from models.transformer import make_model
 from data.speech_loader import SpeechDataset, SpeechDataLoader
+from utils.beam_decode import ctc_beam_decode
 
 
 class Config():
@@ -36,7 +37,7 @@ def main():
     parser.add_argument("--ctc_weight", type=float, default=0.0, help="CTC weight in joint decoding")
     parser.add_argument("--rnnlm", type=str, default=None, help="RNNLM model file to read")
     parser.add_argument("--lm_weight", type=float, default=0.1, help="RNNLM weight")
-    parser.add_argument("--max_decode_step", type=int, default=80, help='Maximum decoding step')
+    parser.add_argument("--max_decode_ratio", type=float, default=0, help='Decoding step to length ratio')
     parser.add_argument("--seed", default=1, type=int, help="random number seed")
 
     args = parser.parse_args()
@@ -94,8 +95,12 @@ def main():
         
             if args.use_gpu:
                 src, src_mask = src.cuda(), src_mask.cuda()
-        
-            recog_results = model.beam_decode(src, src_mask, vocab, args)
+                feat_sizes = feat_sizes.cuda()
+
+            if args.decode_type == 'ctc_only':
+                recog_results = ctc_beam_decode(model, src, src_mask, feat_sizes, vocab, args)
+            else:
+                recog_results = model.beam_decode(src, src_mask, vocab, args)
             
             for j in range(len(utt_list)):
                 hyp = []
@@ -105,8 +110,8 @@ def main():
                     if idx == vocab.word2index['eos']:
                         break
                     hyp.append(vocab.index2word[idx])
-                print(utt_list[j]+' '+' '.join(hyp))
-                print(utt_list[j]+' '+' '.join(hyp), file=out_file)
+                #print(utt_list[j]+' '+' '.join(hyp))
+                print(utt_list[j]+' '+' '.join(hyp), flush=True, file=out_file)
     
             batch_time.update(time.time() - end)
             if i % args.print_freq == 0:

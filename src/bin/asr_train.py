@@ -36,6 +36,7 @@ def main():
     parser.add_argument("--opt_type", default='normal', type=str, help="Type of optimizer, normal or noam")
     parser.add_argument("--anneal_lr_ratio", default=0.5, type=float, help="Learning rate decay ratio, used when opt_type='normal'")
     parser.add_argument("--anneal_lr_epoch", default=10, type=int, help="Epoch starting to decay learning rate, used when opt_type='normal'")
+    parser.add_argument("--n_anneal", default=4, type=int, help="Times to decay lr, used when opt_type='normal'")
     parser.add_argument("--weight_decay", default=0.00001, type=float, help="Weight decay in optimizer")
     parser.add_argument("--label_smooth", default=0.1, type=float, help="Label smoothing for CE loss")
     parser.add_argument("--load_data_workers", default=2, type=int, help="Number of parallel data loaders")
@@ -82,6 +83,11 @@ def main():
         checkpoint = torch.load(args.resume_model, map_location='cpu')
         model.load_state_dict(checkpoint["state_dict"])
         optimizer.load_state_dict(checkpoint['optimizer'])
+        if use_cuda:
+            for state in optimizer.state.values():
+                for k, v in state.items():
+                    if isinstance(v, torch.Tensor):
+                        state[k] = v.cuda()   
         start_epoch = checkpoint['epoch']+1
     else:
         start_epoch = 0
@@ -92,7 +98,7 @@ def main():
     print("Number of parameters: {}".format(num_params))
 
     if use_cuda:
-        model = model.cuda()    
+        model = model.cuda()
     
     ## 3. Define vocabulary and data loader
     trainset = SpeechDataset(vocab, args.train_paths, args.left_ctx, args.right_ctx, args.skip_frame)
@@ -112,10 +118,19 @@ def main():
 
     ## 4. Start training iteratively
     best_wer = 100
+    # This is used for noam early stop
     early_stop = 3
-    stop = 0
+    stop = 0  
+    # This is used for noraml adam control
+    anneal = False
+    anneal_n = -1
+    
     for epoch in range(start_epoch, args.epochs):
-        if args.opt_type == "normal" and epoch > args.anneal_lr_epoch:
+        if args.opt_type == "normal" and epoch > args.anneal_lr_epoch and anneal:
+            anneal_n += 1
+            if anneal_n == args.n_anneal:
+                print("Early stop since number of anneal exceed {}".format(args.n_anneal))
+                break
             for param_group in optimizer.param_groups:
                 param_group['lr'] *= args.anneal_lr_ratio
             print("Learning rate: {:.4e}".format(optimizer.param_groups[0]['lr']), flush=True)
@@ -126,7 +141,7 @@ def main():
         with torch.no_grad():
             valid_loss, valid_wer = run_epoch(epoch, valid_loader, model, criterion_ctc, criterion_att, args, is_train=False)
 
-        print("Epoch {} done, Train Loss: {:.4f}, Train WER: {:.4f} Valid Loss: {:.4f} Valid WER: {:.4f}".format(epoch, train_loss, train_wer, valid_loss, valid_wer), flush=True) 
+        print("Epoch {} done, Train Loss: {:.4f}, Train WER: {:.4f} Valid Loss: {:.4f} Valid WER: {:.4f} Current LR: {:4e}".format(epoch, train_loss, train_wer, valid_loss, valid_wer, optimizer.param_groups[0]['lr']), flush=True) 
         
         if epoch > args.save_epoch:
             output_file=args.exp_dir + '/model.' + str(epoch) + '.mdl'
@@ -134,16 +149,20 @@ def main():
                             'state_dict': model.state_dict()}
             torch.save(checkpoint, output_file)
 
+        if best_wer - valid_wer > 0.001: # at least improve 0.1%
+            stop = 0
+            anneal = False if anneal_n < (args.n_anneal - 2) else True  # for last two lr, decay directly
+        else:
+            stop += 1
+            anneal = True
+        
         if valid_wer < best_wer:
             best_wer = valid_wer
             output_file=args.exp_dir + '/best_model.mdl'
             checkpoint = {'epoch': epoch, 'optimizer': optimizer.state_dict(),
                             'state_dict': model.state_dict()}
             torch.save(checkpoint, output_file)
-            stop = 0
-        else:
-            stop += 1
-        
+
         if stop >= early_stop:
             print("Early stop since valid_wer doesn't decrease")
             break
@@ -179,19 +198,26 @@ def run_epoch(epoch, dataloader, model, criterion_ctc, criterion_att, args, opti
             feat_sizes = feat_sizes.cuda()
             label_sizes = label_sizes.cuda()
         
-        ctc_out, att_out, enc_h = model(src, tgt, src_mask, tgt_mask)
+        ctc_out, att_out, enc_h = model(src, tgt, src_mask, tgt_mask, args.ctc_alpha)
         bs, max_feat_size, _ = enc_h.size()
 
         # loss computation
-        feat_sizes = (feat_sizes * max_feat_size).long()
-        ctc_loss = criterion_ctc(ctc_out.transpose(0,1), tgt_label, feat_sizes, label_sizes)
         att_loss = criterion_att(att_out.view(-1, att_out.size(-1)), tgt_label.view(-1))
-        loss = args.ctc_alpha * ctc_loss + (1 - args.ctc_alpha) * att_loss
-        
+        if args.ctc_alpha > 0:
+            feat_sizes = (feat_sizes * max_feat_size).long()
+            ctc_loss = criterion_ctc(ctc_out.transpose(0,1), tgt_label, feat_sizes, label_sizes)
+            loss = args.ctc_alpha * ctc_loss + (1 - args.ctc_alpha) * att_loss
+        else:
+            ctc_loss = torch.Tensor([0])
+            loss = att_loss
+
         # unit error rate computation
-        ctc_errs, all_tokens = ctc_greedy_wer(ctc_out, tgt_label.cpu().numpy(), feat_sizes.cpu().numpy(), args.padding_idx)
-        att_errs, all_tokens = att_greedy_wer(att_out, tgt_label.cpu().numpy(), args.padding_idx)
+        if args.ctc_alpha > 0:
+            ctc_errs, all_tokens = ctc_greedy_wer(ctc_out, tgt_label.cpu().numpy(), feat_sizes.cpu().numpy(), args.padding_idx)
+        else:
+            ctc_errs, all_tokens = 1, 1
         ctc_wers.update(ctc_errs/all_tokens, all_tokens)
+        att_errs, all_tokens = att_greedy_wer(att_out, tgt_label.cpu().numpy(), args.padding_idx)
         att_wers.update(att_errs/all_tokens, all_tokens)
         
         if is_train:

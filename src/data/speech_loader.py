@@ -4,6 +4,7 @@
 import torch
 import kaldiio
 import numpy as np
+
 from torch.utils.data import Dataset, DataLoader
 from data.feat_op import skip_feat, context_feat
 
@@ -148,16 +149,5 @@ class SpeechDataLoader(DataLoader):
             feat_sizes[x] = feature_length / feats_max_length
             text_sizes[x] = text_length - 2 #substract sos and eos
         return utt_list, feats.float(), texts.long(), feat_sizes.float(), text_sizes.long()
-
-if __name__ == "__main__":
-    import yaml
-    data_paths = yaml.safe_load(open('config/data.yaml', 'r'))
-    train_dataset = SpeechDataset(data_paths['train_data_path'])
-    train_dataset._load_cmvn('data/fbank/train_global_cmvn.txt')
-    train_loader = SpeechDataLoader(train_dataset, batch_size=10, shuffle=False)
-    for i, data in enumerate(train_loader):
-        utt_list, feats, text, phrase, speaker = data
-        print(speaker.size())
-        break
 
 
