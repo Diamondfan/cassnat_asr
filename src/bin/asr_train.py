@@ -134,7 +134,8 @@ def main():
         with torch.no_grad():
             valid_loss, valid_wer = run_epoch(epoch, valid_loader, model, criterion_ctc, criterion_att, args, is_train=False)
 
-        print("Epoch {} done, Train Loss: {:.4f}, Train WER: {:.4f} Valid Loss: {:.4f} Valid WER: {:.4f} Current LR: {:4e}".format(epoch, train_loss, train_wer, valid_loss, valid_wer, optimizer.param_groups[0]['lr']), flush=True)        
+        temp_lr = optimizer.param_groups[0]['lr'] if args.opt_type == "normal" else optimizer._rate
+        print("Epoch {} done, Train Loss: {:.4f}, Train WER: {:.4f} Valid Loss: {:.4f} Valid WER: {:.4f} Current LR: {:4e}".format(epoch, train_loss, train_wer, valid_loss, valid_wer, temp_lr), flush=True)
         if args.opt_type == 'normal':
             scheduler.step(valid_wer)
 
