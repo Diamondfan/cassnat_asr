@@ -212,9 +212,7 @@ def run_epoch(epoch, dataloader, model, criterion_ctc, criterion_att, args, opti
         losses.update(loss.item(), tokens)
         ctc_losses.update(ctc_loss.item(), tokens)
         att_losses.update(att_loss.item(), tokens)
-        batch_time.update(time.time() - end)
-        token_speed.update(tokens/(time.time()-start))
-        
+                
         if is_train:
             loss = loss / args.accum_grad
             loss.backward()
@@ -222,6 +220,9 @@ def run_epoch(epoch, dataloader, model, criterion_ctc, criterion_att, args, opti
                 grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
                 optimizer.step()
                 optimizer.zero_grad()
+        
+        batch_time.update(time.time() - end)
+        token_speed.update(tokens/(time.time()-start))
 
         if i % args.print_freq == 0:
             progress.print(i)
