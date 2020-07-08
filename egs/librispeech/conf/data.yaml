@@ -20,8 +20,8 @@ dev_data_path:
     text_label: data/dev_clean/token.scp
   2:
     name: 'dev_other'
-    scp_path: data/dev_clean/feats.scp
-    text_label: data/dev_clean/token.scp
+    scp_path: data/dev_other/feats.scp
+    text_label: data/dev_other/token.scp
 
 vocab_file: data/dict/vocab_wp.txt
 global_cmvn: data/fbank/cmvn.ark

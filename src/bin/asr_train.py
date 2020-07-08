@@ -32,11 +32,11 @@ def main():
     parser.add_argument("--batch_size", default=32, type=int, help="Training minibatch size")
     parser.add_argument("--epochs", default=30, type=int, help="Number of training epochs")
     parser.add_argument("--save_epoch", default=20, type=int, help="Starting to save the model")
-    parser.add_argument("--learning_rate", default=0.0002, type=float, help="Initial learning rate")
+    parser.add_argument("--learning_rate", default=2e-4, type=float, help="Initial learning rate")
+    parser.add_argument("--min_lr", default=1e-6, type=float, help="Minimal learning rate")
+    parser.add_argument("--patience", default=2, type=int, help="Number of epochs without improvements")
     parser.add_argument("--opt_type", default='normal', type=str, help="Type of optimizer, normal or noam")
     parser.add_argument("--anneal_lr_ratio", default=0.5, type=float, help="Learning rate decay ratio, used when opt_type='normal'")
-    parser.add_argument("--anneal_lr_epoch", default=10, type=int, help="Epoch starting to decay learning rate, used when opt_type='normal'")
-    parser.add_argument("--n_anneal", default=4, type=int, help="Times to decay lr, used when opt_type='normal'")
     parser.add_argument("--weight_decay", default=0.00001, type=float, help="Weight decay in optimizer")
     parser.add_argument("--label_smooth", default=0.1, type=float, help="Label smoothing for CE loss")
     parser.add_argument("--load_data_workers", default=2, type=int, help="Number of parallel data loaders")
@@ -119,51 +119,40 @@ def main():
     ## 4. Start training iteratively
     best_wer = 100
     # This is used for noam early stop
-    early_stop = 3
-    stop = 0  
+    early_stop_patience = 3
+    best_epoch = 0
     # This is used for noraml adam control
-    anneal = False
-    anneal_n = -1
+    if args.opt_type == 'normal':
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=args.anneal_lr_ratio, 
+                            patience=args.patience, threshold=0.0005, threshold_mode='abs', min_lr=args.min_lr)
     
     for epoch in range(start_epoch, args.epochs):
-        if args.opt_type == "normal" and epoch > args.anneal_lr_epoch and anneal:
-            anneal_n += 1
-            if anneal_n == args.n_anneal:
-                print("Early stop since number of anneal exceed {}".format(args.n_anneal))
-                break
-            for param_group in optimizer.param_groups:
-                param_group['lr'] *= args.anneal_lr_ratio
-            print("Learning rate: {:.4e}".format(optimizer.param_groups[0]['lr']), flush=True)
-        
         model.train()
         train_loss, train_wer = run_epoch(epoch, train_loader, model, criterion_ctc, criterion_att, args, optimizer, is_train=True)
+        
         model.eval()
         with torch.no_grad():
             valid_loss, valid_wer = run_epoch(epoch, valid_loader, model, criterion_ctc, criterion_att, args, is_train=False)
 
-        print("Epoch {} done, Train Loss: {:.4f}, Train WER: {:.4f} Valid Loss: {:.4f} Valid WER: {:.4f} Current LR: {:4e}".format(epoch, train_loss, train_wer, valid_loss, valid_wer, optimizer.param_groups[0]['lr']), flush=True) 
-        
+        print("Epoch {} done, Train Loss: {:.4f}, Train WER: {:.4f} Valid Loss: {:.4f} Valid WER: {:.4f} Current LR: {:4e}".format(epoch, train_loss, train_wer, valid_loss, valid_wer, optimizer.param_groups[0]['lr']), flush=True)        
+        if args.opt_type == 'normal':
+            scheduler.step(valid_wer)
+
         if epoch > args.save_epoch:
             output_file=args.exp_dir + '/model.' + str(epoch) + '.mdl'
             checkpoint = {'epoch': epoch, 'optimizer': optimizer.state_dict(),
                             'state_dict': model.state_dict()}
             torch.save(checkpoint, output_file)
-
-        if best_wer - valid_wer > 0.001: # at least improve 0.1%
-            stop = 0
-            anneal = False if anneal_n < (args.n_anneal - 2) else True  # for last two lr, decay directly
-        else:
-            stop += 1
-            anneal = True
         
         if valid_wer < best_wer:
             best_wer = valid_wer
+            best_epoch = epoch
             output_file=args.exp_dir + '/best_model.mdl'
             checkpoint = {'epoch': epoch, 'optimizer': optimizer.state_dict(),
                             'state_dict': model.state_dict()}
             torch.save(checkpoint, output_file)
-
-        if stop >= early_stop:
+        
+        if epoch - best_epoch >= early_stop_patience:
             print("Early stop since valid_wer doesn't decrease")
             break
 
@@ -206,7 +195,7 @@ def run_epoch(epoch, dataloader, model, criterion_ctc, criterion_att, args, opti
         if args.ctc_alpha > 0:
             feat_sizes = (feat_sizes * max_feat_size).long()
             ctc_loss = criterion_ctc(ctc_out.transpose(0,1), tgt_label, feat_sizes, label_sizes)
-            loss = args.ctc_alpha * ctc_loss + (1 - args.ctc_alpha) * att_loss
+            loss = args.ctc_alpha * ctc_loss + att_loss #(1 - args.ctc_alpha) * att_loss
         else:
             ctc_loss = torch.Tensor([0])
             loss = att_loss
@@ -220,16 +209,19 @@ def run_epoch(epoch, dataloader, model, criterion_ctc, criterion_att, args, opti
         att_errs, all_tokens = att_greedy_wer(att_out, tgt_label.cpu().numpy(), args.padding_idx)
         att_wers.update(att_errs/all_tokens, all_tokens)
         
-        if is_train:
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-        
         losses.update(loss.item(), tokens)
         ctc_losses.update(ctc_loss.item(), tokens)
         att_losses.update(att_loss.item(), tokens)
         batch_time.update(time.time() - end)
         token_speed.update(tokens/(time.time()-start))
+        
+        if is_train:
+            loss = loss / args.accum_grad
+            loss.backward()
+            if i % args.accum_grad == 0:
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+                optimizer.step()
+                optimizer.zero_grad()
 
         if i % args.print_freq == 0:
             progress.print(i)
