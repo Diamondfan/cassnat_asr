@@ -163,22 +163,23 @@ class LaceNat(nn.Module):
         aligned_seq_shift[:,1:] = aligned_seq[:,:-1]
         
         # 6. transcribe aliged_seq to trigger mask
-        trigger_mask = (aligned_seq_shift != blank).cumsum(1).unsqueeze(1).repeat(1, ymax, 1)
-        trigger_mask = trigger_mask == torch.arange(ymax).type_as(trigger_mask).unsqueeze(0).unsqueeze(2)
+        trigger_mask = (aligned_seq_shift != blank).cumsum(1).unsqueeze(1).repeat(1, ymax+1, 1)
+        trigger_mask = trigger_mask == torch.arange(ymax+1).type_as(trigger_mask).unsqueeze(0).unsqueeze(2)
         sos_mask = trigger_mask.new_zeros((bs,1, xmax))
-        eos_mask = sos_mask.clone()
         sos_mask[:,:,0] = 1
-        eos_mask = eos_mask.scatter(2, src_size.unsqueeze(1).unsqueeze(2)-1, 1)
-        trigger_mask = torch.cat([sos_mask, trigger_mask, eos_mask], 1)
+        trigger_mask[:,-1:,:].masked_fill_(src_mask==0, 0)
+        trigger_mask[:,-1,:].scatter_(1, src_size.unsqueeze(1)-1, 1)
+        trigger_mask = torch.cat([sos_mask, trigger_mask], 1)
         
         ylen = ylens + 1  # +1 for <eos>
         ymax += 1
         return trigger_mask, ylen, ymax
 
-    def best_path_align(self, ctc_out, src_size, blank):
+    def best_path_align(self, ctc_out, src_mask, src_size, blank):
         "This is used for decoding, forced alignment is needed for training"
         bs, xmax, _ = ctc_out.size()
         best_paths = ctc_out.argmax(-1)
+        best_paths = best_paths.masked_fill(src_mask.squeeze(1)==0, 0)
 
         aligned_seq_shift = best_paths.new_zeros(best_paths.size())
         aligned_seq_shift[:, 1:] = best_paths[:,:-1]
@@ -188,13 +189,11 @@ class LaceNat(nn.Module):
         
         ylen = torch.sum((best_paths != blank), 1)
         ymax = torch.max(ylen).item()
-        trigger_mask = (aligned_seq_shift != blank).cumsum(1).unsqueeze(1).repeat(1, ymax, 1)
-        trigger_mask = trigger_mask == torch.arange(ymax).type_as(trigger_mask).unsqueeze(0).unsqueeze(2)
+        trigger_mask = (aligned_seq_shift != blank).cumsum(1).unsqueeze(1).repeat(1, ymax+1, 1)
+        trigger_mask = trigger_mask == torch.arange(ymax+1).type_as(trigger_mask).unsqueeze(0).unsqueeze(2)
         sos_mask = trigger_mask.new_zeros((bs,1, xmax))
-        eos_mask = sos_mask.clone()
         sos_mask[:,:,0] = 1
-        eos_mask = eos_mask.scatter(2, src_size.unsqueeze(1).unsqueeze(2)-1, 1)
-        trigger_mask = torch.cat([sos_mask, trigger_mask, eos_mask], 1)
+        trigger_mask = torch.cat([sos_mask, trigger_mask], 1)
         
         ylen = ylen + 1
         ymax += 1
@@ -220,7 +219,9 @@ class LaceNat(nn.Module):
         ctc_out = self.ctc_generator(enc_h)
         src_size = (src_size * ctc_out.size(1)).long()
 
-        trigger_mask, ylen, ymax = self.best_path_align(ctc_out, src_size, blank)
+        #import pdb
+        #pdb.set_trace()
+        trigger_mask, ylen, ymax = self.best_path_align(ctc_out, src_mask, src_size, blank)
         trigger_mask = trigger_mask & src_mask
         
         tgt_mask1 = torch.full((bs, ymax), 1).type_as(src_mask)

@@ -35,6 +35,7 @@ def main():
     parser.add_argument("--learning_rate", default=2e-4, type=float, help="Initial learning rate")
     parser.add_argument("--min_lr", default=1e-6, type=float, help="Minimal learning rate")
     parser.add_argument("--patience", default=2, type=int, help="Number of epochs without improvements")
+    parser.add_argument("--end_patience", default=2, type=int, help="Number of epochs without improvements for early stop")
     parser.add_argument("--opt_type", default='normal', type=str, help="Type of optimizer, normal or noam")
     parser.add_argument("--anneal_lr_ratio", default=0.5, type=float, help="Learning rate decay ratio, used when opt_type='normal'")
     parser.add_argument("--weight_decay", default=0.00001, type=float, help="Weight decay in optimizer")
@@ -119,12 +120,12 @@ def main():
     ## 4. Start training iteratively
     best_wer = 100
     # This is used for noam early stop
-    early_stop_patience = 3
+    early_stop_patience = args.end_patience
     best_epoch = 0
     # This is used for noraml adam control
     if args.opt_type == 'normal':
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=args.anneal_lr_ratio, 
-                            patience=args.patience, threshold=0.0005, threshold_mode='abs', min_lr=args.min_lr)
+                            patience=args.patience, min_lr=args.min_lr)
     
     for epoch in range(start_epoch, args.epochs):
         model.train()
@@ -153,7 +154,7 @@ def main():
                             'state_dict': model.state_dict()}
             torch.save(checkpoint, output_file)
         
-        if epoch - best_epoch >= early_stop_patience:
+        if epoch - best_epoch > early_stop_patience:
             print("Early stop since valid_wer doesn't decrease")
             break
 
