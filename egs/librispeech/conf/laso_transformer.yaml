@@ -1,0 +1,24 @@
+#model configuration
+input_size: 240
+N_enc: 12
+N_dec: 6
+N_pds: 2
+d_model: 256
+d_ff: 2048
+n_head: 4
+dropout: 0.1
+
+n_features: 80
+vocab_size: 4990
+left_ctx: 0
+right_ctx: 2
+skip_frame: 1
+
+noam_factor: 10.0
+noam_warmup: 25000
+padding_idx: 0
+accum_grad: 2
+grad_clip: 5.0
+
+use_gpu: True
+
