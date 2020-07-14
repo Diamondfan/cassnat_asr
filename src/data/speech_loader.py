@@ -9,9 +9,10 @@ from torch.utils.data import Dataset, DataLoader
 from data.feat_op import skip_feat, context_feat
 
 class SingleSet(object):
-    def __init__(self, vocab, data_path):
+    def __init__(self, vocab, data_path, rank):
         self.name = data_path['name']
         self.vocab = vocab
+        self.rank = rank
         scp_path = data_path['scp_path']
         ark_dict = self._load_feature(scp_path)
         
@@ -39,7 +40,8 @@ class SingleSet(object):
                 utt, path = line.strip().split(' ')
                 ark_dict.append((utt, path))
                 line = fin.readline()
-        print("Reading %d lines from %s" % (len(ark_dict), scp_path))
+        if self.rank == 0:
+            print("Reading %d lines from %s" % (len(ark_dict), scp_path))
         return ark_dict
     
     def _load_label(self, lab_path):
@@ -53,15 +55,17 @@ class SingleSet(object):
                 label_dict[utt].insert(0, self.vocab.word2index['sos'])
                 label_dict[utt].append(self.vocab.word2index['eos'])
                 line = fin.readline()
-        print("Reading %d lines from %s" % (len(label_dict), lab_path))
+        if self.rank == 0:
+            print("Reading %d lines from %s" % (len(label_dict), lab_path))
         return label_dict
 
 class SpeechDataset(Dataset):
-    def __init__(self, vocab, data_paths, left_context=0, right_context=0, skip_frame=1):
+    def __init__(self, vocab, data_paths, args):
         self.vocab = vocab
-        self.left_context = left_context
-        self.right_context = right_context
-        self.skip_frame = skip_frame     
+        self.rank = args.rank
+        self.left_context = args.left_ctx
+        self.right_context = args.right_ctx
+        self.skip_frame = args.skip_frame     
         self.use_cmvn = False
         self.data_streams = self._load_streams(data_paths)
         self.data_stream_sizes = [i.get_len() for i in self.data_streams]
@@ -80,7 +84,7 @@ class SpeechDataset(Dataset):
     def _load_streams(self, data_paths):
         data_streams = []
         for i in range(len(data_paths)):
-            stream = SingleSet(self.vocab, data_paths[i])
+            stream = SingleSet(self.vocab, data_paths[i], self.rank)
             data_streams.append(stream)
         return data_streams
                     
@@ -113,9 +117,12 @@ class SpeechDataset(Dataset):
         return sum(self.data_stream_sizes)
 
 class SpeechDataLoader(DataLoader):
-    def __init__(self, dataset, batch_size, padding_idx=-1, shuffle=False, num_workers=0, timeout=1000):
+    def __init__(self, dataset, batch_size, padding_idx=-1, distributed=False, shuffle=False, num_workers=0, timeout=1000):
         self.padding_idx = padding_idx
-        if shuffle:
+        if distributed:
+            base_sampler = torch.utils.data.distributed.DistributedSampler(dataset)
+            self.base_sampler = base_sampler
+        elif shuffle:
             base_sampler = torch.utils.data.RandomSampler(dataset)
         else:
             base_sampler = torch.utils.data.SequentialSampler(dataset)
@@ -150,4 +157,6 @@ class SpeechDataLoader(DataLoader):
             text_sizes[x] = text_length - 2 #substract sos and eos
         return utt_list, feats.float(), texts.long(), feat_sizes.float(), text_sizes.long()
 
+    def set_epoch(self, epoch):
+        self.base_sampler.set_epoch(epoch)
 

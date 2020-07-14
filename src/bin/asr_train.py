@@ -9,6 +9,9 @@ import json
 import torch
 import argparse
 import numpy as np
+import torch.distributed as dist
+import torch.backends.cudnn as cudnn
+from torch.distributed import ReduceOp
 
 sys.path.append(os.environ['E2EASR']+'/src')
 import utils.util as util
@@ -40,13 +43,13 @@ def main():
     parser.add_argument("--anneal_lr_ratio", default=0.5, type=float, help="Learning rate decay ratio, used when opt_type='normal'")
     parser.add_argument("--weight_decay", default=0.00001, type=float, help="Weight decay in optimizer")
     parser.add_argument("--label_smooth", default=0.1, type=float, help="Label smoothing for CE loss")
-    parser.add_argument("--load_data_workers", default=2, type=int, help="Number of parallel data loaders")
+    parser.add_argument("--load_data_workers", default=1, type=int, help="Number of parallel data loaders")
     parser.add_argument("--ctc_alpha", default=0, type=float, help="Task ratio of CTC")
     parser.add_argument("--resume_model", default='', type=str, help="The model path to resume")
     parser.add_argument("--print_freq", default=100, type=int, help="Number of iter to print")
     parser.add_argument("--seed", default=1, type=int, help="Random number seed")
 
-    ## 1. Parse and print config
+    ## 1. Parse and print config Main process
     args = parser.parse_args()
     with open(args.train_config) as f:
         config = yaml.safe_load(f)
@@ -63,24 +66,41 @@ def main():
     for var in vars(args):
         config[var] = getattr(args, var)
     print("Experiment starts with config {}".format(json.dumps(config, sort_keys=True, indent=4)))
-
-    ## 2. Define model and optimizer
-    use_cuda = args.use_gpu
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
-    if use_cuda:
-        torch.cuda.manual_seed(args.seed)
+    cudnn.deterministic = True
     if not os.path.isdir(args.exp_dir):
         os.makedirs(args.exp_dir)
 
-    vocab = Vocab(args.vocab_file)
+    num_gpu = len(os.environ['CUDA_VISIBLE_DEVICES'].split(','))
+    args.distributed = True if num_gpu > 1 else False
+    if args.distributed:
+        import torch.multiprocessing as mp
+        mp.spawn(main_worker, nprocs=num_gpu, args=(num_gpu, args))
+    else:
+        main_worker(0, 1, args)
+        
+
+def main_worker(rank, world_size, args, backend='nccl'):
+    args.rank, args.world_size = rank, world_size
+    if args.distributed:
+        dist.init_process_group(backend=backend, init_method='tcp://localhost:23456',
+                                    world_size=world_size, rank=rank)
+
+    ## 2. Define model and optimizer
+    use_cuda = args.use_gpu
+    if use_cuda:
+        torch.cuda.manual_seed(args.seed)
+
+    vocab = Vocab(args.vocab_file, args.rank)
     args.vocab_size = vocab.n_words
     assert args.input_size == (args.left_ctx + args.right_ctx + 1) // args.skip_frame * args.n_features
     model = make_model(args.input_size, args)
     optimizer = get_opt(args.opt_type, model, args.learning_rate, args.d_model, args.noam_factor, args.noam_warmup, args.weight_decay)   
     
     if args.resume_model:
-        print("Loading model from {}".format(args.resume_model))
+        if rank == 0:
+            print("Loading model from {}".format(args.resume_model))
         checkpoint = torch.load(args.resume_model, map_location='cpu')
         model.load_state_dict(checkpoint["state_dict"])
         optimizer.load_state_dict(checkpoint['optimizer'])
@@ -89,34 +109,42 @@ def main():
                 for k, v in state.items():
                     if isinstance(v, torch.Tensor):
                         state[k] = v.cuda()   
-        start_epoch = checkpoint['epoch']+1
+        start_epoch = checkpoint['epoch'] + 1
     else:
         start_epoch = 0
     
     num_params = 0
     for name, param in model.named_parameters():
         num_params += param.numel()
-    print("Number of parameters: {}".format(num_params))
-
+    if args.rank == 0:
+        print("Number of parameters: {}".format(num_params))
     if use_cuda:
-        model = model.cuda()
+        torch.cuda.set_device(args.rank)
+        model = model.cuda(args.rank)
+    if args.distributed:
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.rank])
     
     ## 3. Define vocabulary and data loader
-    trainset = SpeechDataset(vocab, args.train_paths, args.left_ctx, args.right_ctx, args.skip_frame)
+    trainset = SpeechDataset(vocab, args.train_paths, args)
     if args.use_cmvn:
         trainset._load_cmvn(args.global_cmvn)
-    train_loader = SpeechDataLoader(trainset, args.batch_size, args.padding_idx, num_workers=args.load_data_workers, shuffle=True)
-    print("Finish Loading training files. Number batches: {}".format(len(train_loader)))
+    train_loader = SpeechDataLoader(trainset, args.batch_size, args.padding_idx, num_workers=args.load_data_workers, 
+                                       distributed=args.distributed, shuffle=True)
+    if args.rank == 0:
+        print("Finish Loading training files. Number batches: {}".format(len(train_loader)))
 
-    validset = SpeechDataset(vocab, args.dev_paths, args.left_ctx, args.right_ctx, args.skip_frame)
+    validset = SpeechDataset(vocab, args.dev_paths, args)
     if args.use_cmvn:
         validset._load_cmvn(args.global_cmvn)
-    valid_loader = SpeechDataLoader(validset, args.batch_size, args.padding_idx, num_workers=args.load_data_workers, shuffle=False)
-    print("Finish Loading dev files. Number batches: {}".format(len(valid_loader)))
+    valid_loader = SpeechDataLoader(validset, args.batch_size, args.padding_idx, num_workers=args.load_data_workers, 
+                                        distributed=False, shuffle=False)
+    if args.rank == 0:
+        print("Finish Loading dev files. Number batches: {}".format(len(valid_loader)))
     
     criterion_ctc = torch.nn.CTCLoss(reduction='mean')
     criterion_att = LabelSmoothing(args.vocab_size, args.padding_idx, args.label_smooth)
-
+    criterion = (criterion_ctc, criterion_att)
+    
     ## 4. Start training iteratively
     best_wer = 100
     # This is used for noam early stop
@@ -128,19 +156,26 @@ def main():
                             patience=args.patience, min_lr=args.min_lr)
     
     for epoch in range(start_epoch, args.epochs):
+        if args.distributed:
+            train_loader.set_epoch(epoch)
         model.train()
-        train_loss, train_wer = run_epoch(epoch, train_loader, model, criterion_ctc, criterion_att, args, optimizer, is_train=True)
-        
+        train_loss, train_wer = run_epoch(epoch, train_loader, model, criterion, args, optimizer, is_train=True)
         model.eval()
         with torch.no_grad():
-            valid_loss, valid_wer = run_epoch(epoch, valid_loader, model, criterion_ctc, criterion_att, args, is_train=False)
-
+            valid_loss, valid_wer = run_epoch(epoch, valid_loader, model, criterion, args, is_train=False)
+        
         temp_lr = optimizer.param_groups[0]['lr'] if args.opt_type == "normal" else optimizer._rate
-        print("Epoch {} done, Train Loss: {:.4f}, Train WER: {:.4f} Valid Loss: {:.4f} Valid WER: {:.4f} Current LR: {:4e}".format(epoch, train_loss, train_wer, valid_loss, valid_wer, temp_lr), flush=True)
+        if args.distributed:
+            average_number = torch.Tensor([train_loss, train_wer, valid_loss, valid_wer]).float().cuda(args.rank)
+            torch.distributed.all_reduce(average_number, op=ReduceOp.SUM)
+            train_loss, train_wer, valid_loss, valid_wer = (average_number / args.world_size).cpu().numpy()
+        if args.rank == 0:
+            print("Epoch {} done, Train Loss: {:.4f}, Train WER: {:.4f} Valid Loss: {:.4f} Valid WER: {:.4f} Current LR: {:4e}".format(epoch, train_loss, train_wer, valid_loss, valid_wer, temp_lr), flush=True)
+        
         if args.opt_type == 'normal':
             scheduler.step(valid_wer)
 
-        if epoch > args.save_epoch:
+        if epoch > args.save_epoch and args.rank == 0:
             output_file=args.exp_dir + '/model.' + str(epoch) + '.mdl'
             checkpoint = {'epoch': epoch, 'optimizer': optimizer.state_dict(),
                             'state_dict': model.state_dict()}
@@ -149,20 +184,22 @@ def main():
         if valid_wer < best_wer:
             best_wer = valid_wer
             best_epoch = epoch
-            output_file=args.exp_dir + '/best_model.mdl'
-            checkpoint = {'epoch': epoch, 'optimizer': optimizer.state_dict(),
-                            'state_dict': model.state_dict()}
-            torch.save(checkpoint, output_file)
+            if args.rank == 0:
+                output_file=args.exp_dir + '/best_model.mdl'
+                checkpoint = {'epoch': epoch, 'optimizer': optimizer.state_dict(),
+                                'state_dict': model.state_dict()}
+                torch.save(checkpoint, output_file)
         
         if epoch - best_epoch > early_stop_patience:
-            print("Early stop since valid_wer doesn't decrease")
+            if args.rank == 0:
+                print("Early stop since valid_wer doesn't decrease")
             break
 
 def subsequent_mask(size):
     ret = torch.ones(size, size, dtype=torch.uint8)
     return torch.tril(ret, out=ret).unsqueeze(0)
 
-def run_epoch(epoch, dataloader, model, criterion_ctc, criterion_att, args, optimizer=None, is_train=True):
+def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_train=True):
     batch_time = util.AverageMeter('Time', ':6.3f')
     losses = util.AverageMeter('Loss', ':.4e')
     ctc_losses = util.AverageMeter('CtcLoss', ":.4e")
@@ -193,10 +230,10 @@ def run_epoch(epoch, dataloader, model, criterion_ctc, criterion_att, args, opti
         bs, max_feat_size, _ = enc_h.size()
 
         # loss computation
-        att_loss = criterion_att(att_out.view(-1, att_out.size(-1)), tgt_label.view(-1))
+        att_loss = criterion[1](att_out.view(-1, att_out.size(-1)), tgt_label.view(-1))
         if args.ctc_alpha > 0:
             feat_sizes = (feat_sizes * max_feat_size).long()
-            ctc_loss = criterion_ctc(ctc_out.transpose(0,1), tgt_label, feat_sizes, label_sizes)
+            ctc_loss = criterion[0](ctc_out.transpose(0,1), tgt_label, feat_sizes, label_sizes)
             loss = args.ctc_alpha * ctc_loss + att_loss #(1 - args.ctc_alpha) * att_loss
         else:
             ctc_loss = torch.Tensor([0])
@@ -226,7 +263,7 @@ def run_epoch(epoch, dataloader, model, criterion_ctc, criterion_att, args, opti
         batch_time.update(time.time() - end)
         token_speed.update(tokens/(time.time()-start))
 
-        if i % args.print_freq == 0:
+        if i % args.print_freq == 0 and args.rank == 0:
             progress.print(i)
     return losses.avg, att_wers.avg
     

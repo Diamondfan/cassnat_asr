@@ -2,12 +2,13 @@
 # 2020 Ruchao Fan
 
 class Vocab(object):
-    def __init__(self, vocab_file):
+    def __init__(self, vocab_file, rank):
         self.vocab_file = vocab_file
         self.word2index = {"blank": 0, "sos": 1, "eos": 2, "unk": 3}
         self.index2word = {0: "blank", 1: "sos", 2: "eos", 3: "unk"}
         self.word2count = {}
         self.n_words = 4
+        self.rank = rank
         self.read_lang()
 
     def add_sentence(self, sentence):
@@ -24,7 +25,8 @@ class Vocab(object):
             self.word2count[word] += 1
 
     def read_lang(self):
-        print("Reading vocabulary from {}".format(self.vocab_file))
+        if self.rank == 0:
+            print("Reading vocabulary from {}".format(self.vocab_file))
         with open(self.vocab_file, 'r') as rf:
             line = rf.readline()
             while line:
@@ -35,6 +37,7 @@ class Vocab(object):
                     sentence = line[0]
                 self.add_sentence(sentence)
                 line = rf.readline()
-        print("Vocabulary size is {}".format(self.n_words))
+        if self.rank == 0:
+            print("Vocabulary size is {}".format(self.n_words))
 
 
