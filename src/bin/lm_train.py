@@ -15,12 +15,10 @@ from torch.distributed import ReduceOp
 
 sys.path.append(os.environ['E2EASR']+'/src')
 import utils.util as util
-from utils.wer import ctc_greedy_wer, att_greedy_wer
 from data.vocab import Vocab
 from utils.optimizer import get_opt
-from models.transformer import make_model
-from utils.loss import LabelSmoothing
-from data.speech_loader import SpeechDataset, SpeechDataLoader
+from models.lm import make_model
+from data.text_loader import TextDataset, TextDataLoader
 
 class Config():
     name = 'config'
@@ -31,7 +29,6 @@ def main():
     parser.add_argument("--exp_dir")
     parser.add_argument("--train_config")
     parser.add_argument("--data_config")
-    parser.add_argument("--use_cmvn", default=False, action='store_true', help="Use cmvn or not")
     parser.add_argument("--batch_size", default=32, type=int, help="Training minibatch size")
     parser.add_argument("--epochs", default=30, type=int, help="Number of training epochs")
     parser.add_argument("--save_epoch", default=20, type=int, help="Starting to save the model")
@@ -42,9 +39,7 @@ def main():
     parser.add_argument("--opt_type", default='normal', type=str, help="Type of optimizer, normal or noam")
     parser.add_argument("--anneal_lr_ratio", default=0.5, type=float, help="Learning rate decay ratio, used when opt_type='normal'")
     parser.add_argument("--weight_decay", default=0.00001, type=float, help="Weight decay in optimizer")
-    parser.add_argument("--label_smooth", default=0.1, type=float, help="Label smoothing for CE loss")
     parser.add_argument("--load_data_workers", default=1, type=int, help="Number of parallel data loaders")
-    parser.add_argument("--ctc_alpha", default=0, type=float, help="Task ratio of CTC")
     parser.add_argument("--resume_model", default='', type=str, help="The model path to resume")
     parser.add_argument("--print_freq", default=100, type=int, help="Number of iter to print")
     parser.add_argument("--seed", default=1, type=int, help="Random number seed")
@@ -58,7 +53,6 @@ def main():
         data = yaml.safe_load(f)
         config['train_paths'] = [j for i, j in data['train_data_path'].items()]
         config['dev_paths'] = [j for i, j in data['dev_data_path'].items()]
-        config['global_cmvn'] = data['global_cmvn']
         config['vocab_file'] = data['vocab_file']
 
     for key, val in config.items():
@@ -94,9 +88,8 @@ def main_worker(rank, world_size, args, backend='nccl'):
 
     vocab = Vocab(args.vocab_file, args.rank)
     args.vocab_size = vocab.n_words
-    assert args.input_size == (args.left_ctx + args.right_ctx + 1) // args.skip_frame * args.n_features
-    model = make_model(args.input_size, args)
-    optimizer = get_opt(args.opt_type, model, args) 
+    model = make_model(args)
+    optimizer = get_opt(args.opt_type, model, args)
     
     if args.resume_model:
         if rank == 0:
@@ -125,28 +118,22 @@ def main_worker(rank, world_size, args, backend='nccl'):
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.rank])
     
     ## 3. Define vocabulary and data loader
-    trainset = SpeechDataset(vocab, args.train_paths, args)
-    if args.use_cmvn:
-        trainset._load_cmvn(args.global_cmvn)
-    train_loader = SpeechDataLoader(trainset, args.batch_size, args.padding_idx, num_workers=args.load_data_workers, 
+    trainset = TextDataset(vocab, args.train_paths, args)
+    train_loader = TextDataLoader(trainset, args.batch_size, args.padding_idx, num_workers=args.load_data_workers, 
                                        distributed=args.distributed, shuffle=True)
     if args.rank == 0:
         print("Finish Loading training files. Number batches: {}".format(len(train_loader)))
 
-    validset = SpeechDataset(vocab, args.dev_paths, args)
-    if args.use_cmvn:
-        validset._load_cmvn(args.global_cmvn)
-    valid_loader = SpeechDataLoader(validset, args.batch_size, args.padding_idx, num_workers=args.load_data_workers, 
+    validset = TextDataset(vocab, args.dev_paths, args)
+    valid_loader = TextDataLoader(validset, args.batch_size, args.padding_idx, num_workers=args.load_data_workers, 
                                         distributed=False, shuffle=False)
     if args.rank == 0:
         print("Finish Loading dev files. Number batches: {}".format(len(valid_loader)))
     
-    criterion_ctc = torch.nn.CTCLoss(reduction='mean')
-    criterion_att = LabelSmoothing(args.vocab_size, args.padding_idx, args.label_smooth)
-    criterion = (criterion_ctc, criterion_att)
+    criterion = torch.nn.CrossEntropyLoss(ignore_index=args.padding_idx, reduction='mean')
     
     ## 4. Start training iteratively
-    best_wer = 100
+    best_loss = 100
     # This is used for noam early stop
     early_stop_patience = args.end_patience
     best_epoch = 0
@@ -159,21 +146,21 @@ def main_worker(rank, world_size, args, backend='nccl'):
         if args.distributed:
             train_loader.set_epoch(epoch)
         model.train()
-        train_loss, train_wer = run_epoch(epoch, train_loader, model, criterion, args, optimizer, is_train=True)
+        train_loss = run_epoch(epoch, train_loader, model, criterion, args, optimizer, is_train=True)
         model.eval()
         with torch.no_grad():
-            valid_loss, valid_wer = run_epoch(epoch, valid_loader, model, criterion, args, is_train=False)
+            valid_loss  = run_epoch(epoch, valid_loader, model, criterion, args, is_train=False)
         
-        temp_lr = optimizer.param_groups[0]['lr'] if args.opt_type == "normal" else optimizer.optimizer.param_groups[0]['lr']
+        temp_lr = optimizer.param_groups[0]['lr'] if args.opt_type == 'normal' else optimizer.optimizer.param_groups[0]['lr']
         if args.distributed:
-            average_number = torch.Tensor([train_loss, train_wer, valid_loss, valid_wer]).float().cuda(args.rank)
+            average_number = torch.Tensor([train_loss, valid_loss]).float().cuda(args.rank)
             torch.distributed.all_reduce(average_number, op=ReduceOp.SUM)
-            train_loss, train_wer, valid_loss, valid_wer = (average_number / args.world_size).cpu().numpy()
+            train_loss, valid_loss = (average_number / args.world_size).cpu().numpy()
         if args.rank == 0:
-            print("Epoch {} done, Train Loss: {:.4f}, Train WER: {:.4f} Valid Loss: {:.4f} Valid WER: {:.4f} Current LR: {:4e}".format(epoch, train_loss, train_wer, valid_loss, valid_wer, temp_lr), flush=True)
+            print("Epoch {} done, Train Loss: {:.4f}, Valid Loss: {:.4f} Current LR: {:4e}".format(epoch, train_loss, valid_loss, temp_lr), flush=True)
         
         if args.opt_type == 'normal':
-            scheduler.step(valid_wer)
+            scheduler.step(valid_loss)
 
         if epoch > args.save_epoch and args.rank == 0:
             output_file=args.exp_dir + '/model.' + str(epoch) + '.mdl'
@@ -181,8 +168,8 @@ def main_worker(rank, world_size, args, backend='nccl'):
                             'state_dict': model.state_dict()}
             torch.save(checkpoint, output_file)
         
-        if valid_wer < best_wer:
-            best_wer = valid_wer
+        if valid_loss < best_loss:
+            best_loss = valid_loss
             best_epoch = epoch
             if args.rank == 0:
                 output_file=args.exp_dir + '/best_model.mdl'
@@ -202,56 +189,28 @@ def subsequent_mask(size):
 def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_train=True):
     batch_time = util.AverageMeter('Time', ':6.3f')
     losses = util.AverageMeter('Loss', ':.4e')
-    ctc_losses = util.AverageMeter('CtcLoss', ":.4e")
-    att_losses = util.AverageMeter('AttLoss', ":.4e")
-    ctc_wers = util.AverageMeter('CtcWer', ':.4f')
-    att_wers = util.AverageMeter('AttWer', ':.4f')
     token_speed = util.AverageMeter('TokenSpeed', ":.2f")
-    progress = util.ProgressMeter(len(dataloader), batch_time, losses, ctc_losses, att_losses, ctc_wers, att_wers, token_speed, prefix="Epoch: [{}]".format(epoch))
+    progress = util.ProgressMeter(len(dataloader), batch_time, losses, token_speed, prefix="Epoch: [{}]".format(epoch))
     
     end = time.time()
     
     for i, data in enumerate(dataloader):
         start = time.time()
-        utt_list, feats, labels, feat_sizes, label_sizes = data
-        src, src_mask = feats, (feats[:,:,0] != args.padding_idx).unsqueeze(1)
-        tgt, tgt_label = labels[:,:-1], labels[:,1:]
-        tgt_mask = (tgt != args.padding_idx).unsqueeze(1) 
+        text, text_sizes = data
+        tgt, tgt_label = text[:,:-1], text[:,1:]
+        tgt_mask = (tgt != args.padding_idx).unsqueeze(1)
         tgt_mask = tgt_mask & subsequent_mask(tgt.size(-1)).type_as(tgt_mask)
         tokens = (tgt_label != args.padding_idx).sum().item()
         
         if args.use_gpu:
-            src, src_mask, tgt, tgt_mask = src.cuda(), src_mask.cuda(), tgt.cuda(), tgt_mask.cuda()
+            tgt, tgt_mask = tgt.cuda(), tgt_mask.cuda()
             tgt_label = tgt_label.cuda()
-            feat_sizes = feat_sizes.cuda()
-            label_sizes = label_sizes.cuda()
         
-        ctc_out, att_out, enc_h = model(src, tgt, src_mask, tgt_mask, args.ctc_alpha)
-        bs, max_feat_size, _ = enc_h.size()
-
+        lm_out = model(tgt, tgt_mask)
         # loss computation
-        att_loss = criterion[1](att_out.view(-1, att_out.size(-1)), tgt_label.view(-1))
-        if args.ctc_alpha > 0:
-            feat_sizes = (feat_sizes * max_feat_size).long()
-            ctc_loss = criterion[0](ctc_out.transpose(0,1), tgt_label, feat_sizes, label_sizes)
-            loss = args.ctc_alpha * ctc_loss + att_loss #(1 - args.ctc_alpha) * att_loss
-        else:
-            ctc_loss = torch.Tensor([0])
-            loss = att_loss
-
-        # unit error rate computation
-        if args.ctc_alpha > 0:
-            ctc_errs, all_tokens = ctc_greedy_wer(ctc_out, tgt_label.cpu().numpy(), feat_sizes.cpu().numpy(), args.padding_idx)
-        else:
-            ctc_errs, all_tokens = 1, 1
-        ctc_wers.update(ctc_errs/all_tokens, all_tokens)
-        att_errs, all_tokens = att_greedy_wer(att_out, tgt_label.cpu().numpy(), args.padding_idx)
-        att_wers.update(att_errs/all_tokens, all_tokens)
-        
+        loss = criterion(lm_out.view(-1, lm_out.size(-1)), tgt_label.view(-1))
         losses.update(loss.item(), tokens)
-        ctc_losses.update(ctc_loss.item(), tokens)
-        att_losses.update(att_loss.item(), tokens)
-                
+
         if is_train:
             loss = loss / args.accum_grad
             loss.backward()
@@ -265,7 +224,7 @@ def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_trai
 
         if i % args.print_freq == 0 and args.rank == 0:
             progress.print(i)
-    return losses.avg, att_wers.avg
+    return losses.avg
     
 if __name__ == '__main__':
     main()

@@ -1,0 +1,20 @@
+#model configuration
+N: 12
+d_model: 512
+d_ff: 2048
+n_head: 8
+dropout: 0
+vocab_size: 4990
+max_len: 60
+
+noam_factor: 10.0
+noam_warmup: 25000
+
+cosine_total: 100000
+cosine_warmup: 1000
+padding_idx: 0
+accum_grad: 1
+grad_clip: 1.0
+
+use_gpu: True
+

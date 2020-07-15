@@ -227,12 +227,12 @@ class LaceNat(nn.Module):
         tgt_mask1 = torch.full((bs, ymax), 1).type_as(src_mask)
         tgt_mask1 = tgt_mask1.scatter(1, ylen.unsqueeze(1)-1, 0).cumprod(1)
         tgt_mask1 = tgt_mask1.scatter(1, ylen.unsqueeze(1)-1, 1).unsqueeze(1)
-        tgt_mask2 = tgt_mask1 & self.subsequent_mask(ymax).type_as(tgt_mask1) # uni-direc
+        #tgt_mask2 = tgt_mask1 & self.subsequent_mask(ymax).type_as(tgt_mask1) # uni-direc
         
         # 3. acoustic language model
         pe = self.pe.type_as(src).unsqueeze(0).repeat(bs, 1, 1)[:,:ymax,:]
         acouh = self.acoustic_extractor(pe, enc_h, trigger_mask[:,1:,:])   # sos + n_unit
-        acouh_gen = self.acoustic_lm(acouh, tgt_mask2)
+        acouh_gen = self.acoustic_lm(acouh, tgt_mask1)
         
         # 4. decoder, output units generation
         dec_h = self.decoder(acouh_gen, tgt_mask1)

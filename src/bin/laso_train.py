@@ -76,7 +76,7 @@ def main():
     args.vocab_size = vocab.n_words
     assert args.input_size == (args.left_ctx + args.right_ctx + 1) // args.skip_frame * args.n_features
     model = make_model(args.input_size, args)
-    optimizer = get_opt(args.opt_type, model, args.learning_rate, args.d_model, args.noam_factor, args.noam_warmup, args.weight_decay)   
+    optimizer = get_opt(args.opt_type, model, args)   
     
     if args.resume_model:
         print("Loading model from {}".format(args.resume_model))
@@ -134,7 +134,7 @@ def main():
         with torch.no_grad():
             valid_loss, valid_wer = run_epoch(epoch, valid_loader, model, criterion_ctc, criterion_att, args, is_train=False)
 
-        temp_lr = optimizer.param_groups[0]['lr'] if args.opt_type == "normal" else optimizer._rate
+        temp_lr = optimizer.param_groups[0]['lr'] if args.opt_type == "normal" else optimizer.optimizer.param_groups[0]['lr']
         print("Epoch {} done, Train Loss: {:.4f}, Train WER: {:.4f} Valid Loss: {:.4f} Valid WER: {:.4f} Current LR: {:4e}".format(epoch, train_loss, train_wer, valid_loss, valid_wer, temp_lr), flush=True)
         if args.opt_type == 'normal':
             scheduler.step(valid_wer)

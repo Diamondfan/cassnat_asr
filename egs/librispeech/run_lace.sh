@@ -2,8 +2,8 @@
 . cmd.sh
 . path.sh
 
-stage=1
-end_stage=1
+stage=2
+end_stage=2
 
 if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
   exp=exp/1kh_small_lace_alm0_6bi_ctc1_att1/
@@ -36,7 +36,7 @@ fi
 
 if [ $stage -le 2 ] && [ $end_stage -ge 2 ]; then
   #exp=exp/1kh_small_lace_quick/
-  exp=exp/1kh_small_lace_alm0_3uni_3bi/
+  exp=exp/1kh_small_lace_alm0_6bi_ctc1_att1
 
   bpemodel=data/dict/bpemodel_bpe_5000
   test_model=$exp/best_model.mdl
@@ -62,7 +62,7 @@ if [ $stage -le 2 ] && [ $end_stage -ge 2 ]; then
     utils/split_scp.pl data/$tset/feats.scp $split_scps || exit 1;
     
     $cmd JOB=1:$nj $desdir/log/decode.JOB.log \
-      CUDA_VISIBLE_DEVICES="0" lace_decode.py \
+      CUDA_VISIBLE_DEVICES="3" lace_decode.py \
         --test_config conf/decode.yaml \
         --data_path $desdir/feats.JOB.scp \
         --resume_model $test_model \

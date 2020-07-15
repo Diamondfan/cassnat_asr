@@ -29,6 +29,7 @@ fi
 
 train_set="train_clean_100 train_clean_360 train_other_500"
 test_set="dev_clean test_clean dev_other test_other"
+dev_set="dev_clean dev_other"
 if [ $stage -le 2 ] && [ $end_stage -ge 2 ]; then
     
   for part in $train_set; do
@@ -79,42 +80,80 @@ if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
 fi
 
 if [ $stage -le 4 ] && [ $end_stage -ge 4 ]; then
-  # [Todo]: External LM training
+  echo "stage 4: LM Preparation"
+  lmdir=data/lm_train
+  if [ ! -d $lmdir ]; then
+    mkdir -p $lmdir
+  fi
+  # use external data
+  cat data/train_text | gzip -c > $lmdir/train_text.gz
+  # combine external text and transcriptions and shuffle them with seed 777
+  zcat $lm_data/librispeech-lm-norm.txt.gz $lmdir/train_text.gz |\
+        spm_encode --model=${bpemodel}.model --output_format=piece > $lmdir/train.txt
+  
+  ( for f in $dev_set; do cat data/$f/text; done ) | sort -k1 | cut -f 2- -d" " |\
+        spm_encode --model=${bpemodel}.model --output_format=piece > $lmdir/valid.txt
 
-  echo "[Stage 4] External LM Training Finished."
+  echo "[Stage 4] LM Preparation Finished."
 fi
 
 if [ $stage -le 5 ] && [ $end_stage -ge 5 ]; then
-  exp=exp/1kh_small_lda1_att1_schdler_acumgrad4/
+  exp=exp/libri_tflm_wp_4card_cosineanneal_ep10/
+  if [ ! -d $exp ]; then
+    mkdir -p $exp
+  fi
+  
+  CUDA_VISIBLE_DEVICES="0,1,2,3" lm_train.py \
+    --exp_dir $exp \
+    --train_config conf/lm.yaml \
+    --data_config conf/lm_data.yaml \
+    --batch_size 32 \
+    --epochs 10 \
+    --save_epoch 3 \
+    --anneal_lr_ratio 0.5 \
+    --learning_rate 0.0001 \
+    --min_lr 0.00001 \
+    --patience 1 \
+    --end_patience 5 \
+    --opt_type "cosine" \
+    --weight_decay 0 \
+    --print_freq 200 > $exp/train.log 2>&1 &
+ 
+  echo "[Stage 5] External LM Training Finished."
+fi
+
+if [ $stage -le 6 ] && [ $end_stage -ge 6 ]; then
+  exp=exp/1kh_small_lda03_att07_noam_acum2_gc5/
   #exp=exp/1kh_big_drp01_l0r2_lda03_ls01_adam_lr2e-4_dc10_nd4/
 
   if [ ! -d $exp ]; then
     mkdir -p $exp
   fi
 
-  CUDA_VISIBLE_DEVICES="1" asr_train.py \
+  CUDA_VISIBLE_DEVICES="0" asr_train.py \
     --exp_dir $exp \
     --train_config conf/transformer.yaml \
     --data_config conf/data.yaml \
     --batch_size 32 \
     --epochs 100 \
-    --save_epoch 20 \
+    --save_epoch 50 \
     --anneal_lr_ratio 0.5 \
     --learning_rate 0.0002 \
     --min_lr 0.00001 \
-    --patience 2 \
-    --opt_type "normal" \
+    --patience 1 \
+    --end_patience 80 \
+    --opt_type "noam" \
     --weight_decay 0 \
     --label_smooth 0.1 \
-    --ctc_alpha 1 \
+    --ctc_alpha 0.3 \
     --print_freq 200 > $exp/train.log 2>&1 &
     
-  echo "[Stage 5] ASR Training Finished."
+  echo "[Stage 6] ASR Training Finished."
 fi
 
-if [ $stage -le 6 ] && [ $end_stage -ge 6 ]; then
-  exp=exp/1kh_small_drp01_l0r2_lda01_ls01_adam
-  #exp=exp/1kh_big_drp01_l0r2_lda03_ls01_adam_lr2e-4_dc10_nd4/
+if [ $stage -le 7 ] && [ $end_stage -ge 7 ]; then
+  #exp=exp/1kh_small_drp01_l0r2_lda01_ls01_adam
+  exp=exp/1kh_small_lda1_att1_schdler_acum2_gc5/
   
   test_model=$exp/best_model.mdl
   decode_type='ctc_att'
@@ -162,7 +201,7 @@ if [ $stage -le 6 ] && [ $end_stage -ge 6 ]; then
             sed -e "s/(/ (/g" > $desdir/ref.wrd.trn
     sclite -r $desdir/ref.wrd.trn -h $desdir/hyp.wrd.trn -i rm -o all stdout > $desdir/result.wrd.txt
   done
-  echo "[Stage 6] Decoding Finished."
+  echo "[Stage 7] Decoding Finished."
 fi
 
 

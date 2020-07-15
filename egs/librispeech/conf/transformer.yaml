@@ -13,7 +13,7 @@ left_ctx: 0
 right_ctx: 2
 skip_frame: 1
 
-noam_factor: 5.0
+noam_factor: 10.0
 noam_warmup: 25000
 padding_idx: 0
 accum_grad: 2
