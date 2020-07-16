@@ -59,13 +59,18 @@ def main():
 
     vocab = Vocab(args.vocab_file)
     args.vocab_size = vocab.n_words
+    args.rank = 0
     assert args.input_size == (args.left_ctx + args.right_ctx + 1) // args.skip_frame * args.n_features
     model = make_model(args.input_size, args)
 
     if args.resume_model:
         print("Loading model from {}".format(args.resume_model))
         checkpoint = torch.load(args.resume_model, map_location='cpu')
-        model.load_state_dict(checkpoint["state_dict"])
+        model_state = checkpoint["state_dict"]
+        for name, param in model.named_parameters():
+            if name not in model_state:
+                name = "module." + name
+            param.data.copy_(model_state[name])
         start_epoch = checkpoint['epoch']+1
 
     num_params = 0
@@ -76,7 +81,7 @@ def main():
     if use_cuda:
         model = model.cuda()
 
-    testset = SpeechDataset(vocab, args.test_paths, args.left_ctx, args.right_ctx, args.skip_frame)
+    testset = SpeechDataset(vocab, args.test_paths, args)
     if args.use_cmvn:
         testset._load_cmvn(args.global_cmvn)
     test_loader = SpeechDataLoader(testset, args.batch_size, args.padding_idx, num_workers=args.load_data_workers, shuffle=False)

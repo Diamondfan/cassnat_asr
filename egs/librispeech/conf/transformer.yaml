@@ -15,8 +15,11 @@ skip_frame: 1
 
 noam_factor: 10.0
 noam_warmup: 25000
+
+cosine_total: 100000
+cosine_warmup: 1000
 padding_idx: 0
-accum_grad: 2
+accum_grad: 4
 grad_clip: 5
 
 use_gpu: True

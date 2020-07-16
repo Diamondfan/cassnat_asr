@@ -146,10 +146,10 @@ def main_worker(rank, world_size, args, backend='nccl'):
         if args.distributed:
             train_loader.set_epoch(epoch)
         model.train()
-        train_loss = run_epoch(epoch, train_loader, model, criterion, args, optimizer, is_train=True)
+        train_loss, train_acc = run_epoch(epoch, train_loader, model, criterion, args, optimizer, is_train=True)
         model.eval()
         with torch.no_grad():
-            valid_loss  = run_epoch(epoch, valid_loader, model, criterion, args, is_train=False)
+            valid_loss, valid_acc  = run_epoch(epoch, valid_loader, model, criterion, args, is_train=False)
         
         temp_lr = optimizer.param_groups[0]['lr'] if args.opt_type == 'normal' else optimizer.optimizer.param_groups[0]['lr']
         if args.distributed:
@@ -157,7 +157,7 @@ def main_worker(rank, world_size, args, backend='nccl'):
             torch.distributed.all_reduce(average_number, op=ReduceOp.SUM)
             train_loss, valid_loss = (average_number / args.world_size).cpu().numpy()
         if args.rank == 0:
-            print("Epoch {} done, Train Loss: {:.4f}, Valid Loss: {:.4f} Current LR: {:4e}".format(epoch, train_loss, valid_loss, temp_lr), flush=True)
+            print("Epoch {} done, Train Loss: {:.4f}, Train Acc: {:.4f}, Valid Loss: {:.4f}, Valid Acc: {:.4f}, Current LR: {:4e}".format(epoch, train_loss, train_acc, valid_loss, valid_acc, temp_lr), flush=True)
         
         if args.opt_type == 'normal':
             scheduler.step(valid_loss)
@@ -189,8 +189,9 @@ def subsequent_mask(size):
 def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_train=True):
     batch_time = util.AverageMeter('Time', ':6.3f')
     losses = util.AverageMeter('Loss', ':.4e')
+    accs = util.AverageMeter('Acc', ':.4f')
     token_speed = util.AverageMeter('TokenSpeed', ":.2f")
-    progress = util.ProgressMeter(len(dataloader), batch_time, losses, token_speed, prefix="Epoch: [{}]".format(epoch))
+    progress = util.ProgressMeter(len(dataloader), batch_time, losses, accs, token_speed, prefix="Epoch: [{}]".format(epoch))
     
     end = time.time()
     
@@ -199,14 +200,19 @@ def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_trai
         text, text_sizes = data
         tgt, tgt_label = text[:,:-1], text[:,1:]
         tgt_mask = (tgt != args.padding_idx).unsqueeze(1)
-        tgt_mask = tgt_mask & subsequent_mask(tgt.size(-1)).type_as(tgt_mask)
+        tgt_mask_tril = tgt_mask & subsequent_mask(tgt.size(-1)).type_as(tgt_mask)
         tokens = (tgt_label != args.padding_idx).sum().item()
         
         if args.use_gpu:
             tgt, tgt_mask = tgt.cuda(), tgt_mask.cuda()
+            tgt_mask_tril = tgt_mask_tril.cuda()
             tgt_label = tgt_label.cuda()
         
-        lm_out = model(tgt, tgt_mask)
+        lm_out = model(tgt, tgt_mask_tril)
+        lm_pred = torch.max(lm_out, -1)[1]
+        acc = ((lm_pred == tgt_label).masked_fill(tgt_mask.squeeze(1)==0, 0).sum().item()) / tokens
+        accs.update(acc, tokens)
+
         # loss computation
         loss = criterion(lm_out.view(-1, lm_out.size(-1)), tgt_label.view(-1))
         losses.update(loss.item(), tokens)
@@ -224,7 +230,7 @@ def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_trai
 
         if i % args.print_freq == 0 and args.rank == 0:
             progress.print(i)
-    return losses.avg
+    return losses.avg, accs.avg
     
 if __name__ == '__main__':
     main()

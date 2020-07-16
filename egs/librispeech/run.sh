@@ -3,8 +3,8 @@
 # 2020 (Ruchao Fan)
 
 # The data are already downloaded in the corresponding dir
-data=/home/ruchao/Database/LibriSpeech/
-lm_data=/home/ruchao/Database/LibriSpeech/libri_lm
+data=/NAS5/speech/user/ruchao/Database/LibriSpeech/
+lm_data=/NAS5/speech/user/ruchao/Database/LibriSpeech/libri_lm
 
 stage=5
 end_stage=5
@@ -12,7 +12,7 @@ featdir=data/fbank
 
 unit=wp
 nbpe=5000
-bpemode=bpe #bpe or unigram
+bpemode=unigram #bpe or unigram
 
 . ./cmd.sh
 . ./path.sh
@@ -35,7 +35,7 @@ if [ $stage -le 2 ] && [ $end_stage -ge 2 ]; then
   for part in $train_set; do
     steps/make_fbank.sh --nj 32 --cmd $cmd --write_utt2num_frames true \
       data/$part exp/make_fbank/$part $featdir/$part
-    cat data/$part/feats.scp >> data/train_feats.scp
+    #cat data/$part/feats.scp >> data/train_feats.scp
   done
   
   #compute global cmvn with training data
@@ -98,7 +98,7 @@ if [ $stage -le 4 ] && [ $end_stage -ge 4 ]; then
 fi
 
 if [ $stage -le 5 ] && [ $end_stage -ge 5 ]; then
-  exp=exp/libri_tflm_wp_4card_cosineanneal_ep10/
+  exp=exp/libri_tflm_unigram_4card_cosineanneal_ep10/
   if [ ! -d $exp ]; then
     mkdir -p $exp
   fi
@@ -107,7 +107,7 @@ if [ $stage -le 5 ] && [ $end_stage -ge 5 ]; then
     --exp_dir $exp \
     --train_config conf/lm.yaml \
     --data_config conf/lm_data.yaml \
-    --batch_size 32 \
+    --batch_size 64 \
     --epochs 10 \
     --save_epoch 3 \
     --anneal_lr_ratio 0.5 \
@@ -123,43 +123,41 @@ if [ $stage -le 5 ] && [ $end_stage -ge 5 ]; then
 fi
 
 if [ $stage -le 6 ] && [ $end_stage -ge 6 ]; then
-  exp=exp/1kh_small_lda03_att07_noam_acum2_gc5/
-  #exp=exp/1kh_big_drp01_l0r2_lda03_ls01_adam_lr2e-4_dc10_nd4/
+  exp=exp/1kh_small_unigram_4card_ctc1_att1_noam_accum4_gc5/
 
   if [ ! -d $exp ]; then
     mkdir -p $exp
   fi
 
-  CUDA_VISIBLE_DEVICES="0" asr_train.py \
+  CUDA_VISIBLE_DEVICES="0,1,2,3" asr_train.py \
     --exp_dir $exp \
     --train_config conf/transformer.yaml \
     --data_config conf/data.yaml \
     --batch_size 32 \
     --epochs 100 \
-    --save_epoch 50 \
+    --save_epoch 40 \
     --anneal_lr_ratio 0.5 \
     --learning_rate 0.0002 \
     --min_lr 0.00001 \
     --patience 1 \
-    --end_patience 80 \
+    --end_patience 15 \
     --opt_type "noam" \
     --weight_decay 0 \
     --label_smooth 0.1 \
-    --ctc_alpha 0.3 \
-    --print_freq 200 > $exp/train.log 2>&1 &
+    --ctc_alpha 1 \
+    --print_freq 50 > $exp/train.log 2>&1 &
     
   echo "[Stage 6] ASR Training Finished."
 fi
 
 if [ $stage -le 7 ] && [ $end_stage -ge 7 ]; then
-  #exp=exp/1kh_small_drp01_l0r2_lda01_ls01_adam
-  exp=exp/1kh_small_lda1_att1_schdler_acum2_gc5/
+  exp=exp/1kh_small_unigram_4card_ctc1_att1_schdler_accum1_gc5/
   
   test_model=$exp/best_model.mdl
-  decode_type='ctc_att'
-  beam1=5 # check beam1 and beam2 in conf/decode.yaml, att beam
-  beam2=20 # ctc beam
-  ctcwt=0.3
+  decode_type='ctc_only'
+  beam1=1 # check beam1 and beam2 in conf/decode.yaml, att beam
+  beam2=1 # ctc beam
+  ctcwt=0
   lp=0.2
   lmwt=0
   nj=4
@@ -178,7 +176,7 @@ if [ $stage -le 7 ] && [ $end_stage -ge 7 ]; then
     utils/split_scp.pl data/$tset/feats.scp $split_scps || exit 1;
     
     $cmd JOB=1:$nj $desdir/log/decode.JOB.log \
-      CUDA_VISIBLE_DEVICES="3" asr_decode.py \
+      CUDA_VISIBLE_DEVICES="4" asr_decode.py \
         --test_config conf/decode.yaml \
         --data_path $desdir/feats.JOB.scp \
         --resume_model $test_model \

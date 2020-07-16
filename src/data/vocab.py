@@ -2,7 +2,7 @@
 # 2020 Ruchao Fan
 
 class Vocab(object):
-    def __init__(self, vocab_file, rank):
+    def __init__(self, vocab_file, rank=0):
         self.vocab_file = vocab_file
         self.word2index = {"blank": 0, "sos": 1, "eos": 2, "unk": 3}
         self.index2word = {0: "blank", 1: "sos", 2: "eos", 3: "unk"}

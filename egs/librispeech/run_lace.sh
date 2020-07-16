@@ -6,28 +6,28 @@ stage=2
 end_stage=2
 
 if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
-  exp=exp/1kh_small_lace_alm0_6bi_ctc1_att1/
+  exp=exp/1kh_small_lace_ctc1_att1_schdler_accum2_gc5/
 
   if [ ! -d $exp ]; then
     mkdir -p $exp
   fi
 
-  CUDA_VISIBLE_DEVICES="0" lace_train.py \
+  CUDA_VISIBLE_DEVICES="7" lace_train.py \
     --exp_dir $exp \
     --train_config conf/transformer.yaml \
     --data_config conf/data.yaml \
     --batch_size 32 \
-    --epochs 30 \
-    --save_epoch 8 \
-    --anneal_lr_epoch 9 \
+    --epochs 100 \
+    --save_epoch 30 \
     --anneal_lr_ratio 0.5 \
-    --n_anneal 4 \
+    --patience 1 \
+    --end_patience 3 \
     --learning_rate 0.0002 \
+    --min_lr 0.00001 \
     --opt_type "normal" \
     --weight_decay 0 \
     --label_smooth 0.1 \
     --ctc_alpha 1 \
-    --alm_alpha 0 \
     --print_freq 200 > $exp/train.log 2>&1 &
     
   echo "[Stage 1] ASR Training Finished."

@@ -63,6 +63,27 @@ class NoamOpt(BaseOpt):
             "_rate": self._rate,
             "optimizer": self.optimizer.state_dict()}
 
+class NoamWarmOpt(BaseOpt):
+    "Optim wrapper that implements rate."
+    def __init__(self, warmup, optimizer):
+        super(NoamWarmOpt, self).__init__(warmup, optimizer)
+        
+    def rate(self, step = None):
+        "Implement `lrate` above"
+        if step is None:
+            step = self._step
+        return (self.warmup ** 0.5 *
+                 min(step ** (-0.5), step * self.warmup ** (-1.5)))
+
+    def state_dict(self):
+        """Return state_dict."""
+        return {
+            "_step": self._step,
+            "warmup": self.warmup,
+            "_rate": self._rate,
+            "optimizer": self.optimizer.state_dict()}
+
+
 class CosineOpt(BaseOpt):
     "Optim wrapper that implements rate."
     def __init__(self, total, warmup, optimizer):
@@ -93,6 +114,8 @@ def get_opt(opt_type, model, args):
         return opt
     elif opt_type == "cosine":
         return CosineOpt(args.cosine_total, args.cosine_warmup, opt)
+    elif opt_typpe == "noamwarm":
+        return NoamWarmOpt(args.noam_warmup, opt)
     else:
         raise NotImplementedError
                 

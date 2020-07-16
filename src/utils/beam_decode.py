@@ -32,8 +32,6 @@ def ctc_beam_decode(model, src, src_mask, src_size, vocab, args):
         best_hyps = []
         for b in range(bs):
             beam = batch_top_seqs[b]
-            #import pdb
-            #pdb.set_trace()
             top_probs, top_indices = torch.topk(ctc_out[b], pruning_size, dim=-1)
             
             for t in range(src_size[b].item()):
