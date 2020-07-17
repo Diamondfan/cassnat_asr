@@ -84,7 +84,7 @@ def main():
 def main_worker(rank, world_size, args, backend='nccl'):
     args.rank, args.world_size = rank, world_size
     if args.distributed:
-        dist.init_process_group(backend=backend, init_method='tcp://localhost:23456',
+        dist.init_process_group(backend=backend, init_method='tcp://localhost:21980',
                                     world_size=world_size, rank=rank)
 
     ## 2. Define model and optimizer

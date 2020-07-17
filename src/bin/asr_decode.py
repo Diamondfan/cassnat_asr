@@ -28,6 +28,7 @@ def main():
     parser.add_argument("--test_config")
     parser.add_argument("--data_path")
     parser.add_argument("--use_cmvn", default=False, action='store_true', help="Use global cmvn or not")
+    parsed.add_argument("--global_cmvn", type=str, help="Cmvn file to load")
     parser.add_argument("--batch_size", default=32, type=int, help="Training minibatch size")
     parser.add_argument("--load_data_workers", default=1, type=int, help="Number of parallel data loaders")
     parser.add_argument("--resume_model", default='', type=str, help="Model to do evaluation")

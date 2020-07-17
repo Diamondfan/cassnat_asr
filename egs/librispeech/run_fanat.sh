@@ -2,19 +2,19 @@
 . cmd.sh
 . path.sh
 
-stage=2
-end_stage=2
+stage=1
+end_stage=1
 
 if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
-  exp=exp/1kh_small_lace_ctc1_att1_schdler_accum2_gc5/
+  exp=exp/1kh_small_fanat_unigram_4card/
 
   if [ ! -d $exp ]; then
     mkdir -p $exp
   fi
 
-  CUDA_VISIBLE_DEVICES="7" lace_train.py \
+  CUDA_VISIBLE_DEVICES="4" fanat_train.py \
     --exp_dir $exp \
-    --train_config conf/transformer.yaml \
+    --train_config conf/fanat_train.yaml \
     --data_config conf/data.yaml \
     --batch_size 32 \
     --epochs 100 \
@@ -28,8 +28,9 @@ if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
     --weight_decay 0 \
     --label_smooth 0.1 \
     --ctc_alpha 1 \
+    --embed_alpha 0 \
     --use_cmvn \
-    --print_freq 200 > $exp/train.log 2>&1 &
+    --print_freq 200 #> $exp/train.log 2>&1 &
     
   echo "[Stage 1] ASR Training Finished."
 fi
@@ -39,7 +40,6 @@ if [ $stage -le 2 ] && [ $end_stage -ge 2 ]; then
   exp=exp/1kh_small_lace_ctc1_att1_schdler_accum2_gc5/
 
   bpemodel=data/dict/bpemodel_bpe_5000
-  global_cmvn=data/fbank/cmvn.ark
   test_model=$exp/best_model.mdl
   decode_type='att_only'
   beam1=0 # check beam1 and beam2 in conf/decode.yaml, att beam
@@ -75,8 +75,6 @@ if [ $stage -le 2 ] && [ $end_stage -ge 2 ]; then
         --rnnlm None \
         --lm_weight $lmwt \
         --max_decode_ratio 0 \
-        --use_cmvn \
-        --global_cmvn $global_cmvn \
         --print_freq 20 
 
     cat $desdir/token_results.*.txt | sort -k1,1 > $desdir/token_results.txt

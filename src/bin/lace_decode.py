@@ -28,6 +28,7 @@ def main():
     parser.add_argument("--test_config")
     parser.add_argument("--data_path")
     parser.add_argument("--use_cmvn", default=False, action='store_true', help="Use global cmvn or not")
+    parsed.add_argument("--global_cmvn", type=str, help="Cmvn file to load")
     parser.add_argument("--batch_size", default=32, type=int, help="Training minibatch size")
     parser.add_argument("--load_data_workers", default=1, type=int, help="Number of parallel data loaders")
     parser.add_argument("--resume_model", default='', type=str, help="Model to do evaluation")
@@ -59,6 +60,7 @@ def main():
 
     vocab = Vocab(args.vocab_file)
     args.vocab_size = vocab.n_words
+    args.rank = 0
     assert args.input_size == (args.left_ctx + args.right_ctx + 1) // args.skip_frame * args.n_features
     model = make_model(args.input_size, args)
 
@@ -76,7 +78,7 @@ def main():
     if use_cuda:
         model = model.cuda()
 
-    testset = SpeechDataset(vocab, args.test_paths, args.left_ctx, args.right_ctx, args.skip_frame)
+    testset = SpeechDataset(vocab, args.test_paths, args)
     if args.use_cmvn:
         testset._load_cmvn(args.global_cmvn)
     test_loader = SpeechDataLoader(testset, args.batch_size, args.padding_idx, num_workers=args.load_data_workers, shuffle=False)

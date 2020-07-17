@@ -6,8 +6,8 @@
 data=/NAS5/speech/user/ruchao/Database/LibriSpeech/
 lm_data=/NAS5/speech/user/ruchao/Database/LibriSpeech/libri_lm
 
-stage=5
-end_stage=5
+stage=6
+end_stage=6
 featdir=data/fbank
 
 unit=wp
@@ -123,28 +123,29 @@ if [ $stage -le 5 ] && [ $end_stage -ge 5 ]; then
 fi
 
 if [ $stage -le 6 ] && [ $end_stage -ge 6 ]; then
-  exp=exp/1kh_small_unigram_4card_ctc1_att1_noam_accum4_gc5/
+  exp=exp/1kh_small_unigram_4card_ctc1_att1_scheduler_accum1_gc5/
 
   if [ ! -d $exp ]; then
     mkdir -p $exp
   fi
 
-  CUDA_VISIBLE_DEVICES="0,1,2,3" asr_train.py \
+  CUDA_VISIBLE_DEVICES="4,5,6,7" asr_train.py \
     --exp_dir $exp \
     --train_config conf/transformer.yaml \
     --data_config conf/data.yaml \
     --batch_size 32 \
     --epochs 100 \
-    --save_epoch 40 \
+    --save_epoch 30 \
     --anneal_lr_ratio 0.5 \
     --learning_rate 0.0002 \
     --min_lr 0.00001 \
     --patience 1 \
-    --end_patience 15 \
-    --opt_type "noam" \
+    --end_patience 3 \
+    --opt_type "normal" \
     --weight_decay 0 \
     --label_smooth 0.1 \
     --ctc_alpha 1 \
+    --use_cmvn \
     --print_freq 50 > $exp/train.log 2>&1 &
     
   echo "[Stage 6] ASR Training Finished."
@@ -154,9 +155,10 @@ if [ $stage -le 7 ] && [ $end_stage -ge 7 ]; then
   exp=exp/1kh_small_unigram_4card_ctc1_att1_schdler_accum1_gc5/
   
   test_model=$exp/best_model.mdl
-  decode_type='ctc_only'
-  beam1=1 # check beam1 and beam2 in conf/decode.yaml, att beam
-  beam2=1 # ctc beam
+  global_cmvn=data/fbank/cmvn.ark
+  decode_type='att_only'
+  beam1=5 # check beam1 and beam2 in conf/decode.yaml, att beam
+  beam2=0 # ctc beam
   ctcwt=0
   lp=0.2
   lmwt=0
@@ -187,6 +189,8 @@ if [ $stage -le 7 ] && [ $end_stage -ge 7 ]; then
         --rnnlm None \
         --lm_weight $lmwt \
         --max_decode_ratio 0 \
+        --use_cmvn \
+        --global_cmvn $global_cmvn \
         --print_freq 20 
     
     cat $desdir/token_results.*.txt | sort -k1,1 > $desdir/token_results.txt

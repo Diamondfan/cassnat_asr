@@ -1,7 +1,5 @@
 
 # 2020 Ruchao Fan
-# Some transformer-related codes are borrowed from 
-# https://nlp.seas.harvard.edu/2018/04/03/attention.html
 
 import copy
 import math
@@ -13,8 +11,8 @@ from itertools import groupby
 from models.modules.attention import MultiHeadedAttention
 from models.modules.positionff import PositionwiseFeedForward
 from models.modules.embedding import PositionalEncoding, ConvEmbedding, TextEmbedding
-from models.blocks.lace_nat_blocks import Encoder, Decoder, AcousticExtracter
-from utils.ctc_prefix import CTCPrefixScore, logzero, logone
+from models.blocks.fanat_blocks import Encoder, Decoder, AcEmbedExtractor, EmbedMapper
+from utils.ctc_prefix import logzero, logone
 
 def make_model(input_size, args):
     c = copy.deepcopy
@@ -24,12 +22,17 @@ def make_model(input_size, args):
     generator = Generator(args.d_model, args.vocab_size)
     pe = create_pe(args.d_model)
 
-    model = LaceNat(
+    if args.use_src:
+        decoder_use = Decoder(args.d_model, c(attn), c(attn), c(ff), args.dropout, args.N_dec)
+    else:
+        decoder_use = Encoder(args.d_model, c(attn), c(ff), args.dropout, args.N_dec)
+
+    model = FaNat(
         ConvEmbedding(input_size, args.d_model, args.dropout),
         Encoder(args.d_model, c(attn), c(ff), args.dropout, args.N_enc),
-        AcousticExtracter(args.d_model, c(attn), c(ff), args.dropout),
-        Encoder(args.d_model, c(attn), c(ff), args.dropout, 3),
-        Encoder(args.d_model, c(attn), c(ff), args.dropout, 3),
+        AcEmbedExtractor(args.d_model, c(attn), c(ff), args.dropout, args.N_extra),
+        EmbedMapper(args.d_model, c(attn), c(ff), args.dropout, args.N_map),
+        decoder_use,
         c(generator), c(generator), pe)
         
     
@@ -56,49 +59,62 @@ class Generator(nn.Module):
     def forward(self, x, T=1.0):
         return F.log_softmax(self.proj(x)/T, dim=-1)
 
-class LaceNat(nn.Module):
-    def __init__(self, src_embed, encoder, acoustic_extractor, acoustic_lm, decoder, ctc_gen, att_gen, pe):
-        super(LaceNat, self).__init__()
+class FaNat(nn.Module):
+    def __init__(self, src_embed, encoder, acembed_extractor, embed_mapper, decoder, ctc_gen, att_gen, pe):
+        super(FaNat, self).__init__()
         self.src_embed = src_embed
         self.encoder = encoder
-        self.acoustic_extractor = acoustic_extractor
-        self.acoustic_lm = acoustic_lm
+        self.acembed_extractor = acembed_extractor
+        self.embed_mapper = embed_mapper
         self.decoder = decoder
         self.ctc_generator = ctc_gen
         self.att_generator = att_gen
         self.pe = pe
 
-    def forward(self, src, src_mask, src_size, tgt_label, label_sizes, blank, alm_alpha):
+    def forward(self, src, src_mask, src_size, tgt_label, ylen, args, is_train=True, sos_embed=None):
         # 1. compute ctc output
         x, x_mask = self.src_embed(src, src_mask)
         enc_h = self.encoder(x, x_mask)
         ctc_out = self.ctc_generator(enc_h)
         
-        # 2. obtain segment point and mask for alm, decoder
-        src_size = (src_size * ctc_out.size(1)).long()
-        trigger_mask, ylen, ymax = self.viterbi_align(ctc_out, x_mask, src_size, tgt_label[:,:-1], label_sizes, blank)
-        trigger_mask = trigger_mask & x_mask
-        
+        # 2. prepare different masks,
+        if args.use_trigger:
+            src_size = (src_size * ctc_out.size(1)).long()
+            blank = args.padding_idx
+            if is_train:
+                trigger_mask, ylen, ymax = self.viterbi_align(ctc_out, x_mask, src_size, tgt_label[:,:-1], ylen, blank)
+            else:
+                trigger_mask, ylen, ymax = self.best_path_align(ctc_out, x_mask, src_size, blank)
+            trigger_mask = trigger_mask & x_mask
+            ext_mask = trigger_mask
+        else:
+            ext_mask = x_mask
+            ylen = ylen + 1
+            ymax = ylen.max().item()
+
         bs, _, d_model = enc_h.size()
         tgt_mask1 = torch.full((bs, ymax), 1).type_as(src_mask)
         tgt_mask1 = tgt_mask1.scatter(1, ylen.unsqueeze(1)-1, 0).cumprod(1)
         tgt_mask1 = tgt_mask1.scatter(1, ylen.unsqueeze(1)-1, 1).unsqueeze(1)
-        #tgt_mask2 = tgt_mask1 & self.subsequent_mask(ymax).type_as(tgt_mask1) # uni-direc
         
-        # 3. acoustic language model
-        if alm_alpha > 0:
-            pe = self.pe.type_as(src).unsqueeze(0).repeat(bs, 1, 1)[:,:ymax+1,:]
-            acouh = self.acoustic_extractor(pe, enc_h, trigger_mask)   # sos + n_unit + eos
-            acouh_gen = self.acoustic_lm(acouh[:,:-1,:], tgt_mask2)
-        else:
-            pe = self.pe.type_as(src).unsqueeze(0).repeat(bs, 1, 1)[:,:ymax,:]
-            acouh = self.acoustic_extractor(pe, enc_h, trigger_mask[:,1:,:])   # n_unit + eos
-            acouh_gen = self.acoustic_lm(acouh, tgt_mask1)
- 
+        # 3. Extract Acoustic embedding and Map it to Word embedding
+        pe = self.pe.type_as(src).unsqueeze(0).repeat(bs, 1, 1)[:,:ymax,:]
+        ac_embed = self.acembed_extractor(pe, enc_h, ext_mask)
+        pred_embed = self.embed_mapper(ac_embed, tgt_mask1)
+
         # 4. decoder, output units generation
-        dec_h = self.decoder(acouh_gen, tgt_mask1)
+        if args.use_unimask:
+            pred_embed = torch.cat([sos_embed, pred_embed[:,:-1,:]], dim=1)
+            tgt_mask = tgt_mask1 & self.subsequent_mask(ymax).type_as(tgt_mask1) # uni-direc
+        else:
+            tgt_mask = tgt_mask1
+
+        if args.use_src:
+            dec_h = self.decoder(pred_embed, enc_h, x_mask, tgt_mask)
+        else:
+            dec_h = self.decoder(pred_embed, tgt_mask)
         att_out = self.att_generator(dec_h)
-        return ctc_out, acouh[:,1:,:].contiguous(), acouh_gen, att_out
+        return ctc_out, att_out, pred_embed
 
     def viterbi_align(self, ctc_out, src_mask, src_size, ys, ylens, blank):
         """
@@ -165,13 +181,13 @@ class LaceNat(nn.Module):
         # 6. transcribe aliged_seq to trigger mask
         trigger_mask = (aligned_seq_shift != blank).cumsum(1).unsqueeze(1).repeat(1, ymax+1, 1)
         trigger_mask = trigger_mask == torch.arange(ymax+1).type_as(trigger_mask).unsqueeze(0).unsqueeze(2)
-        sos_mask = trigger_mask.new_zeros((bs,1, xmax))
-        sos_mask[:,:,0] = 1
-        trigger_mask[:,-1:,:].masked_fill_(src_mask==0, 0)
-        trigger_mask[:,-1,:].scatter_(1, src_size.unsqueeze(1)-1, 1)
-        trigger_mask = torch.cat([sos_mask, trigger_mask], 1)
+        #sos_mask = trigger_mask.new_zeros((bs,1, xmax))
+        #sos_mask[:,:,0] = 1
+        trigger_mask[:,-1:,:].masked_fill_(src_mask==0, 0)   # remove position with padding_idx
+        trigger_mask[:,-1,:].scatter_(1, src_size.unsqueeze(1)-1, 1) # give the last character one to keep at least one active position for eos
+        #trigger_mask = torch.cat([sos_mask, trigger_mask], 1)
         
-        ylen = ylens + 1  # +1 for <eos>
+        ylen = ylens + 1
         ymax += 1
         return trigger_mask, ylen, ymax
 
@@ -191,11 +207,11 @@ class LaceNat(nn.Module):
         ymax = torch.max(ylen).item()
         trigger_mask = (aligned_seq_shift != blank).cumsum(1).unsqueeze(1).repeat(1, ymax+1, 1)
         trigger_mask = trigger_mask == torch.arange(ymax+1).type_as(trigger_mask).unsqueeze(0).unsqueeze(2)
-        sos_mask = trigger_mask.new_zeros((bs,1, xmax))
-        sos_mask[:,:,0] = 1
+        #sos_mask = trigger_mask.new_zeros((bs,1, xmax))
+        #sos_mask[:,:,0] = 1
         trigger_mask[:,-1:,:].masked_fill_(src_mask==0, 0)
         trigger_mask[:,-1,:].scatter_(1, src_size.unsqueeze(1)-1, 1)
-        trigger_mask = torch.cat([sos_mask, trigger_mask], 1)
+        #trigger_mask = torch.cat([sos_mask, trigger_mask], 1)
         
         ylen = ylen + 1
         ymax += 1
@@ -229,11 +245,11 @@ class LaceNat(nn.Module):
 
         trigger_mask, ylen, ymax = self.best_path_align(ctc_out, src_mask, src_size, blank)
 
-        #shift_left = trigger_mask.clone()
-        #shift_right = trigger_mask.clone()
+        shift_left = trigger_mask.clone()
+        shift_right = trigger_mask.clone()
         #shift_left[:,:,:-1] = trigger_mask[:,:,1:]
-        #shift_right[:,:,1:] = trigger_mask[:,:,:-1]
-        #trigger_mask = shift_right | trigger_mask #shift_right | trigger_mask
+        shift_right[:,:,1:] = trigger_mask[:,:,:-1]
+        trigger_mask = shift_right | trigger_mask #shift_right | trigger_mask
         trigger_mask = trigger_mask & src_mask
         
         tgt_mask1 = torch.full((bs, ymax), 1).type_as(src_mask)

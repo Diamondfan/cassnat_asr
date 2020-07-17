@@ -18,7 +18,7 @@ import utils.util as util
 from utils.wer import ctc_greedy_wer, att_greedy_wer
 from data.vocab import Vocab
 from utils.optimizer import get_opt
-from models.lace_nat import make_model
+from models.fanat import make_model
 from utils.loss import LabelSmoothing
 from data.speech_loader import SpeechDataset, SpeechDataLoader
 
@@ -31,7 +31,7 @@ def main():
     parser.add_argument("--exp_dir")
     parser.add_argument("--train_config")
     parser.add_argument("--data_config")
-    parser.add_argument("--use_cmvn", default=True, action='store_true', help="Use cmvn or not")
+    parser.add_argument("--use_cmvn", default=False, action='store_true', help="Use cmvn or not")
     parser.add_argument("--batch_size", default=32, type=int, help="Training minibatch size")
     parser.add_argument("--epochs", default=30, type=int, help="Number of training epochs")
     parser.add_argument("--save_epoch", default=20, type=int, help="Starting to save the model")
@@ -45,7 +45,7 @@ def main():
     parser.add_argument("--label_smooth", default=0.1, type=float, help="Label smoothing for CE loss")
     parser.add_argument("--load_data_workers", default=2, type=int, help="Number of parallel data loaders")
     parser.add_argument("--ctc_alpha", default=0, type=float, help="Task ratio of CTC")
-    parser.add_argument("--alm_alpha", default=0, type=float, help="Task ratio of acoustic language model")
+    parser.add_argument("--embed_alpha", default=0, type=float, help="Task ratio of embedding prediction loss")
     parser.add_argument("--resume_model", default='', type=str, help="The model path to resume")
     parser.add_argument("--print_freq", default=100, type=int, help="Number of iter to print")
     parser.add_argument("--seed", default=1, type=int, help="Random number seed")
@@ -84,7 +84,7 @@ def main():
 def main_worker(rank, world_size, args, backend='nccl'):
     args.rank, args.world_size = rank, world_size
     if args.distributed:
-        dist.init_process_group(backend=backend, init_method='tcp://localhost:23456',
+        dist.init_process_group(backend=backend, init_method='tcp://localhost:23457',
                                     world_size=world_size, rank=rank)
     
     ## 2. Define model and optimizer
@@ -146,7 +146,7 @@ def main_worker(rank, world_size, args, backend='nccl'):
     criterion_ctc = torch.nn.CTCLoss(reduction='mean')
     criterion_att = LabelSmoothing(args.vocab_size, args.padding_idx, args.label_smooth)
     criterion_embed = torch.nn.MSELoss(reduction='mean')
-    criterion = (criterion_ctc, criterion_att, criterion_alm)    
+    criterion = (criterion_ctc, criterion_att, criterion_embed)    
 
     ## 4. Start training iteratively
     best_wer = 100
@@ -210,11 +210,11 @@ def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_trai
     losses = util.AverageMeter('Loss', ':.4e')
     ctc_losses = util.AverageMeter('CtcLoss', ":.4e")
     att_losses = util.AverageMeter('AttLoss', ":.4e")
-    alm_losses = util.AverageMeter('AlmLoss', ":.4e")
+    embed_losses = util.AverageMeter('EmbedLoss', ":.4e")
     ctc_wers = util.AverageMeter('CtcWer', ':.4f')
     att_wers = util.AverageMeter('AttWer', ':.4f')
     token_speed = util.AverageMeter('TokenSpeed', ":.2f")
-    progress = util.ProgressMeter(len(dataloader), batch_time, losses, alm_losses, ctc_losses, att_losses, ctc_wers, \
+    progress = util.ProgressMeter(len(dataloader), batch_time, losses, embed_losses, ctc_losses, att_losses, ctc_wers, \
                                     att_wers, token_speed, prefix="Epoch: [{}]".format(epoch))
     
     end = time.time()
@@ -232,18 +232,18 @@ def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_trai
             feat_sizes = feat_sizes.cuda()
             label_sizes = label_sizes.cuda()
         
-        ctc_out, acouh, acouh_gen, att_out = model(src, src_mask, feat_sizes, tgt_label, label_sizes, args.padding_idx, args.alm_alpha)
+        ctc_out, att_out, pred_embed = model(src, src_mask, feat_sizes, tgt_label, label_sizes, args, is_train=is_train)
         bs, max_feat_size, _ = ctc_out.size()
 
         # loss computation   
         feat_sizes = (feat_sizes * max_feat_size).long()
         ctc_loss = criterion[0](ctc_out.transpose(0,1), tgt_label, feat_sizes, label_sizes)
         att_loss = criterion[1](att_out.view(-1, att_out.size(-1)), tgt_label.view(-1))
-        if args.alm_alpha > 0:
-            alm_loss = criterion[2](acouh_gen.view(-1, acouh_gen.size(-1)), acouh.view(-1, acouh.size(-1)))
-            loss = args.alm_alpha * alm_loss + args.ctc_alpha * ctc_loss + (1 - args.ctc_alpha - args.alm_alpha) * att_loss
+        if args.embed_alpha > 0:
+            embed_loss = criterion[2](pred_embed.view(-1, acouh_gen.size(-1)), true_embed.view(-1, acouh.size(-1)))
+            loss = args.embed_alpha * embed_loss + args.ctc_alpha * ctc_loss + att_loss #(1 - args.ctc_alpha - args.alm_alpha) * att_loss
         else:
-            alm_loss = torch.Tensor([0])
+            embed_loss = torch.Tensor([0])
             loss = args.ctc_alpha * ctc_loss + att_loss #(1 - args.ctc_alpha) * att_loss
 
         # unit error rate computation
@@ -261,7 +261,7 @@ def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_trai
                 optimizer.zero_grad()
         
         losses.update(loss.item(), tokens)
-        alm_losses.update(alm_loss.item(), tokens)
+        embed_losses.update(embed_loss.item(), tokens)
         ctc_losses.update(ctc_loss.item(), tokens)
         att_losses.update(att_loss.item(), tokens)
         batch_time.update(time.time() - end)
