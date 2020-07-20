@@ -71,7 +71,7 @@ class FaNat(nn.Module):
         self.att_generator = att_gen
         self.pe = pe
 
-    def forward(self, src, src_mask, src_size, tgt_label, ylen, args, is_train=True, sos_embed=None):
+    def forward(self, src, src_mask, src_size, tgt_label, ylen, args, sos_embed=None):
         # 1. compute ctc output
         x, x_mask = self.src_embed(src, src_mask)
         enc_h = self.encoder(x, x_mask)
@@ -81,14 +81,10 @@ class FaNat(nn.Module):
         if args.use_trigger:
             src_size = (src_size * ctc_out.size(1)).long()
             blank = args.padding_idx
-            if is_train:
-                trigger_mask, ylen, ymax = self.viterbi_align(ctc_out, x_mask, src_size, tgt_label[:,:-1], ylen, blank)
-            else:
-                trigger_mask, ylen, ymax = self.best_path_align(ctc_out, x_mask, src_size, blank)
+            trigger_mask, ylen, ymax = self.viterbi_align(ctc_out, x_mask, src_size, tgt_label[:,:-1], ylen, blank)
             trigger_mask = trigger_mask & x_mask
-            ext_mask = trigger_mask
         else:
-            ext_mask = x_mask
+            trigger_mask = x_mask
             ylen = ylen + 1
             ymax = ylen.max().item()
 
@@ -99,7 +95,7 @@ class FaNat(nn.Module):
         
         # 3. Extract Acoustic embedding and Map it to Word embedding
         pe = self.pe.type_as(src).unsqueeze(0).repeat(bs, 1, 1)[:,:ymax,:]
-        ac_embed = self.acembed_extractor(pe, enc_h, ext_mask)
+        ac_embed = self.acembed_extractor(pe, enc_h, trigger_mask)
         pred_embed = self.embed_mapper(ac_embed, tgt_mask1)
 
         # 4. decoder, output units generation
@@ -235,37 +231,45 @@ class FaNat(nn.Module):
         x, src_mask = self.src_embed(src, src_mask)
         enc_h = self.encoder(x, src_mask)
         ctc_out = self.ctc_generator(enc_h)
-        src_size = (src_size * ctc_out.size(1)).long()
+
+        if args.use_trigger:
+            src_size = (src_size * ctc_out.size(1)).long()
+            trigger_mask, ylen, ymax = self.best_path_align(ctc_out, src_mask, src_size, blank)
+            trigger_mask = trigger_mask & src_mask
+        else:
+            trigger_mask = src_mask
+            ylen = ylen + 1
+            ymax = ylen.max().item()
+
+        bs, _, d_model = enc_h.size()
+        tgt_mask1 = torch.full((bs, ymax), 1).type_as(src_mask)
+        tgt_mask1 = tgt_mask1.scatter(1, ylen.unsqueeze(1)-1, 0).cumprod(1)
+        tgt_mask1 = tgt_mask1.scatter(1, ylen.unsqueeze(1)-1, 1).unsqueeze(1)
+        
+        # 3. Extract Acoustic embedding and Map it to Word embedding
+        pe = self.pe.type_as(src).unsqueeze(0).repeat(bs, 1, 1)[:,:ymax,:]
+        ac_embed = self.acembed_extractor(pe, enc_h, trigger_mask)
+        pred_embed = self.embed_mapper(ac_embed, tgt_mask1)
+
+        # 4. decoder, output units generation
+        if args.use_unimask:
+            pred_embed = torch.cat([sos_embed, pred_embed[:,:-1,:]], dim=1)
+            tgt_mask = tgt_mask1 & self.subsequent_mask(ymax).type_as(tgt_mask1) # uni-direc
+        else:
+            tgt_mask = tgt_mask1
+
+        if args.use_src:
+            dec_h = self.decoder(pred_embed, enc_h, x_mask, tgt_mask)
+        else:
+            dec_h = self.decoder(pred_embed, tgt_mask)
+        att_out = self.att_generator(dec_h)
 
         #log_probs, best_paths = torch.max(ctc_out, -1)
         #aligned_seq_shift = best_paths.new_zeros(best_paths.size())
         #aligned_seq_shift[:, 1:] = best_paths[:,:-1]
         #dup = best_paths == aligned_seq_shift
         #best_paths.masked_fill_(dup, 0)
-
-        trigger_mask, ylen, ymax = self.best_path_align(ctc_out, src_mask, src_size, blank)
-
-        shift_left = trigger_mask.clone()
-        shift_right = trigger_mask.clone()
-        #shift_left[:,:,:-1] = trigger_mask[:,:,1:]
-        shift_right[:,:,1:] = trigger_mask[:,:,:-1]
-        trigger_mask = shift_right | trigger_mask #shift_right | trigger_mask
-        trigger_mask = trigger_mask & src_mask
         
-        tgt_mask1 = torch.full((bs, ymax), 1).type_as(src_mask)
-        tgt_mask1 = tgt_mask1.scatter(1, ylen.unsqueeze(1)-1, 0).cumprod(1)
-        tgt_mask1 = tgt_mask1.scatter(1, ylen.unsqueeze(1)-1, 1).unsqueeze(1)
-        #tgt_mask2 = tgt_mask1 & self.subsequent_mask(ymax).type_as(tgt_mask1) # uni-direc
-        
-        # 3. acoustic language model
-        pe = self.pe.type_as(src).unsqueeze(0).repeat(bs, 1, 1)[:,:ymax,:]
-        acouh = self.acoustic_extractor(pe, enc_h, trigger_mask[:,1:,:])   # sos + n_unit
-        acouh_gen = self.acoustic_lm(acouh, tgt_mask1)
-        
-        # 4. decoder, output units generation
-        dec_h = self.decoder(acouh_gen, tgt_mask1)
-        att_out = self.att_generator(dec_h)
-
         log_probs, best_paths = torch.max(att_out, -1)
 
         batch_top_seqs = []

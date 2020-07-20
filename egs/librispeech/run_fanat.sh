@@ -6,40 +6,41 @@ stage=1
 end_stage=1
 
 if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
-  exp=exp/1kh_small_fanat_unigram_4card/
+  exp=exp/fanat_unigram_4gpu_noamwarm_accum1_trig_nosrc_noembed/
 
   if [ ! -d $exp ]; then
     mkdir -p $exp
   fi
 
-  CUDA_VISIBLE_DEVICES="4" fanat_train.py \
+  CUDA_VISIBLE_DEVICES="0,1,2,3" fanat_train.py \
     --exp_dir $exp \
     --train_config conf/fanat_train.yaml \
     --data_config conf/data.yaml \
     --batch_size 32 \
-    --epochs 100 \
+    --epochs 80 \
     --save_epoch 30 \
     --anneal_lr_ratio 0.5 \
     --patience 1 \
-    --end_patience 3 \
-    --learning_rate 0.0002 \
+    --end_patience 10 \
+    --learning_rate 0.001 \
     --min_lr 0.00001 \
-    --opt_type "normal" \
+    --opt_type "noamwarm" \
     --weight_decay 0 \
     --label_smooth 0.1 \
     --ctc_alpha 1 \
     --embed_alpha 0 \
     --use_cmvn \
-    --print_freq 200 #> $exp/train.log 2>&1 &
+    --print_freq 50 > $exp/train.log 2>&1 &
     
   echo "[Stage 1] ASR Training Finished."
 fi
 
 
 if [ $stage -le 2 ] && [ $end_stage -ge 2 ]; then
-  exp=exp/1kh_small_lace_ctc1_att1_schdler_accum2_gc5/
+  exp=exp/fanat_unigram_4gpu_scheduler_accum1_trig_nosrc_noembed/
 
-  bpemodel=data/dict/bpemodel_bpe_5000
+  bpemodel=data/dict/bpemodel_unigram_5000
+  global_cmvn=data/fbank/cmvn.ark
   test_model=$exp/best_model.mdl
   decode_type='att_only'
   beam1=0 # check beam1 and beam2 in conf/decode.yaml, att beam
@@ -64,8 +65,8 @@ if [ $stage -le 2 ] && [ $end_stage -ge 2 ]; then
     utils/split_scp.pl data/$tset/feats.scp $split_scps || exit 1;
     
     $cmd JOB=1:$nj $desdir/log/decode.JOB.log \
-      CUDA_VISIBLE_DEVICES="4" lace_decode.py \
-        --test_config conf/decode.yaml \
+      CUDA_VISIBLE_DEVICES="1" fanat_decode.py \
+        --test_config conf/fanat_decode.yaml \
         --data_path $desdir/feats.JOB.scp \
         --resume_model $test_model \
         --result_file $desdir/token_results.JOB.txt \
@@ -75,6 +76,8 @@ if [ $stage -le 2 ] && [ $end_stage -ge 2 ]; then
         --rnnlm None \
         --lm_weight $lmwt \
         --max_decode_ratio 0 \
+        --use_cmvn \
+        --global_cmvn $global_cmvn \
         --print_freq 20 
 
     cat $desdir/token_results.*.txt | sort -k1,1 > $desdir/token_results.txt

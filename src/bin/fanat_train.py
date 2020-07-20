@@ -92,7 +92,7 @@ def main_worker(rank, world_size, args, backend='nccl'):
     if use_cuda:
         torch.cuda.manual_seed(args.seed)
 
-    vocab = Vocab(args.vocab_file)
+    vocab = Vocab(args.vocab_file, rank)
     args.vocab_size = vocab.n_words
     assert args.input_size == (args.left_ctx + args.right_ctx + 1) // args.skip_frame * args.n_features
     model = make_model(args.input_size, args)
@@ -232,7 +232,7 @@ def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_trai
             feat_sizes = feat_sizes.cuda()
             label_sizes = label_sizes.cuda()
         
-        ctc_out, att_out, pred_embed = model(src, src_mask, feat_sizes, tgt_label, label_sizes, args, is_train=is_train)
+        ctc_out, att_out, pred_embed = model(src, src_mask, feat_sizes, tgt_label, label_sizes, args)
         bs, max_feat_size, _ = ctc_out.size()
 
         # loss computation   
@@ -267,7 +267,7 @@ def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_trai
         batch_time.update(time.time() - end)
         token_speed.update(tokens/(time.time()-start))
 
-        if i % args.print_freq == 0:
+        if i % args.print_freq == 0 and args.rank == 0:
             progress.print(i)
     return losses.avg, att_wers.avg
     

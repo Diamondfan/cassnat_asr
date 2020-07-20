@@ -14,7 +14,7 @@ import torch.nn.functional as F
 sys.path.append(os.environ['E2EASR']+'/src')
 import utils.util as util
 from data.vocab import Vocab
-from models.transformer import make_model
+from models.fanat import make_model
 from data.speech_loader import SpeechDataset, SpeechDataLoader
 from utils.beam_decode import ctc_beam_decode
 
@@ -106,7 +106,7 @@ def main():
             if args.decode_type == 'ctc_only':
                 recog_results = ctc_beam_decode(model, src, src_mask, feat_sizes, vocab, args)
             else:
-                recog_results = model.beam_decode(src, src_mask, vocab, args)
+                recog_results = model.beam_decode(src, src_mask, feat_sizes, vocab, args)
             
             for j in range(len(utt_list)):
                 hyp = []

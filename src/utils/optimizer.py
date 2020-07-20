@@ -114,7 +114,7 @@ def get_opt(opt_type, model, args):
         return opt
     elif opt_type == "cosine":
         return CosineOpt(args.cosine_total, args.cosine_warmup, opt)
-    elif opt_typpe == "noamwarm":
+    elif opt_type == "noamwarm":
         return NoamWarmOpt(args.noam_warmup, opt)
     else:
         raise NotImplementedError

@@ -123,7 +123,7 @@ if [ $stage -le 5 ] && [ $end_stage -ge 5 ]; then
 fi
 
 if [ $stage -le 6 ] && [ $end_stage -ge 6 ]; then
-  exp=exp/1kh_small_unigram_4card_ctc1_att1_scheduler_accum1_gc5/
+  exp=exp/1kh_small_bpe_4card_ctc1_att1_noamwarm_accum1_gc5/
 
   if [ ! -d $exp ]; then
     mkdir -p $exp
@@ -137,11 +137,11 @@ if [ $stage -le 6 ] && [ $end_stage -ge 6 ]; then
     --epochs 100 \
     --save_epoch 30 \
     --anneal_lr_ratio 0.5 \
-    --learning_rate 0.0002 \
+    --learning_rate 0.001 \
     --min_lr 0.00001 \
     --patience 1 \
-    --end_patience 3 \
-    --opt_type "normal" \
+    --end_patience 15 \
+    --opt_type "noamwarm" \
     --weight_decay 0 \
     --label_smooth 0.1 \
     --ctc_alpha 1 \
