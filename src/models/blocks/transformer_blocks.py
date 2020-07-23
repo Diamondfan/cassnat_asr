@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # 2020 Ruchao Fan
 
+import torch
 import torch.nn as nn
 from models.modules.norm import LayerNorm
 from models.modules.utils import clones, SublayerConnection
@@ -14,9 +15,22 @@ class EncoderLayer(nn.Module):
         self.sublayer = clones(SublayerConnection(size, dropout), 2)
         self.size = size
 
-    def forward(self, x, mask):
-        x = self.sublayer[0](x, lambda x: self.self_attn(x, x, x, mask))
-        return self.sublayer[1](x, self.feed_forward)
+    def forward(self, x, mask, cache=None):
+        if cache is None:
+            x_query = x
+            has_cache=False
+        else:
+            x_query = x[:,-1:,:]
+            mask = None if mask is None else mask[:,-1:,:]
+            has_cache = True
+
+        x_query = self.sublayer[0].norm(x_query)
+        x = self.sublayer[0](x, lambda x: self.self_attn(x_query, x, x, mask), has_cache)
+        x = self.sublayer[1](x, self.feed_forward)
+
+        if cache is not None:
+            x = torch.cat([cache, x], dim=1)
+        return x
 
 class DecoderLayer(nn.Module):
     "Decoder is made of self-attn, src-attn, and feed forward (defined below)"
@@ -48,6 +62,17 @@ class Encoder(nn.Module):
         for layer in self.layers:
             x = layer(x, mask)
         return self.norm(x)
+
+    def forward_one_step(self, x, mask, cache=None):
+        if cache is None:
+            cache = [None for _ in range(len(self.layers))]
+
+        new_cache = []
+        for c, layer in zip(cache, self.layers):
+            x = layer(x, mask, cache=c)
+            new_cache.append(x)
+        return self.norm(x), new_cache
+
 
 class Decoder(nn.Module):
     "Generic N layer decoder with masking."

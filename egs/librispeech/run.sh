@@ -6,8 +6,8 @@
 data=/NAS5/speech/user/ruchao/Database/LibriSpeech/
 lm_data=/NAS5/speech/user/ruchao/Database/LibriSpeech/libri_lm
 
-stage=6
-end_stage=6
+stage=7
+end_stage=7
 featdir=data/fbank
 
 unit=wp
@@ -123,7 +123,7 @@ if [ $stage -le 5 ] && [ $end_stage -ge 5 ]; then
 fi
 
 if [ $stage -le 6 ] && [ $end_stage -ge 6 ]; then
-  exp=exp/1kh_small_bpe_4card_ctc1_att1_noamwarm_accum1_gc5/
+  exp=exp/1kh_small_unigram_4card_ctc1_att1_noamwarm_accum1_gc5/
 
   if [ ! -d $exp ]; then
     mkdir -p $exp
@@ -139,8 +139,8 @@ if [ $stage -le 6 ] && [ $end_stage -ge 6 ]; then
     --anneal_lr_ratio 0.5 \
     --learning_rate 0.001 \
     --min_lr 0.00001 \
-    --patience 1 \
-    --end_patience 15 \
+    --patience 2 \
+    --end_patience 10 \
     --opt_type "noamwarm" \
     --weight_decay 0 \
     --label_smooth 0.1 \
@@ -152,21 +152,23 @@ if [ $stage -le 6 ] && [ $end_stage -ge 6 ]; then
 fi
 
 if [ $stage -le 7 ] && [ $end_stage -ge 7 ]; then
-  exp=exp/1kh_small_unigram_4card_ctc1_att1_schdler_accum1_gc5/
+  exp=exp/1kh_small_unigram_4card_ctc1_att1_noamwarm_accum1_gc5/
   
   test_model=$exp/best_model.mdl
+  rnnlm_model=exp/libri_tflm_unigram_4card_cosineanneal_ep10/best_model.mdl
   global_cmvn=data/fbank/cmvn.ark
   decode_type='att_only'
   beam1=5 # check beam1 and beam2 in conf/decode.yaml, att beam
   beam2=0 # ctc beam
   ctcwt=0
-  lp=0.2
+  lp=0
   lmwt=0
   nj=4
   
   for tset in $test_set; do
     echo "Decoding $tset..."
-    desdir=$exp/${decode_type}_decode_ctc${ctcwt}_bm1_${beam1}_bm2_${beam2}_lmwt${lmwt}_lp${lp}/$tset/
+    #desdir=$exp/${decode_type}_decode_ctc${ctcwt}_bm1_${beam1}_bm2_${beam2}_lmwt${lmwt}_lp${lp}/$tset/
+    desdir=$exp/decode_test
     if [ ! -d $desdir ]; then
       mkdir -p $desdir
     fi
@@ -178,15 +180,16 @@ if [ $stage -le 7 ] && [ $end_stage -ge 7 ]; then
     utils/split_scp.pl data/$tset/feats.scp $split_scps || exit 1;
     
     $cmd JOB=1:$nj $desdir/log/decode.JOB.log \
-      CUDA_VISIBLE_DEVICES="4" asr_decode.py \
+      CUDA_VISIBLE_DEVICES="7" asr_decode.py \
         --test_config conf/decode.yaml \
+        --lm_config conf/lm.yaml \
         --data_path $desdir/feats.JOB.scp \
         --resume_model $test_model \
         --result_file $desdir/token_results.JOB.txt \
         --batch_size 8 \
         --decode_type $decode_type \
         --ctc_weight $ctcwt \
-        --rnnlm None \
+        --rnnlm $rnnlm_model \
         --lm_weight $lmwt \
         --max_decode_ratio 0 \
         --use_cmvn \

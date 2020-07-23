@@ -17,7 +17,6 @@ sys.path.append(os.environ['E2EASR']+'/src')
 import utils.util as util
 from data.vocab import Vocab
 from utils.optimizer import get_opt
-from models.lm import make_model
 from data.text_loader import TextDataset, TextDataLoader
 
 class Config():
@@ -29,6 +28,7 @@ def main():
     parser.add_argument("--exp_dir")
     parser.add_argument("--train_config")
     parser.add_argument("--data_config")
+    parser.add_argument("--lm_type")
     parser.add_argument("--batch_size", default=32, type=int, help="Training minibatch size")
     parser.add_argument("--epochs", default=30, type=int, help="Number of training epochs")
     parser.add_argument("--save_epoch", default=20, type=int, help="Starting to save the model")
@@ -88,7 +88,9 @@ def main_worker(rank, world_size, args, backend='nccl'):
 
     vocab = Vocab(args.vocab_file, args.rank)
     args.vocab_size = vocab.n_words
-    model = make_model(args)
+    if args.lm_type == "":
+        from models.lm import make_model
+        model = make_model(args)
     optimizer = get_opt(args.opt_type, model, args)
     
     if args.resume_model:

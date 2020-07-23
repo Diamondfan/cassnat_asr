@@ -26,6 +26,7 @@ def main():
     parser = argparse.ArgumentParser(description="Configuration for transformer testing")
    
     parser.add_argument("--test_config")
+    parser.add_argument("--lm_config")
     parser.add_argument("--data_path")
     parser.add_argument("--use_cmvn", default=False, action='store_true', help="Use global cmvn or not")
     parser.add_argument("--global_cmvn", type=str, help="Cmvn file to load")
@@ -44,12 +45,20 @@ def main():
     args = parser.parse_args()
     with open(args.test_config) as f:
         config = yaml.safe_load(f)
-
+    
     config['test_paths'] = [{'name': 'test', 'scp_path': args.data_path} ]
     for key, val in config.items():
         setattr(args, key, val)
     for var in vars(args):
         config[var] = getattr(args, var)
+
+    if args.lm_weight > 0:
+        with open(args.lm_config) as f:
+            lm_config = yaml.safe_load(f)
+        lm_args = Config()
+        for key, val in lm_config.items():
+            setattr(lm_args, key, val)
+    
     print("Experiment starts with config {}".format(json.dumps(config, sort_keys=True, indent=4)))
 
     use_cuda = args.use_gpu
@@ -74,6 +83,22 @@ def main():
             param.data.copy_(model_state[name])
         start_epoch = checkpoint['epoch']+1
 
+    if args.lm_weight > 0:
+        from models.lm import make_model as make_lm_model
+        lm_args.vocab_size = vocab.n_words
+        lm_model = make_lm_model(lm_args)
+        print("Loading language model from {}".format(args.rnnlm))
+        checkpoint_lm = torch.load(args.rnnlm, map_location='cpu')
+        model_state = checkpoint_lm["state_dict"]
+        for name, param in lm_model.named_parameters():
+            if name not in model_state:
+                name = "module." + name
+            param.data.copy_(model_state[name])
+        if use_cuda:
+            lm_model.cuda()
+    else:
+        lm_model = None
+
     num_params = 0
     for name, param in model.named_parameters():
         num_params += param.numel()
@@ -95,6 +120,9 @@ def main():
     out_file = open(args.result_file, 'w')
     with torch.no_grad():
         model.eval()
+        if lm_model is not None:
+            lm_model.eval()
+
         for i, data in enumerate(test_loader):
             utt_list, feats, _, feat_sizes, _ = data
             src, src_mask = feats, (feats[:,:,0] != args.padding_idx).unsqueeze(1)
@@ -104,9 +132,9 @@ def main():
                 feat_sizes = feat_sizes.cuda()
 
             if args.decode_type == 'ctc_only':
-                recog_results = ctc_beam_decode(model, src, src_mask, feat_sizes, vocab, args)
+                recog_results = ctc_beam_decode(model, src, src_mask, feat_sizes, vocab, args, lm_model)
             else:
-                recog_results = model.beam_decode(src, src_mask, vocab, args)
+                recog_results = model.beam_decode(src, src_mask, vocab, args, lm_model)
             
             for j in range(len(utt_list)):
                 hyp = []

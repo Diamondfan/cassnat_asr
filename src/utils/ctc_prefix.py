@@ -11,13 +11,6 @@ import numpy
 logone = 0
 logzero = -1e10
 
-
-def forced_align(ctc_out, label):
-    pass 
-    
-    
-
-
 class CTCPrefixScore(object):
     """Compute CTC label sequence scores
     which is based on Algorithm 2 in WATANABE et al.

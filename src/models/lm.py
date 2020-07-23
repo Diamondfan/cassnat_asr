@@ -54,4 +54,29 @@ class TransformerLM(nn.Module):
         lm_out = self.out_generator(enc_h)
         return lm_out
 
+    def _subsequent_mask(self, size):
+        ret = torch.ones(size, size, dtype=torch.uint8)
+        return torch.tril(ret, out=ret).unsqueeze(0)
+    
+    def _target_mask(self, ys):
+        tgt_mask = (ys != 0).unsqueeze(1)
+        tgt_mask = tgt_mask & self._subsequent_mask(ys.size(-1)).type_as(tgt_mask)
+        return tgt_mask
+
+    def score(self, ys, cache_stats):
+        bs = ys.size(0)
+        layers = len(self.encoder.layers)
+        if cache_stats is None:
+            batch_state = None
+        else:
+            batch_state = [ torch.stack([cache_stats[b][i] for b in range(bs)]) for i in range(layers)]
+
+        h, states = self.encoder.forward_one_step(self.text_embed(ys), self._target_mask(ys), cache=batch_state)
+        
+        logp = self.out_generator(h[:,-1,:])
+        state_list = [[ states[i][b] for i in range(layers)] for b in range(bs)]
+        return logp, state_list
+
+
+
 

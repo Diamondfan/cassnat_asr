@@ -11,6 +11,9 @@ with open(text, 'r') as rf, open(trn, 'w') as wf:
     line = rf.readline()
     while line:
         line = line.strip().split(' ', 1)
-        wf.write(line[1] + ' (' + line[0].replace('-', '_') + ')\n' )
+        if len(line) > 1:
+            wf.write(line[1] + ' (' + line[0].replace('-', '_') + ')\n' )
+        else:
+            wf.write(' (' + line[0].replace('-', '_') + ')\n')
         line = rf.readline()
 

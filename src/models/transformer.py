@@ -70,7 +70,7 @@ class Transformer(nn.Module):
         ret = torch.ones(size, size, dtype=torch.uint8)
         return torch.tril(ret, out=ret).unsqueeze(0)
         
-    def beam_decode(self, src, src_mask, vocab, args):
+    def beam_decode(self, src, src_mask, vocab, args, lm_model=None):
         """att decoding with rnnlm and ctc out probability
 
         args.rnnlm: path of rnnlm model
@@ -104,8 +104,6 @@ class Transformer(nn.Module):
                 batch_top_seqs[b][0]['ctc_prob_prev'] = init_r[b:b+1]
                 init_score = torch.Tensor([[0.0]])
                 batch_top_seqs[b][0]['ctc_score_prev'] = init_score.cuda() if args.use_gpu else init_score
-            elif args.rnnlm != 'None':
-                batch_top_seqs[b][0]['rnnlm_prev'] = lm.init(sos)
 
         max_decode_step = int(args.max_decode_ratio * enc_h.size(1)) if args.max_decode_ratio > 0 else enc_h.size(1)
         for i in range(max_decode_step):
@@ -114,8 +112,6 @@ class Transformer(nn.Module):
             
             if ctc_out is not None:
                 ctc_out_use, ctc_prev_prob, ctc_prev_score = [], [], []
-            if args.rnnlm != 'None':
-                lm_input, lm_hidden0, lm_hidden1 = [], [], []
             
             for b in range(bs):
                 all_seqs.append([])
@@ -131,10 +127,6 @@ class Transformer(nn.Module):
                         ctc_out_use.append(ctc_out[b:b+1])
                         ctc_prev_prob.append(seq['ctc_prob_prev'])
                         ctc_prev_score.append(seq['ctc_score_prev'])
-                    if args.rnnlm != 'None':
-                        lm_input.append([seq['hyp'][-1]-1])
-                        lm_hidden0.append(seq['rnnlm_prev'][0])
-                        lm_hidden1.append(seq['rnnlm_prev'][1])
             
             if len(ys) == 0: #if no beam active, end decoding
                 break
@@ -146,13 +138,12 @@ class Transformer(nn.Module):
             tgt_mask = tgt_mask & self.subsequent_mask(ys.size(-1)).type_as(src_mask_use.data)
             dec_h = self.decoder(self.tgt_embed(ys), ench_use, src_mask_use, tgt_mask)
             att_prob = self.att_generator(dec_h[:, -1, :], T=args.T)
-            
-            if args.rnnlm != 'None':
-                lm_input = torch.LongTensor(lm_input).cuda()
-                lm_hidden = (torch.cat(lm_hidden0, dim=1), torch.cat(lm_hidden1, dim=1))
-                lm_output, hidden_out = lm(lm_input, lm_hidden)
-                lm_output = F.pad(lm_output[:,-1,:], pad=[1,0])  #output is different with transformer
-                prob += lm.lm_alpha * lm_output 
+            if args.lm_weight > 0:
+                lm_prob = lm_model(ys, tgt_mask)[:,-1,:]
+                local_prob = att_prob + args.lm_weight * lm_prob
+                #local_prob[:,eos] = (1 + args.lm_weight) * att_prob[:,eos]
+            else:
+                local_prob = att_prob
             
             if ctc_out is not None:
                 att_scores, indices = torch.topk(att_prob, args.ctc_beam, dim=-1)
@@ -163,10 +154,14 @@ class Transformer(nn.Module):
                 ctc_scores, ctc_probs = Scorer(ys, indices, ctc_out_use, ctc_prev_prob)
                 local_scores = args.ctc_weight * (ctc_scores - ctc_prev_scores) \
                                 + (1 - args.ctc_weight) * att_scores
-                att_scores, local_indices = torch.topk(local_scores, args.beam_width, dim=-1)
+               
+                if args.lm_weight > 0:
+                    local_scores += args.lm_weight * lm_prob.gather(1, indices)
+
+                local_scores, local_indices = torch.topk(local_scores, args.beam_width, dim=-1)
                 indices = torch.gather(indices, 1, local_indices)
             else:
-                att_scores, indices = torch.topk(att_prob, args.beam_width, dim=-1)
+                local_scores, indices = torch.topk(local_prob, args.beam_width, dim=-1)
             
             # distribute scores to corresponding sample and beam
             s_idx = -1
@@ -178,7 +173,7 @@ class Transformer(nn.Module):
 
                     for j in range(args.beam_width):
                         next_token = indices[s_idx][j]
-                        token_score = att_scores[s_idx][j].item()
+                        token_score = local_scores[s_idx][j].item()
                         score = seq['score'] + token_score
 
                         ys = torch.cat([seq['ys'],next_token.view(-1,1)],dim=-1)
@@ -188,8 +183,6 @@ class Transformer(nn.Module):
                             true_idx = local_indices[s_idx, j]
                             rs_seq['ctc_prob_prev'] = ctc_probs[s_idx:s_idx+1, true_idx,:,:]
                             rs_seq['ctc_score_prev'] = ctc_scores[s_idx:s_idx+1, true_idx:true_idx+1]
-                        if args.rnnlm != 'None':
-                            rs_seq['rnnlm_prev'] = (hidden_out[0][:,s_idx:s_idx+1,:], hidden_out[1][:,s_idx:s_idx+1,:])
                         all_seqs[b].append(rs_seq)
 
                 sort_f = lambda x:x['score'] + (len(x['hyp'])-1) * args.length_penalty \
