@@ -6,8 +6,8 @@
 data=/NAS5/speech/user/ruchao/Database/LibriSpeech/
 lm_data=/NAS5/speech/user/ruchao/Database/LibriSpeech/libri_lm
 
-stage=7
-end_stage=7
+stage=8
+end_stage=8
 featdir=data/fbank
 
 unit=wp
@@ -151,24 +151,48 @@ if [ $stage -le 6 ] && [ $end_stage -ge 6 ]; then
   echo "[Stage 6] ASR Training Finished."
 fi
 
+out_name='averaged.mdl'
 if [ $stage -le 7 ] && [ $end_stage -ge 7 ]; then
   exp=exp/1kh_small_unigram_4card_ctc1_att1_noamwarm_accum1_gc5/
+  last_epoch=69  
   
-  test_model=$exp/best_model.mdl
-  rnnlm_model=exp/libri_tflm_unigram_4card_cosineanneal_ep10/best_model.mdl
+  average_checkpoints.py \
+    --exp_dir $exp \
+    --out_name $out_name \
+    --last_epoch $last_epoch \
+    --num 12 
+  
+  lm_exp=exp/libri_tflm_unigram_4card_cosineanneal_ep10/
+  last_epoch=9  
+  
+  average_checkpoints.py \
+    --exp_dir $lm_exp \
+    --out_name $out_name \
+    --last_epoch $last_epoch \
+    --num 3
+
+  echo "[Stage 7] Average checkpoints Finished."
+
+fi
+
+if [ $stage -le 8 ] && [ $end_stage -ge 8 ]; then
+  exp=exp/1kh_small_unigram_4card_ctc1_att1_noamwarm_accum1_gc5/
+  
+  test_model=$exp/$out_name #$exp/best_model.mdl
+  rnnlm_model=exp/libri_tflm_unigram_4card_cosineanneal_ep10/$out_name
   global_cmvn=data/fbank/cmvn.ark
-  decode_type='att_only'
+  decode_type='ctc_att'
   beam1=5 # check beam1 and beam2 in conf/decode.yaml, att beam
-  beam2=0 # ctc beam
-  ctcwt=0
+  beam2=20 # ctc beam
+  ctcwt=0.3
   lp=0
   lmwt=0
   nj=4
   
   for tset in $test_set; do
     echo "Decoding $tset..."
-    #desdir=$exp/${decode_type}_decode_ctc${ctcwt}_bm1_${beam1}_bm2_${beam2}_lmwt${lmwt}_lp${lp}/$tset/
-    desdir=$exp/decode_test
+    desdir=$exp/${decode_type}_decode_average_ctc${ctcwt}_bm1_${beam1}_bm2_${beam2}_lmwt${lmwt}_lp${lp}/$tset/
+    #desdir=$exp/decode_average_best/$tset
     if [ ! -d $desdir ]; then
       mkdir -p $desdir
     fi

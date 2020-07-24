@@ -15,7 +15,11 @@ class EncoderLayer(nn.Module):
         self.sublayer = clones(SublayerConnection(size, dropout), 2)
         self.size = size
 
-    def forward(self, x, mask, cache=None):
+    def forward(self, x, mask):
+        x = self.sublayer[0](x, lambda x: self.self_attn(x, x, x, mask))
+        return self.sublayer[1](x, self.feed_forward)
+
+    def forward_cache(self, x, mask, cache=None):
         if cache is None:
             x_query = x
             has_cache=False
@@ -69,7 +73,7 @@ class Encoder(nn.Module):
 
         new_cache = []
         for c, layer in zip(cache, self.layers):
-            x = layer(x, mask, cache=c)
+            x = layer.forward_cache(x, mask, cache=c)
             new_cache.append(x)
         return self.norm(x), new_cache
 

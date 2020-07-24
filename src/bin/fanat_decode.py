@@ -81,7 +81,6 @@ def main():
             if name not in model_state:
                 name = "module." + name
             param.data.copy_(model_state[name])
-        start_epoch = checkpoint['epoch']+1
 
     if args.lm_weight > 0:
         from models.lm import make_model as make_lm_model

@@ -2,11 +2,11 @@
 . cmd.sh
 . path.sh
 
-stage=1
-end_stage=1
+stage=3
+end_stage=3
 
 if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
-  exp=exp/fanat_unigram_4gpu_noamwarm_accum1_trig_nosrc_noembed/
+  exp=exp/fanat_unigram_4gpu_noamwarm_accum1_trig_nomapper_src6_noembed/
 
   if [ ! -d $exp ]; then
     mkdir -p $exp
@@ -17,7 +17,7 @@ if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
     --train_config conf/fanat_train.yaml \
     --data_config conf/data.yaml \
     --batch_size 32 \
-    --epochs 80 \
+    --epochs 100 \
     --save_epoch 30 \
     --anneal_lr_ratio 0.5 \
     --patience 1 \
@@ -35,25 +35,40 @@ if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
   echo "[Stage 1] ASR Training Finished."
 fi
 
-
+out_name='averaged.mdl'
 if [ $stage -le 2 ] && [ $end_stage -ge 2 ]; then
-  exp=exp/fanat_unigram_4gpu_scheduler_accum1_trig_nosrc_noembed/
+  exp=exp/fanat_unigram_4gpu_noamwarm_accum1_trig_src_noembed
+  last_epoch=66
+  
+  average_checkpoints.py \
+    --exp_dir $exp \
+    --out_name $out_name \
+    --last_epoch $last_epoch \
+    --num 12 
+  
+  echo "[Stage 2] Average checkpoints Finished."
+
+fi
+
+if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
+  exp=exp/fanat_unigram_4gpu_noamwarm_accum1_trig_src_noembed
 
   bpemodel=data/dict/bpemodel_unigram_5000
+  rnnlm_model=exp/libri_tflm_unigram_4card_cosineanneal_ep10/$out_name
   global_cmvn=data/fbank/cmvn.ark
-  test_model=$exp/best_model.mdl
+  test_model=$exp/$out_name
   decode_type='att_only'
-  beam1=0 # check beam1 and beam2 in conf/decode.yaml, att beam
+  beam1=10 # check beam1 and beam2 in conf/decode.yaml, att beam
   beam2=0 # ctc beam
   ctcwt=0
-  lmwt=0
+  lmwt=0.5
   lp=0
   nj=4
   test_set="dev_clean test_clean dev_other test_other"
 
   for tset in $test_set; do
     echo "Decoding $tset..."
-    desdir=$exp/${decode_type}_decode_ctc${ctcwt}_bm1_${beam1}_bm2_${beam2}_lmwt${lmwt}_lp${lp}/$tset/
+    desdir=$exp/${decode_type}_decode_average_ctc${ctcwt}_bm1_${beam1}_bm2_${beam2}_lmwt${lmwt}_lp${lp}/$tset/
     if [ ! -d $desdir ]; then
       mkdir -p $desdir
     fi
@@ -65,15 +80,16 @@ if [ $stage -le 2 ] && [ $end_stage -ge 2 ]; then
     utils/split_scp.pl data/$tset/feats.scp $split_scps || exit 1;
     
     $cmd JOB=1:$nj $desdir/log/decode.JOB.log \
-      CUDA_VISIBLE_DEVICES="1" fanat_decode.py \
+      CUDA_VISIBLE_DEVICES="5" fanat_decode.py \
         --test_config conf/fanat_decode.yaml \
+        --lm_config conf/lm.yaml \
         --data_path $desdir/feats.JOB.scp \
         --resume_model $test_model \
         --result_file $desdir/token_results.JOB.txt \
         --batch_size 8 \
         --decode_type $decode_type \
         --ctc_weight $ctcwt \
-        --rnnlm None \
+        --rnnlm $rnnlm_model \
         --lm_weight $lmwt \
         --max_decode_ratio 0 \
         --use_cmvn \
