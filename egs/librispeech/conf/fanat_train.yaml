@@ -10,7 +10,8 @@ n_head: 4
 dropout: 0.1
 
 use_trigger: True
-use_src: False
+use_src: True
+src_trigger: True
 use_unimask: False
 
 n_features: 80

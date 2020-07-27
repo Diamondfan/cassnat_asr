@@ -106,6 +106,8 @@ class FaNat(nn.Module):
             tgt_mask = tgt_mask1
 
         if args.use_src:
+            if args.src_trigger:
+                x_mask = trigger_mask
             dec_h = self.decoder(pred_embed, enc_h, x_mask, tgt_mask)
         else:
             dec_h = self.decoder(pred_embed, tgt_mask)
@@ -259,6 +261,8 @@ class FaNat(nn.Module):
             tgt_mask = tgt_mask1
 
         if args.use_src:
+            if args.src_trigger:
+                src_mask = trigger_mask
             dec_h = self.decoder(pred_embed, enc_h, src_mask, tgt_mask)
         else:
             dec_h = self.decoder(pred_embed, tgt_mask)

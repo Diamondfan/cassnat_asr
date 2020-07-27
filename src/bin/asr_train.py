@@ -159,10 +159,10 @@ def main_worker(rank, world_size, args, backend='nccl'):
         if args.distributed:
             train_loader.set_epoch(epoch)
         model.train()
-        train_loss, train_wer = run_epoch(epoch, train_loader, model, criterion, args, optimizer, is_train=True)
+        train_loss, train_wer, train_ctc_wer = run_epoch(epoch, train_loader, model, criterion, args, optimizer, is_train=True)
         model.eval()
         with torch.no_grad():
-            valid_loss, valid_wer = run_epoch(epoch, valid_loader, model, criterion, args, is_train=False)
+            valid_loss, valid_wer, valid_ctc_wer = run_epoch(epoch, valid_loader, model, criterion, args, is_train=False)
         
         temp_lr = optimizer.param_groups[0]['lr'] if args.opt_type == "normal" else optimizer.optimizer.param_groups[0]['lr']
         if args.distributed:
@@ -170,7 +170,8 @@ def main_worker(rank, world_size, args, backend='nccl'):
             torch.distributed.all_reduce(average_number, op=ReduceOp.SUM)
             train_loss, train_wer, valid_loss, valid_wer = (average_number / args.world_size).cpu().numpy()
         if args.rank == 0:
-            print("Epoch {} done, Train Loss: {:.4f}, Train WER: {:.4f} Valid Loss: {:.4f} Valid WER: {:.4f} Current LR: {:4e}".format(epoch, train_loss, train_wer, valid_loss, valid_wer, temp_lr), flush=True)
+            print("Epoch {} done, Train Loss: {:.4f}, Train WER: {:.4f} Train ctc WER: {:.4f} Valid Loss: {:.4f} Valid WER: {:.4f} Valid ctc WER: {:.4f} Current LR: {:4e}".format(
+                        epoch, train_loss, train_wer, train_ctc_wer, valid_loss, valid_wer, valid_ctc_wer, temp_lr), flush=True)
         
         if args.opt_type == 'normal':
             scheduler.step(valid_wer)
@@ -265,7 +266,7 @@ def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_trai
 
         if i % args.print_freq == 0 and args.rank == 0:
             progress.print(i)
-    return losses.avg, att_wers.avg
+    return losses.avg, att_wers.avg, ctc_wers.avg
     
 if __name__ == '__main__':
     main()

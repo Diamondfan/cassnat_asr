@@ -22,12 +22,12 @@ padding_idx: 0
 use_gpu: True
 
 #beam_decode
-beam_width: 0
+beam_width: 10
 ctc_beam: 0
-length_penalty: 0.2
+length_penalty: 0
 T: 1.0
  
 use_trigger: True
-use_src: False
+use_src: True
 use_unimask: False
 
