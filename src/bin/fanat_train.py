@@ -47,6 +47,7 @@ def main():
     parser.add_argument("--ctc_alpha", default=0, type=float, help="Task ratio of CTC")
     parser.add_argument("--embed_alpha", default=0, type=float, help="Task ratio of embedding prediction loss")
     parser.add_argument("--resume_model", default='', type=str, help="The model path to resume")
+    parser.add_argument("--init_encoder", default=False, action='store_true', help="decide whether use encoder initialization")
     parser.add_argument("--print_freq", default=100, type=int, help="Number of iter to print")
     parser.add_argument("--seed", default=1, type=int, help="Random number seed")
 
@@ -98,18 +99,23 @@ def main_worker(rank, world_size, args, backend='nccl'):
     model = make_model(args.input_size, args)
     optimizer = get_opt(args.opt_type, model, args) 
     
-    if args.resume_model:
+    if args.init_encoder and args.resume_model:
         if rank == 0:
             print("Loading model from {}".format(args.resume_model))
-        checkpoint = torch.load(args.resume_model, map_location='cpu')
-        model.load_state_dict(checkpoint["state_dict"])
-        optimizer.load_state_dict(checkpoint['optimizer'])
-        if use_cuda:
-            for state in optimizer.state.values():
-                for k, v in state.items():
-                    if isinstance(v, torch.Tensor):
-                        state[k] = v.cuda()   
-        start_epoch = checkpoint['epoch']+1
+        checkpoint = torch.load(args.resume_model, map_location='cpu')['state_dict']
+        for name, param in model.named_parameters():
+            if name.split('.')[0] in ['src_embed', 'encoder', 'ctc_generator']:
+                param.data.copy_(checkpoint['module.'+name])
+        
+        #model.load_state_dict(checkpoint["state_dict"])
+        #optimizer.load_state_dict(checkpoint['optimizer'])
+        #if use_cuda:
+        #    for state in optimizer.state.values():
+        #        for k, v in state.items():
+        #            if isinstance(v, torch.Tensor):
+        #                state[k] = v.cuda()   
+        #start_epoch = checkpoint['epoch']+1
+        start_epoch = 0
     else:
         start_epoch = 0
     
@@ -171,16 +177,16 @@ def main_worker(rank, world_size, args, backend='nccl'):
 
         temp_lr = optimizer.param_groups[0]['lr'] if args.opt_type == "normal" else optimizer.optimizer.param_groups[0]['lr']
         if args.distributed:
-            average_number = torch.Tensor([train_loss, train_wer, valid_loss, valid_wer]).float().cuda(args.rank)
+            average_number = torch.Tensor([train_loss, train_wer, train_ctc_wer, valid_loss, valid_wer, valid_ctc_wer]).float().cuda(args.rank)
             torch.distributed.all_reduce(average_number, op=ReduceOp.SUM)
-            train_loss, train_wer, valid_loss, valid_wer = (average_number / args.world_size).cpu().numpy()
+            train_loss, train_wer, train_ctc_wer, valid_loss, valid_wer, valid_ctc_wer = (average_number / args.world_size).cpu().numpy()
 
         if args.rank == 0:
             print("Epoch {} done, Train Loss: {:.4f}, Train WER: {:.4f} Train ctc WER: {:.4f} Valid Loss: {:.4f} Valid WER: {:.4f} Valid ctc WER: {:.4f} Current LR: {:4e}".format(
                         epoch, train_loss, train_wer, train_ctc_wer, valid_loss, valid_wer, valid_ctc_wer, temp_lr), flush=True)
         
         if args.opt_type == 'normal':
-            scheduler.step(valid_wer)
+            scheduler.step(valid_ctc_wer)
         
         if epoch > args.save_epoch and args.rank == 0:
             output_file=args.exp_dir + '/model.' + str(epoch) + '.mdl'
@@ -188,8 +194,8 @@ def main_worker(rank, world_size, args, backend='nccl'):
                             'state_dict': model.state_dict()}
             torch.save(checkpoint, output_file)
 
-        if valid_wer < best_wer:
-            best_wer = valid_wer
+        if valid_ctc_wer < best_wer:
+            best_wer = valid_ctc_wer
             best_epoch = epoch
             if args.rank == 0:
                 output_file=args.exp_dir + '/best_model.mdl'

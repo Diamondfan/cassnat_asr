@@ -2,11 +2,11 @@
 . cmd.sh
 . path.sh
 
-stage=3
-end_stage=3
+stage=1
+end_stage=1
 
 if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
-  exp=exp/fanat_unigram_4gpu_noamwarm_accum1_trig_nomapper_src6_noembed/
+  exp=exp/fanat_trig_src_initenc_endctc/
 
   if [ ! -d $exp ]; then
     mkdir -p $exp
@@ -18,7 +18,7 @@ if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
     --data_config conf/data.yaml \
     --batch_size 32 \
     --epochs 100 \
-    --save_epoch 30 \
+    --save_epoch 5 \
     --anneal_lr_ratio 0.5 \
     --patience 1 \
     --end_patience 10 \
@@ -30,6 +30,8 @@ if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
     --ctc_alpha 1 \
     --embed_alpha 0 \
     --use_cmvn \
+    --init_encoder \
+    --resume_model exp/1kh_small_unigram_4card_ctc1_att1_noamwarm_accum1_gc5/averaged.mdl \
     --print_freq 50 > $exp/train.log 2>&1 &
     
   echo "[Stage 1] ASR Training Finished."
@@ -37,8 +39,8 @@ fi
 
 out_name='averaged.mdl'
 if [ $stage -le 2 ] && [ $end_stage -ge 2 ]; then
-  exp=exp/fanat_unigram_4gpu_noamwarm_accum1_trig_src_noembed
-  last_epoch=66
+  exp=exp/fanat_unigram_4gpu_noamwarm_accum1_trig_nosrc_noembed
+  last_epoch=78
   
   average_checkpoints.py \
     --exp_dir $exp \
@@ -51,17 +53,17 @@ if [ $stage -le 2 ] && [ $end_stage -ge 2 ]; then
 fi
 
 if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
-  exp=exp/fanat_unigram_4gpu_noamwarm_accum1_trig_src_noembed
+  exp=exp/fanat_unigram_4gpu_noamwarm_accum1_trig_nosrc_noembed
 
   bpemodel=data/dict/bpemodel_unigram_5000
   rnnlm_model=exp/libri_tflm_unigram_4card_cosineanneal_ep10/$out_name
   global_cmvn=data/fbank/cmvn.ark
   test_model=$exp/$out_name
   decode_type='att_only'
-  beam1=10 # check beam1 and beam2 in conf/decode.yaml, att beam
+  beam1=1 # check beam1 and beam2 in conf/decode.yaml, att beam
   beam2=0 # ctc beam
   ctcwt=0
-  lmwt=0.5
+  lmwt=0
   lp=0
   nj=4
   test_set="dev_clean test_clean dev_other test_other"
