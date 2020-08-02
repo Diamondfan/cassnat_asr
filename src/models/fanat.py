@@ -71,14 +71,18 @@ class FaNat(nn.Module):
         self.att_generator = att_gen
         self.pe = pe
 
-    def forward(self, src, src_mask, src_size, tgt_label, ylen, args, sos_embed=None):
+    def forward(self, src, src_mask, src_size, tgt_label, ylen, args, tgt=None):
         # 1. compute ctc output
         x, x_mask = self.src_embed(src, src_mask)
         enc_h = self.encoder(x, x_mask)
-        ctc_out = self.ctc_generator(enc_h)
+        if args.ctc_alpha > 0:
+            ctc_out = self.ctc_generator(enc_h)
+        else:
+            ctc_out = enc_h.new_zeros(enc_h.size())
         
         # 2. prepare different masks,
         if args.use_trigger:
+            assert args.ctc_alpha > 0
             src_size = (src_size * ctc_out.size(1)).long()
             blank = args.padding_idx
             trigger_mask, ylen, ymax = self.viterbi_align(ctc_out, x_mask, src_size, tgt_label[:,:-1], ylen, blank)
@@ -100,10 +104,14 @@ class FaNat(nn.Module):
 
         # 4. decoder, output units generation
         if args.use_unimask:
-            pred_embed = torch.cat([sos_embed, pred_embed[:,:-1,:]], dim=1)
+            true_embed = args.word_embed(tgt)
+            true_embed = true_embed.masked_fill(tgt_mask1.transpose(1,2) == 0, 0)
+            pred_embed = torch.cat([true_embed[:,0:1,:], pred_embed[:,:-1,:]], dim=1)
+            pred_embed = pred_embed.masked_fill(tgt_mask1.transpose(1,2) == 0, 0)
             tgt_mask = tgt_mask1 & self.subsequent_mask(ymax).type_as(tgt_mask1) # uni-direc
         else:
             tgt_mask = tgt_mask1
+            true_embed = None
 
         if args.use_src:
             if args.src_trigger:
@@ -112,7 +120,7 @@ class FaNat(nn.Module):
         else:
             dec_h = self.decoder(pred_embed, tgt_mask)
         att_out = self.att_generator(dec_h)
-        return ctc_out, att_out, pred_embed
+        return ctc_out, att_out, pred_embed, true_embed
 
     def viterbi_align(self, ctc_out, src_mask, src_size, ys, ylens, blank):
         """
@@ -255,7 +263,10 @@ class FaNat(nn.Module):
 
         # 4. decoder, output units generation
         if args.use_unimask:
+            sos_input = src_size.new_zeros(bs, 1).fill_(sos).long()
+            sos_embed = args.word_embed(sos_input)
             pred_embed = torch.cat([sos_embed, pred_embed[:,:-1,:]], dim=1)
+            pred_embed = pred_embed.masked_fill(tgt_mask1.transpose(1,2) == 0, 0)
             tgt_mask = tgt_mask1 & self.subsequent_mask(ymax).type_as(tgt_mask1) # uni-direc
         else:
             tgt_mask = tgt_mask1

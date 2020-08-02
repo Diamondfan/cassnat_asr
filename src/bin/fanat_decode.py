@@ -39,6 +39,7 @@ def main():
     parser.add_argument("--ctc_weight", type=float, default=0.0, help="CTC weight in joint decoding")
     parser.add_argument("--rnnlm", type=str, default=None, help="RNNLM model file to read")
     parser.add_argument("--lm_weight", type=float, default=0.1, help="RNNLM weight")
+    parser.add_argument("--word_embed", default='', type=str, help='Ground truth of word embedding')
     parser.add_argument("--max_decode_ratio", type=float, default=0, help='Decoding step to length ratio')
     parser.add_argument("--seed", default=1, type=int, help="random number seed")
 
@@ -97,6 +98,19 @@ def main():
             lm_model.cuda()
     else:
         lm_model = None
+
+    if args.word_embed:
+        checkpoint = torch.load(args.word_embed, map_location='cpu')['state_dict']
+        from models.modules.embedding import TextEmbedding
+        word_embed = TextEmbedding(args.d_model, args.vocab_size)
+        for name, param in word_embed.named_parameters():
+            param.data.copy_(checkpoint['module.tgt_embed.0.lut.weight'])
+            param.requires_grad = False
+        if use_cuda:
+            torch.cuda.set_device(args.rank)
+            word_embed = word_embed.cuda()
+        args.word_embed = word_embed
+
 
     num_params = 0
     for name, param in model.named_parameters():

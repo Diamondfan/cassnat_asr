@@ -48,6 +48,7 @@ def main():
     parser.add_argument("--embed_alpha", default=0, type=float, help="Task ratio of embedding prediction loss")
     parser.add_argument("--resume_model", default='', type=str, help="The model path to resume")
     parser.add_argument("--init_encoder", default=False, action='store_true', help="decide whether use encoder initialization")
+    parser.add_argument("--word_embed", default='', type=str, help='Ground truth of word embedding')
     parser.add_argument("--print_freq", default=100, type=int, help="Number of iter to print")
     parser.add_argument("--seed", default=1, type=int, help="Random number seed")
 
@@ -119,6 +120,20 @@ def main_worker(rank, world_size, args, backend='nccl'):
     else:
         start_epoch = 0
     
+    if args.word_embed:
+        if rank == 0:
+            print("Loading word embedding from {}".format(args.word_embed))
+        checkpoint = torch.load(args.word_embed, map_location='cpu')['state_dict']
+        from models.modules.embedding import TextEmbedding
+        word_embed = TextEmbedding(args.d_model, args.vocab_size)
+        for name, param in word_embed.named_parameters():
+            param.data.copy_(checkpoint['module.tgt_embed.0.lut.weight'])
+            param.requires_grad = False
+        if use_cuda:
+            torch.cuda.set_device(args.rank)
+            word_embed = word_embed.cuda()
+        args.word_embed = word_embed
+
     num_params = 0
     for name, param in model.named_parameters():
         num_params += param.numel()
@@ -130,7 +145,7 @@ def main_worker(rank, world_size, args, backend='nccl'):
         model = model.cuda()
     
     if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.rank])
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.rank], find_unused_parameters=True)
 
     ## 3. Define vocabulary and data loader
     trainset = SpeechDataset(vocab, args.train_paths, args)
@@ -231,27 +246,34 @@ def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_trai
         utt_list, feats, labels, feat_sizes, label_sizes = data
         src, src_mask = feats, (feats[:,:,0] != args.padding_idx).unsqueeze(1)
         tgt_label = labels[:,1:]
+        tgt = labels[:,:-1]
         tokens = (tgt_label != args.padding_idx).sum().item()
         
         if args.use_gpu:
             src, src_mask = src.cuda(), src_mask.cuda()
             tgt_label = tgt_label.cuda()
+            tgt = tgt.cuda()
             feat_sizes = feat_sizes.cuda()
             label_sizes = label_sizes.cuda()
         
-        ctc_out, att_out, pred_embed = model(src, src_mask, feat_sizes, tgt_label, label_sizes, args)
+        ctc_out, att_out, pred_embed, true_embed = model(src, src_mask, feat_sizes, tgt_label, label_sizes, args, tgt=tgt)
         bs, max_feat_size, _ = ctc_out.size()
 
         # loss computation   
         feat_sizes = (feat_sizes * max_feat_size).long()
-        ctc_loss = criterion[0](ctc_out.transpose(0,1), tgt_label, feat_sizes, label_sizes)
         att_loss = criterion[1](att_out.view(-1, att_out.size(-1)), tgt_label.view(-1))
+        loss = att_loss
+        if args.ctc_alpha > 0:
+            ctc_loss = criterion[0](ctc_out.transpose(0,1), tgt_label, feat_sizes, label_sizes)
+            loss += args.ctc_alpha * ctc_loss
+        else:
+            ctc_loss = torch.Tensor([0])
+
         if args.embed_alpha > 0:
-            embed_loss = criterion[2](pred_embed.view(-1, acouh_gen.size(-1)), true_embed.view(-1, acouh.size(-1)))
-            loss = args.embed_alpha * embed_loss + args.ctc_alpha * ctc_loss + att_loss #(1 - args.ctc_alpha - args.alm_alpha) * att_loss
+            embed_loss = criterion[2](pred_embed.view(-1, pred_embed.size(-1)), true_embed.view(-1, true_embed.size(-1)))
+            loss += args.embed_alpha * embed_loss
         else:
             embed_loss = torch.Tensor([0])
-            loss = args.ctc_alpha * ctc_loss + att_loss #(1 - args.ctc_alpha) * att_loss
 
         # unit error rate computation
         ctc_errs, all_tokens = ctc_greedy_wer(ctc_out, tgt_label.cpu().numpy(), feat_sizes.cpu().numpy(), args.padding_idx)

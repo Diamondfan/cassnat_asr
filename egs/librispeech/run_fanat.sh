@@ -6,7 +6,7 @@ stage=1
 end_stage=1
 
 if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
-  exp=exp/fanat_trig_src_initenc_endctc/
+  exp=exp/fanat_notrig_src_uni_embedfrbase_noctc/
 
   if [ ! -d $exp ]; then
     mkdir -p $exp
@@ -18,7 +18,7 @@ if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
     --data_config conf/data.yaml \
     --batch_size 32 \
     --epochs 100 \
-    --save_epoch 5 \
+    --save_epoch 30 \
     --anneal_lr_ratio 0.5 \
     --patience 1 \
     --end_patience 10 \
@@ -27,11 +27,10 @@ if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
     --opt_type "noamwarm" \
     --weight_decay 0 \
     --label_smooth 0.1 \
-    --ctc_alpha 1 \
-    --embed_alpha 0 \
+    --ctc_alpha 0 \
+    --embed_alpha 0.3 \
     --use_cmvn \
-    --init_encoder \
-    --resume_model exp/1kh_small_unigram_4card_ctc1_att1_noamwarm_accum1_gc5/averaged.mdl \
+    --word_embed exp/averaged.mdl \
     --print_freq 50 > $exp/train.log 2>&1 &
     
   echo "[Stage 1] ASR Training Finished."
@@ -39,8 +38,8 @@ fi
 
 out_name='averaged.mdl'
 if [ $stage -le 2 ] && [ $end_stage -ge 2 ]; then
-  exp=exp/fanat_unigram_4gpu_noamwarm_accum1_trig_nosrc_noembed
-  last_epoch=78
+  exp=exp/fanat_trig_src_uni_embedfrbase
+  last_epoch=99
   
   average_checkpoints.py \
     --exp_dir $exp \
@@ -53,7 +52,7 @@ if [ $stage -le 2 ] && [ $end_stage -ge 2 ]; then
 fi
 
 if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
-  exp=exp/fanat_unigram_4gpu_noamwarm_accum1_trig_nosrc_noembed
+  exp=exp/fanat_trig_src_uni_embedfrbase
 
   bpemodel=data/dict/bpemodel_unigram_5000
   rnnlm_model=exp/libri_tflm_unigram_4card_cosineanneal_ep10/$out_name
@@ -82,7 +81,7 @@ if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
     utils/split_scp.pl data/$tset/feats.scp $split_scps || exit 1;
     
     $cmd JOB=1:$nj $desdir/log/decode.JOB.log \
-      CUDA_VISIBLE_DEVICES="5" fanat_decode.py \
+      CUDA_VISIBLE_DEVICES="1" fanat_decode.py \
         --test_config conf/fanat_decode.yaml \
         --lm_config conf/lm.yaml \
         --data_path $desdir/feats.JOB.scp \
@@ -96,6 +95,7 @@ if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
         --max_decode_ratio 0 \
         --use_cmvn \
         --global_cmvn $global_cmvn \
+        --word_embed exp/averaged.mdl \
         --print_freq 20 
 
     cat $desdir/token_results.*.txt | sort -k1,1 > $desdir/token_results.txt

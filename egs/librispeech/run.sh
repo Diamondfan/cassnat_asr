@@ -3,11 +3,11 @@
 # 2020 (Ruchao Fan)
 
 # The data are already downloaded in the corresponding dir
-data=/NAS5/speech/user/ruchao/Database/LibriSpeech/
-lm_data=/NAS5/speech/user/ruchao/Database/LibriSpeech/libri_lm
+data=/data/nas1/user/ruchao/Database/LibriSpeech/
+lm_data=/data/nas1/user/ruchao/Database/LibriSpeech/libri_lm
 
-stage=8
-end_stage=8
+stage=3
+end_stage=3
 featdir=data/fbank
 
 unit=wp
@@ -35,7 +35,6 @@ if [ $stage -le 2 ] && [ $end_stage -ge 2 ]; then
   for part in $train_set; do
     steps/make_fbank.sh --nj 32 --cmd $cmd --write_utt2num_frames true \
       data/$part exp/make_fbank/$part $featdir/$part
-    #cat data/$part/feats.scp >> data/train_feats.scp
   done
   
   #compute global cmvn with training data
