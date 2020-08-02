@@ -69,6 +69,14 @@ def main():
     for var in vars(args):
         config[var] = getattr(args, var)
     print("Experiment starts with config {}".format(json.dumps(config, sort_keys=True, indent=4)))
+    if args.use_specaug:
+        specaug_conf = Config()
+        for key, val in config["spec_aug"].items():
+            setattr(specaug_conf, key, val)
+        args.specaug_conf = specaug_conf
+    else:
+        args.specaug_conf = None
+
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     cudnn.deterministic = True
@@ -156,6 +164,7 @@ def main_worker(rank, world_size, args, backend='nccl'):
     if rank == 0:
         print("Finish Loading training files. Number batches: {}".format(len(train_loader)))
 
+    args.use_specaug = False
     validset = SpeechDataset(vocab, args.dev_paths, args)
     if args.use_cmvn:
         validset._load_cmvn(args.global_cmvn)

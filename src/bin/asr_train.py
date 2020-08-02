@@ -71,6 +71,8 @@ def main():
         for key, val in config["spec_aug"].items():
             setattr(specaug_conf, key, val)
         args.specaug_conf = specaug_conf
+    else:
+        args.specaug_conf = None
 
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)

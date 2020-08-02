@@ -23,6 +23,11 @@ skip_frame: 1
 noam_factor: 10.0
 noam_warmup: 25000
 
+decay_rate: 0.1
+s_warm: 1000
+s_decay: 80000
+s_keep: 200000
+
 cosine_total: 100000
 cosine_warmup: 1000
 padding_idx: 0
@@ -30,4 +35,15 @@ accum_grad: 1
 grad_clip: 5
 
 use_gpu: True
+
+use_specaug: False
+spec_aug:
+  resize_mode: "PIL"
+  max_time_warp: 5
+  max_freq_width: 30
+  n_freq_mask: 2
+  max_time_width: 40
+  n_time_mask: 2
+  inplace: True
+  replace_with_zero: False
 
