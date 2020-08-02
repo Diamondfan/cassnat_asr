@@ -123,25 +123,25 @@ if [ $stage -le 5 ] && [ $end_stage -ge 5 ]; then
 fi
 
 if [ $stage -le 6 ] && [ $end_stage -ge 6 ]; then
-  exp=exp/1kh_small_unigram_4card_ctc1_att1_noamwarm_accum1_gc5/
+  exp=exp/1kh_small_unigram_4card_ctc1_att1_multistep_accum1_gc5_spec_aug_first/
 
   if [ ! -d $exp ]; then
     mkdir -p $exp
   fi
 
-  CUDA_VISIBLE_DEVICES="4,5,6,7" asr_train.py \
+  CUDA_VISIBLE_DEVICES="0,1,2,3" asr_train.py \
     --exp_dir $exp \
     --train_config conf/transformer.yaml \
     --data_config conf/data.yaml \
     --batch_size 32 \
     --epochs 100 \
-    --save_epoch 30 \
+    --save_epoch 40 \
     --anneal_lr_ratio 0.5 \
     --learning_rate 0.001 \
     --min_lr 0.00001 \
-    --patience 2 \
+    --patience 1 \
     --end_patience 10 \
-    --opt_type "noamwarm" \
+    --opt_type "multistep" \
     --weight_decay 0 \
     --label_smooth 0.1 \
     --ctc_alpha 1 \
@@ -153,8 +153,9 @@ fi
 
 out_name='averaged.mdl'
 if [ $stage -le 7 ] && [ $end_stage -ge 7 ]; then
-  exp=exp/1kh_small_unigram_4card_ctc1_att1_noamwarm_accum1_gc5/
-  last_epoch=69  
+  #exp=exp/1kh_small_unigram_4card_ctc1_att1_noamwarm_accum1_gc5_spec_aug/
+  exp=exp/1kh_small_unigram_4card_ctc1_att1_multistep_accum1_gc5_spec_aug_first
+  last_epoch=86  
   
   average_checkpoints.py \
     --exp_dir $exp \
@@ -162,29 +163,30 @@ if [ $stage -le 7 ] && [ $end_stage -ge 7 ]; then
     --last_epoch $last_epoch \
     --num 12 
   
-  lm_exp=exp/libri_tflm_unigram_4card_cosineanneal_ep10/
-  last_epoch=9  
+  #lm_exp=exp/libri_tflm_unigram_4card_cosineanneal_ep10/
+  #last_epoch=9  
   
-  average_checkpoints.py \
-    --exp_dir $lm_exp \
-    --out_name $out_name \
-    --last_epoch $last_epoch \
-    --num 3
+  #average_checkpoints.py \
+  #  --exp_dir $lm_exp \
+  #  --out_name $out_name \
+  #  --last_epoch $last_epoch \
+  #  --num 3
 
   echo "[Stage 7] Average checkpoints Finished."
 
 fi
 
 if [ $stage -le 8 ] && [ $end_stage -ge 8 ]; then
-  exp=exp/1kh_small_unigram_4card_ctc1_att1_noamwarm_accum1_gc5/
-  
-  test_model=$exp/$out_name #$exp/best_model.mdl
-  rnnlm_model=exp/libri_tflm_unigram_4card_cosineanneal_ep10/$out_name
+  exp=exp/1kh_small_unigram_4card_ctc1_att1_multistep_accum1_gc5_spec_aug_first/
+  #exp=exp/1kh_small_unigram_4card_ctc1_att1_multistep_accum1_gc5_spec_aug
+
+  test_model=$exp/$out_name
+  rnnlm_model=exp/averaged_lm.mdl
   global_cmvn=data/fbank/cmvn.ark
   decode_type='ctc_att'
-  beam1=5 # check beam1 and beam2 in conf/decode.yaml, att beam
+  beam1=10 # check beam1 and beam2 in conf/decode.yaml, att beam
   beam2=20 # ctc beam
-  ctcwt=0.3
+  ctcwt=0.5
   lp=0
   lmwt=0
   nj=4
@@ -204,7 +206,7 @@ if [ $stage -le 8 ] && [ $end_stage -ge 8 ]; then
     utils/split_scp.pl data/$tset/feats.scp $split_scps || exit 1;
     
     $cmd JOB=1:$nj $desdir/log/decode.JOB.log \
-      CUDA_VISIBLE_DEVICES="7" asr_decode.py \
+      CUDA_VISIBLE_DEVICES="0" asr_decode.py \
         --test_config conf/decode.yaml \
         --lm_config conf/lm.yaml \
         --data_path $desdir/feats.JOB.scp \

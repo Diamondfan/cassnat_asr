@@ -66,6 +66,12 @@ def main():
     for var in vars(args):
         config[var] = getattr(args, var)
     print("Experiment starts with config {}".format(json.dumps(config, sort_keys=True, indent=4)))
+    if args.use_specaug:
+        specaug_conf = Config()
+        for key, val in config["spec_aug"].items():
+            setattr(specaug_conf, key, val)
+        args.specaug_conf = specaug_conf
+
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     cudnn.deterministic = True
@@ -133,6 +139,7 @@ def main_worker(rank, world_size, args, backend='nccl'):
     if args.rank == 0:
         print("Finish Loading training files. Number batches: {}".format(len(train_loader)))
 
+    args.use_specaug = False  # specaug cannot be applied to valid
     validset = SpeechDataset(vocab, args.dev_paths, args)
     if args.use_cmvn:
         validset._load_cmvn(args.global_cmvn)
@@ -166,9 +173,9 @@ def main_worker(rank, world_size, args, backend='nccl'):
         
         temp_lr = optimizer.param_groups[0]['lr'] if args.opt_type == "normal" else optimizer.optimizer.param_groups[0]['lr']
         if args.distributed:
-            average_number = torch.Tensor([train_loss, train_wer, valid_loss, valid_wer]).float().cuda(args.rank)
+            average_number = torch.Tensor([train_loss, train_wer, train_ctc_wer, valid_loss, valid_wer, valid_ctc_wer]).float().cuda(args.rank)
             torch.distributed.all_reduce(average_number, op=ReduceOp.SUM)
-            train_loss, train_wer, valid_loss, valid_wer = (average_number / args.world_size).cpu().numpy()
+            train_loss, train_wer, train_ctc_wer, valid_loss, valid_wer, valid_ctc_wer = (average_number / args.world_size).cpu().numpy()
         if args.rank == 0:
             print("Epoch {} done, Train Loss: {:.4f}, Train WER: {:.4f} Train ctc WER: {:.4f} Valid Loss: {:.4f} Valid WER: {:.4f} Valid ctc WER: {:.4f} Current LR: {:4e}".format(
                         epoch, train_loss, train_wer, train_ctc_wer, valid_loss, valid_wer, valid_ctc_wer, temp_lr), flush=True)

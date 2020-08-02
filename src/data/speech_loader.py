@@ -7,6 +7,7 @@ import numpy as np
 
 from torch.utils.data import Dataset, DataLoader
 from data.feat_op import skip_feat, context_feat
+from data.spec_augment import spec_aug
 
 class SingleSet(object):
     def __init__(self, vocab, data_path, rank):
@@ -65,7 +66,9 @@ class SpeechDataset(Dataset):
         self.rank = args.rank
         self.left_context = args.left_ctx
         self.right_context = args.right_ctx
-        self.skip_frame = args.skip_frame     
+        self.skip_frame = args.skip_frame  
+        self.use_specaug = args.use_specaug
+        self.specaug_conf = args.specaug_conf 
         self.use_cmvn = False
         self.data_streams = self._load_streams(data_paths)
         self.data_stream_sizes = [i.get_len() for i in self.data_streams]
@@ -106,11 +109,17 @@ class SpeechDataset(Dataset):
         if self.use_cmvn:
             assert feat.shape[1] == self.mean.shape[0]
             feat = (feat - self.mean) / self.std
+
+        if self.use_specaug:
+            feat = spec_aug(feat, self.specaug_conf)
+
         seq_len, dim = feat.shape
         if seq_len % self.skip_frame != 0:
             pad_len = self.skip_frame - seq_len % self.skip_frame
             feat = np.vstack([feat,np.zeros((pad_len, dim))])
         feat = skip_feat(context_feat(feat, self.left_context, self.right_context), self.skip_frame)
+        #if self.use_specaug:
+        #    feat = spec_aug(feat, self.specaug_conf)
         return (utt, feat, text)
 
     def __len__(self):

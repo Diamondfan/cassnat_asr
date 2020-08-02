@@ -106,6 +106,8 @@ def main():
     if use_cuda:
         model = model.cuda()
 
+    args.use_specaug = False
+    args.specaug_conf = None
     testset = SpeechDataset(vocab, args.test_paths, args)
     if args.use_cmvn:
         testset._load_cmvn(args.global_cmvn)

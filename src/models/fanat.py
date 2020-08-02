@@ -215,6 +215,65 @@ class FaNat(nn.Module):
         ymax += 1
         return trigger_mask, ylen, ymax
 
+    def beam_decode_align(self, ctc_out, src_mask, src_size, args, lm_model):
+        "This is used for decoding, forced alignment is needed for training"
+        bs, xmax, _ = ctc_out.size()
+        blank = args.padding_idx
+        batch_top_seqs = [ [{"score_ctc": 0, "score_lm": 0, 'hyp': [], 'path': []}] for b in range(bs)]
+
+        best_hyps = []
+        for b in range(bs):
+            beam = batch_top_seqs[b]
+            top_probs, top_indices = torch.topk(ctc_out[b], args.ctc_beam, dim=-1)
+            
+            for t in range(src_size[b].item()):
+                new_beam = []
+                for seq in beam:
+                    hyp, path, score_ctc, socre_lm = seq['hyp'], seq['path'], seq['score_ctc'], seq['score_lm']
+                    
+                    ys = [sos] + hyp
+                    ys = torch.Tensor(ys).type_as(ctc_out).long().unsqueeze(0)
+                    tgt_mask = (ys != args.padding_idx).unsqueeze(1)
+                    tgt_mask = tgt_mask & model.subsequent_mask(ys.size(-1)).type_as(src_mask)
+                    lm_prob = lm_model(ys, tgt_mask)[:,-1,:]
+
+                    for c in top_indices[t].cpu().numpy():
+                        score_ctc += ctc_out[b, t, blank].item()
+                        path = path + [c]
+                        if c != blank:
+                            hyp = hyp + [c]
+                            score_lm += lm_prob[0, c].item() * args.lm_weight
+
+                        new_beam.append({'score_ctc': score_ctc, 'score_lm': score_lm, 'hyp': hyp, 'path': path})
+
+                sort_f = lambda x: x['score_ctc'] + x['score_lm'] + args.length_penalty * len(x['hyp']) \
+                                if args.length_penalty is not None else lambda x: x['score'] + x['score_lm']
+                beam = sorted(new_beam, key=sort_f, reverse=True)[:args.beam_width]
+            batch_top_seqs[b] = beam
+
+        best_paths = ctc_out.argmax(-1)
+        best_paths = best_paths.masked_fill(src_mask.squeeze(1)==0, 0)
+
+        aligned_seq_shift = best_paths.new_zeros(best_paths.size())
+        aligned_seq_shift[:, 1:] = best_paths[:,:-1]
+        dup = best_paths == aligned_seq_shift
+        best_paths.masked_fill_(dup, 0)
+        aligned_seq_shift[:,1:] = best_paths[:,:-1]
+        
+        ylen = torch.sum((best_paths != blank), 1)
+        ymax = torch.max(ylen).item()
+        trigger_mask = (aligned_seq_shift != blank).cumsum(1).unsqueeze(1).repeat(1, ymax+1, 1)
+        trigger_mask = trigger_mask == torch.arange(ymax+1).type_as(trigger_mask).unsqueeze(0).unsqueeze(2)
+        #sos_mask = trigger_mask.new_zeros((bs,1, xmax))
+        #sos_mask[:,:,0] = 1
+        trigger_mask[:,-1:,:].masked_fill_(src_mask==0, 0)
+        trigger_mask[:,-1,:].scatter_(1, src_size.unsqueeze(1)-1, 1)
+        #trigger_mask = torch.cat([sos_mask, trigger_mask], 1)
+        
+        ylen = ylen + 1
+        ymax += 1
+        return trigger_mask, ylen, ymax
+
     def subsequent_mask(self, size):
         ret = torch.ones(size, size, dtype=torch.uint8)
         return torch.tril(ret, out=ret).unsqueeze(0)
