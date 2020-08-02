@@ -9,7 +9,7 @@ N_dec: 6
 d_model: 256
 d_ff: 2048
 n_head: 4
-dropout: 0.1
+dropout: 0
 
 n_features: 80
 vocab_size: 4990
@@ -21,8 +21,8 @@ padding_idx: 0
 use_gpu: True
 
 #beam_decode
-beam_width: 5
-ctc_beam: 0
-length_penalty: 0.2
+beam_width: 10
+ctc_beam: 20
+length_penalty: 0
 T: 1.0
  

@@ -28,6 +28,7 @@ def main():
     parser.add_argument("--test_config")
     parser.add_argument("--lm_config")
     parser.add_argument("--data_path")
+    parser.add_argument("--lm_config")
     parser.add_argument("--use_cmvn", default=False, action='store_true', help="Use global cmvn or not")
     parser.add_argument("--global_cmvn", type=str, help="Cmvn file to load")
     parser.add_argument("--batch_size", default=32, type=int, help="Training minibatch size")
@@ -59,7 +60,6 @@ def main():
         lm_args = Config()
         for key, val in lm_config.items():
             setattr(lm_args, key, val)
-
     print("Experiment starts with config {}".format(json.dumps(config, sort_keys=True, indent=4)))
 
     use_cuda = args.use_gpu

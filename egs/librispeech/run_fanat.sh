@@ -18,7 +18,7 @@ if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
     --data_config conf/data.yaml \
     --batch_size 32 \
     --epochs 100 \
-    --save_epoch 30 \
+    --save_epoch 40 \
     --anneal_lr_ratio 0.5 \
     --patience 1 \
     --end_patience 10 \
