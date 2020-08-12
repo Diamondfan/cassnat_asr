@@ -86,6 +86,12 @@ class FaNat(nn.Module):
             src_size = (src_size * ctc_out.size(1)).long()
             blank = args.padding_idx
             trigger_mask, ylen, ymax = self.viterbi_align(ctc_out, x_mask, src_size, tgt_label[:,:-1], ylen, blank)
+            if args.context_trigger > 0:
+                trigger_shift_right = trigger_mask.new_zeros(trigger_mask.size())
+                trigger_shift_right[:, :, 1:] = trigger_mask[:,:, :-1]
+                #trigger_shift_left = trigger_mask.new_zeros(trigger_mask.size())
+                #trigger_shift_left[:,:,:-1] = trigger_mask[:,:,1:]
+                trigger_mask = trigger_mask | trigger_shift_right #| trigger_shift_left
             trigger_mask = trigger_mask & x_mask
         else:
             trigger_mask = x_mask
@@ -223,70 +229,32 @@ class FaNat(nn.Module):
         ymax += 1
         return trigger_mask, ylen, ymax
 
-    def beam_decode_align(self, ctc_out, src_mask, src_size, args, lm_model):
-        "This is used for decoding, forced alignment is needed for training"
-        bs, xmax, _ = ctc_out.size()
-        blank = args.padding_idx
-        batch_top_seqs = [ [{"score_ctc": 0, "score_lm": 0, 'hyp': [], 'path': []}] for b in range(bs)]
-
-        best_hyps = []
+    def beam_path_align(self, ctc_out, src_mask, src_size, blank, ctc_top_seqs):
+        # Obatain a better alignment and then trigger mask with languag model
+        # This is similar with ctc beam search, but without merging the paths with same output
+        bs = ctc_out.size(0)
+        tgt_label, ylen = [], []
         for b in range(bs):
-            beam = batch_top_seqs[b]
-            top_probs, top_indices = torch.topk(ctc_out[b], args.ctc_beam, dim=-1)
-            
-            for t in range(src_size[b].item()):
-                new_beam = []
-                for seq in beam:
-                    hyp, path, score_ctc, socre_lm = seq['hyp'], seq['path'], seq['score_ctc'], seq['score_lm']
-                    
-                    ys = [sos] + hyp
-                    ys = torch.Tensor(ys).type_as(ctc_out).long().unsqueeze(0)
-                    tgt_mask = (ys != args.padding_idx).unsqueeze(1)
-                    tgt_mask = tgt_mask & model.subsequent_mask(ys.size(-1)).type_as(src_mask)
-                    lm_prob = lm_model(ys, tgt_mask)[:,-1,:]
+            tgt_label.append([])
+            ylen.append(0)
+            for idx in ctc_top_seqs[b][0]['hyp']:
+                tgt_label[-1].append(idx)
+                ylen[-1] += 1
 
-                    for c in top_indices[t].cpu().numpy():
-                        score_ctc += ctc_out[b, t, blank].item()
-                        path = path + [c]
-                        if c != blank:
-                            hyp = hyp + [c]
-                            score_lm += lm_prob[0, c].item() * args.lm_weight
-
-                        new_beam.append({'score_ctc': score_ctc, 'score_lm': score_lm, 'hyp': hyp, 'path': path})
-
-                sort_f = lambda x: x['score_ctc'] + x['score_lm'] + args.length_penalty * len(x['hyp']) \
-                                if args.length_penalty is not None else lambda x: x['score'] + x['score_lm']
-                beam = sorted(new_beam, key=sort_f, reverse=True)[:args.beam_width]
-            batch_top_seqs[b] = beam
-
-        best_paths = ctc_out.argmax(-1)
-        best_paths = best_paths.masked_fill(src_mask.squeeze(1)==0, 0)
-
-        aligned_seq_shift = best_paths.new_zeros(best_paths.size())
-        aligned_seq_shift[:, 1:] = best_paths[:,:-1]
-        dup = best_paths == aligned_seq_shift
-        best_paths.masked_fill_(dup, 0)
-        aligned_seq_shift[:,1:] = best_paths[:,:-1]
+        ymax = max(ylen)
+        tgt = src_size.new_zeros(bs, ymax).long()
+        for b in range(bs):
+            tgt[b].narrow(0, 0, ylen[b]).copy_(torch.Tensor(tgt_label[b]).type_as(src_size))
+        ylen = torch.Tensor(ylen).type_as(src_size)
         
-        ylen = torch.sum((best_paths != blank), 1)
-        ymax = torch.max(ylen).item()
-        trigger_mask = (aligned_seq_shift != blank).cumsum(1).unsqueeze(1).repeat(1, ymax+1, 1)
-        trigger_mask = trigger_mask == torch.arange(ymax+1).type_as(trigger_mask).unsqueeze(0).unsqueeze(2)
-        #sos_mask = trigger_mask.new_zeros((bs,1, xmax))
-        #sos_mask[:,:,0] = 1
-        trigger_mask[:,-1:,:].masked_fill_(src_mask==0, 0)
-        trigger_mask[:,-1,:].scatter_(1, src_size.unsqueeze(1)-1, 1)
-        #trigger_mask = torch.cat([sos_mask, trigger_mask], 1)
-        
-        ylen = ylen + 1
-        ymax += 1
+        trigger_mask, ylen, ymax = self.viterbi_align(ctc_out, src_mask, src_size, tgt, ylen, blank)
         return trigger_mask, ylen, ymax
 
     def subsequent_mask(self, size):
         ret = torch.ones(size, size, dtype=torch.uint8)
         return torch.tril(ret, out=ret).unsqueeze(0)
     
-    def beam_decode(self, src, src_mask, src_size, vocab, args, lm_model=None):
+    def beam_decode(self, src, src_mask, src_size, vocab, args, lm_model=None, ctc_top_seqs=None):
         """att decoding with rnnlm and ctc out probability
 
         args.rnnlm: path of rnnlm model
@@ -303,11 +271,20 @@ class FaNat(nn.Module):
 
         if args.use_trigger:
             src_size = (src_size * ctc_out.size(1)).long()
-            trigger_mask, ylen, ymax = self.best_path_align(ctc_out, src_mask, src_size, blank)
+            if args.decode_type == 'ctc_att':
+                trigger_mask, ylen, ymax = self.beam_path_align(ctc_out, src_mask, src_size, blank, ctc_top_seqs)
+            else:
+                trigger_mask, ylen, ymax = self.best_path_align(ctc_out, src_mask, src_size, blank)
+            if args.context_trigger > 0:
+                trigger_shift_right = trigger_mask.new_zeros(trigger_mask.size())
+                trigger_shift_right[:, :, 1:] = trigger_mask[:,:, :-1]
+                #trigger_shift_left = trigger_mask.new_zeros(trigger_mask.size())
+                #trigger_shift_left[:,:,:-1] = trigger_mask[:,:,1:]
+                trigger_mask = trigger_mask | trigger_shift_right #| trigger_shift_left
             trigger_mask = trigger_mask & src_mask
         else:
             trigger_mask = src_mask
-            ylen = ylen + 1
+            ylen = src_size.new_zeros(src_size.size()).fill_(args.decode_length).long()
             ymax = ylen.max().item()
 
         bs, _, d_model = enc_h.size()

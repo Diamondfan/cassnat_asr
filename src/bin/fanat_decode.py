@@ -28,7 +28,6 @@ def main():
     parser.add_argument("--test_config")
     parser.add_argument("--lm_config")
     parser.add_argument("--data_path")
-    parser.add_argument("--lm_config")
     parser.add_argument("--use_cmvn", default=False, action='store_true', help="Use global cmvn or not")
     parser.add_argument("--global_cmvn", type=str, help="Cmvn file to load")
     parser.add_argument("--batch_size", default=32, type=int, help="Training minibatch size")
@@ -54,7 +53,7 @@ def main():
     for var in vars(args):
         config[var] = getattr(args, var)
 
-    if args.lm_weight > 0:
+    if args.lm_weight > 0 or args.ctc_lm_weight > 0:
         with open(args.lm_config) as f:
             lm_config = yaml.safe_load(f)
         lm_args = Config()
@@ -83,7 +82,7 @@ def main():
                 name = "module." + name
             param.data.copy_(model_state[name])
 
-    if args.lm_weight > 0:
+    if args.lm_weight > 0 or args.ctc_lm_weight > 0:
         from models.lm import make_model as make_lm_model
         lm_args.vocab_size = vocab.n_words
         lm_model = make_lm_model(lm_args)
@@ -120,6 +119,8 @@ def main():
     if use_cuda:
         model = model.cuda()
 
+    args.use_specaug = False
+    args.specaug_conf = None
     testset = SpeechDataset(vocab, args.test_paths, args)
     if args.use_cmvn:
         testset._load_cmvn(args.global_cmvn)
@@ -146,6 +147,9 @@ def main():
 
             if args.decode_type == 'ctc_only':
                 recog_results = ctc_beam_decode(model, src, src_mask, feat_sizes, vocab, args, lm_model)
+            elif args.decode_type == 'ctc_att':
+                batch_top_seqs = ctc_beam_decode(model, src, src_mask, feat_sizes, vocab, args, lm_model)
+                recog_results = model.beam_decode(src, src_mask, feat_sizes, vocab, args, lm_model, batch_top_seqs)
             else:
                 recog_results = model.beam_decode(src, src_mask, feat_sizes, vocab, args, lm_model)
             

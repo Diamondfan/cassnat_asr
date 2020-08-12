@@ -66,6 +66,13 @@ class Transformer(nn.Module):
         att_out = self.att_generator(dec_h)
         return ctc_out, att_out, enc_h
 
+    def forward_att(self, src, tgt, src_mask, tgt_mask):
+        x, x_mask = self.src_embed(src, src_mask)
+        enc_h = self.encoder(x, x_mask)
+        dec_h = self.decoder(self.tgt_embed(tgt), enc_h, x_mask, tgt_mask)
+        att_out = F.softmax(self.att_generator.proj(dec_h), dim=-1)
+        return att_out
+
     def subsequent_mask(self, size):
         ret = torch.ones(size, size, dtype=torch.uint8)
         return torch.tril(ret, out=ret).unsqueeze(0)

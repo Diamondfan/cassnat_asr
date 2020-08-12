@@ -187,7 +187,7 @@ if [ $stage -le 8 ] && [ $end_stage -ge 8 ]; then
   beam2=20 # ctc beam
   ctcwt=0.5
   lp=0
-  lmwt=0
+  lmwt=0.7
   nj=4
   
   for tset in $test_set; do

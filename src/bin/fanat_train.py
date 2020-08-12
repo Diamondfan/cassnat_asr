@@ -19,7 +19,7 @@ from utils.wer import ctc_greedy_wer, att_greedy_wer
 from data.vocab import Vocab
 from utils.optimizer import get_opt
 from models.fanat import make_model
-from utils.loss import LabelSmoothing
+from utils.loss import LabelSmoothing, KLDivLoss
 from data.speech_loader import SpeechDataset, SpeechDataLoader
 
 class Config():
@@ -49,6 +49,7 @@ def main():
     parser.add_argument("--resume_model", default='', type=str, help="The model path to resume")
     parser.add_argument("--init_encoder", default=False, action='store_true', help="decide whether use encoder initialization")
     parser.add_argument("--word_embed", default='', type=str, help='Ground truth of word embedding')
+    parser.add_argument("--knowlg_dist", default=False, action='store_true', help='AT model for knowledge distillation')
     parser.add_argument("--print_freq", default=100, type=int, help="Number of iter to print")
     parser.add_argument("--seed", default=1, type=int, help="Random number seed")
 
@@ -115,7 +116,7 @@ def main_worker(rank, world_size, args, backend='nccl'):
         for name, param in model.named_parameters():
             if name.split('.')[0] in ['src_embed', 'encoder', 'ctc_generator']:
                 param.data.copy_(checkpoint['module.'+name])
-        
+       
         #model.load_state_dict(checkpoint["state_dict"])
         #optimizer.load_state_dict(checkpoint['optimizer'])
         #if use_cuda:
@@ -126,7 +127,28 @@ def main_worker(rank, world_size, args, backend='nccl'):
         #start_epoch = checkpoint['epoch']+1
         start_epoch = 0
     else:
+        checkpoint = None
         start_epoch = 0
+
+    if args.knowlg_dist:
+        if rank == 0:
+            print("Loading model from {} for knowledge distillation".format(args.resume_model))
+        from models.transformer import make_model as make_tfmodel
+        args.N_dec = 6
+        if checkpoint is None:
+             checkpoint = torch.load(args.resume_model, map_location='cpu')['state_dict']
+        
+        at_model = make_tfmodel(args.input_size, args)
+        for name, param in at_model.named_parameters():
+            if name not in checkpoint:
+                name = "module." + name
+                param.data.copy_(checkpoint[name])
+                param.requires_grad = False
+        if use_cuda:
+            torch.cuda.set_device(args.rank)
+            at_model = at_model.cuda(rank)
+        args.at_model = at_model
+        args.at_model.eval()
     
     if args.word_embed:
         if rank == 0:
@@ -174,7 +196,10 @@ def main_worker(rank, world_size, args, backend='nccl'):
         print("Finish Loading dev files. Number batches: {}".format(len(valid_loader)))
     
     criterion_ctc = torch.nn.CTCLoss(reduction='mean')
-    criterion_att = LabelSmoothing(args.vocab_size, args.padding_idx, args.label_smooth)
+    if args.knowlg_dist:
+        criterion_att = KLDivLoss(args.padding_idx)
+    else:
+        criterion_att = LabelSmoothing(args.vocab_size, args.padding_idx, args.label_smooth)
     criterion_embed = torch.nn.MSELoss(reduction='mean')
     criterion = (criterion_ctc, criterion_att, criterion_embed)    
 
@@ -210,7 +235,7 @@ def main_worker(rank, world_size, args, backend='nccl'):
                         epoch, train_loss, train_wer, train_ctc_wer, valid_loss, valid_wer, valid_ctc_wer, temp_lr), flush=True)
         
         if args.opt_type == 'normal':
-            scheduler.step(valid_ctc_wer)
+            scheduler.step(valid_wer)
         
         if epoch > args.save_epoch and args.rank == 0:
             output_file=args.exp_dir + '/model.' + str(epoch) + '.mdl'
@@ -218,8 +243,8 @@ def main_worker(rank, world_size, args, backend='nccl'):
                             'state_dict': model.state_dict()}
             torch.save(checkpoint, output_file)
 
-        if valid_ctc_wer < best_wer:
-            best_wer = valid_ctc_wer
+        if valid_wer < best_wer:
+            best_wer = valid_wer
             best_epoch = epoch
             if args.rank == 0:
                 output_file=args.exp_dir + '/best_model.mdl'
@@ -267,10 +292,15 @@ def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_trai
         
         ctc_out, att_out, pred_embed, true_embed = model(src, src_mask, feat_sizes, tgt_label, label_sizes, args, tgt=tgt)
         bs, max_feat_size, _ = ctc_out.size()
-
-        # loss computation   
         feat_sizes = (feat_sizes * max_feat_size).long()
-        att_loss = criterion[1](att_out.view(-1, att_out.size(-1)), tgt_label.view(-1))
+        # loss computation
+        if args.knowlg_dist:
+            tgt_mask = (tgt != args.padding_idx).unsqueeze(1)
+            tgt_mask = tgt_mask & subsequent_mask(tgt.size(-1)).type_as(tgt_mask)
+            at_prob = args.at_model.forward_att(src, tgt, src_mask, tgt_mask)
+            att_loss = criterion[1](att_out.view(-1, att_out.size(-1)), at_prob.view(-1, at_prob.size(-1)), tgt_label.view(-1))
+        else:
+            att_loss = criterion[1](att_out.view(-1, att_out.size(-1)), tgt_label.view(-1))
         loss = att_loss
         if args.ctc_alpha > 0:
             ctc_loss = criterion[0](ctc_out.transpose(0,1), tgt_label, feat_sizes, label_sizes)

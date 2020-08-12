@@ -29,3 +29,21 @@ class LabelSmoothing(nn.Module):
             self.true_dist = true_dist
         return self.criterion(x, true_dist).masked_fill(mask.unsqueeze(1)==0, 0).sum() / tokens
 
+
+class KLDivLoss(nn.Module):
+    def __init__(self, padding_idx):
+        super(KLDivLoss, self).__init__()
+        self.criterion = nn.KLDivLoss(reduction='none')
+        self.padding_idx = padding_idx
+        
+    def forward(self, x, at_prob, target):
+        """
+        x: bU x class
+        taget: bU x class
+        """
+        assert x.size(1) == at_prob.size(1)
+        mask = target != self.padding_idx
+        tokens = mask.sum().item()
+        return self.criterion(x, at_prob).masked_fill(mask.unsqueeze(1)==0, 0).sum() / tokens
+
+
