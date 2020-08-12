@@ -26,7 +26,6 @@ def main():
     parser = argparse.ArgumentParser(description="Configuration for transformer testing")
    
     parser.add_argument("--test_config")
-    parser.add_argument("--lm_config")
     parser.add_argument("--data_path")
     parser.add_argument("--use_cmvn", default=False, action='store_true', help="Use global cmvn or not")
     parser.add_argument("--global_cmvn", type=str, help="Cmvn file to load")

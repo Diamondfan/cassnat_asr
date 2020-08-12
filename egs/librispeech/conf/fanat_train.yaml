@@ -14,6 +14,8 @@ use_src: True
 src_trigger: False
 use_unimask: False
 context_trigger: 0
+use_best_path: False
+sample_dist: 1
 
 n_features: 80
 vocab_size: 4999

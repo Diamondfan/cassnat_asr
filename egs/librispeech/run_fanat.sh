@@ -18,7 +18,7 @@ if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
     --data_config conf/data.yaml \
     --batch_size 16 \
     --epochs 100 \
-    --save_epoch 20 \
+    --save_epoch 30 \
     --anneal_lr_ratio 0.5 \
     --patience 1 \
     --end_patience 10 \
@@ -31,8 +31,8 @@ if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
     --embed_alpha 0 \
     --use_cmvn \
     --init_encoder \
-    --resume_model exp/large_averaged.mdl \
-    --print_freq 100 > $exp/train.log 2>&1 &
+    --resume_model exp/baseline/averaged.mdl \
+    --print_freq 50 > $exp/train.log 2>&1 &
     
     #--word_embed exp/averaged.mdl \
     #--knowlg_dist \
@@ -41,8 +41,8 @@ fi
 
 out_name='averaged.mdl'
 if [ $stage -le 2 ] && [ $end_stage -ge 2 ]; then
-  exp=exp/fanat_large_specaug_multistep_trig_src_initenc
-  last_epoch=62
+  exp=exp/fanat_multistep_trig_src_initenc_ctc1
+  last_epoch=38
   
   average_checkpoints.py \
     --exp_dir $exp \
@@ -55,7 +55,7 @@ if [ $stage -le 2 ] && [ $end_stage -ge 2 ]; then
 fi
 
 if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
-  exp=exp/fanat_large_specaug_multistep_trig_src_initenc
+  exp=exp/fanat_multistep_trig_src_initenc_ctc1
 
   bpemodel=data/dict/bpemodel_unigram_5000
   rnnlm_model=exp/libri_tflm_unigram_4card_cosineanneal_ep10/$out_name

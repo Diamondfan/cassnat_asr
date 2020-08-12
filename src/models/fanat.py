@@ -85,7 +85,11 @@ class FaNat(nn.Module):
             assert args.ctc_alpha > 0
             src_size = (src_size * ctc_out.size(1)).long()
             blank = args.padding_idx
-            trigger_mask, ylen, ymax = self.viterbi_align(ctc_out, x_mask, src_size, tgt_label[:,:-1], ylen, blank)
+            if args.use_best_path:
+                trigger_mask, ylen, ymax = self.best_path_align(ctc_out, x_mask, src_size, blank)
+            else:
+                trigger_mask, ylen, ymax = self.viterbi_align(ctc_out, x_mask, src_size, tgt_label[:,:-1], ylen, blank, args.sample_dist)
+
             if args.context_trigger > 0:
                 trigger_shift_right = trigger_mask.new_zeros(trigger_mask.size())
                 trigger_shift_right[:, :, 1:] = trigger_mask[:,:, :-1]
@@ -126,9 +130,9 @@ class FaNat(nn.Module):
         else:
             dec_h = self.decoder(pred_embed, tgt_mask)
         att_out = self.att_generator(dec_h)
-        return ctc_out, att_out, pred_embed, true_embed
+        return ctc_out, att_out, pred_embed, true_embed, tgt_mask1
 
-    def viterbi_align(self, ctc_out, src_mask, src_size, ys, ylens, blank):
+    def viterbi_align(self, ctc_out, src_mask, src_size, ys, ylens, blank, sample_dist):
         """
         ctc_out: log probability of ctc output
         src_mask, src_size: specify the effective length of each sample in a batch
@@ -189,7 +193,14 @@ class FaNat(nn.Module):
         dup = aligned_seq == aligned_seq_shift
         aligned_seq.masked_fill_(dup, 0)
         aligned_seq_shift[:,1:] = aligned_seq[:,:-1]
-        
+
+        if sample_dist > 0:
+            orig_pos = torch.nonzero(aligned_seq_shift, as_tuple=True)
+            sample_shift = torch.randint(-sample_dist, sample_dist, orig_pos[1].size()).type_as(aligned_seq_shift)
+            aligned_seq_shift[orig_pos] = blank
+            orig_pos[1].add_(sample_shift)
+            aligned_seq_shift[orig_pos] = 1
+
         # 6. transcribe aliged_seq to trigger mask
         trigger_mask = (aligned_seq_shift != blank).cumsum(1).unsqueeze(1).repeat(1, ymax+1, 1)
         trigger_mask = trigger_mask == torch.arange(ymax+1).type_as(trigger_mask).unsqueeze(0).unsqueeze(2)

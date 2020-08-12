@@ -213,15 +213,18 @@ def main_worker(rank, world_size, args, backend='nccl'):
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=args.anneal_lr_ratio, 
                             patience=args.patience, min_lr=args.min_lr)
     
+    sample_dist = args.sample_dist
     for epoch in range(start_epoch, args.epochs):
         if args.distributed:
             train_loader.set_epoch(epoch)
 
         model.train()
+        args.sample_dist = sample_dist
         train_loss, train_wer, train_ctc_wer = run_epoch(epoch, train_loader, model, criterion, args, optimizer, is_train=True)
         
         model.eval()
         with torch.no_grad():
+            args.sample_dist = 0
             valid_loss, valid_wer, valid_ctc_wer = run_epoch(epoch, valid_loader, model, criterion, args, is_train=False)
 
         temp_lr = optimizer.param_groups[0]['lr'] if args.opt_type == "normal" else optimizer.optimizer.param_groups[0]['lr']
@@ -290,7 +293,7 @@ def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_trai
             feat_sizes = feat_sizes.cuda()
             label_sizes = label_sizes.cuda()
         
-        ctc_out, att_out, pred_embed, true_embed = model(src, src_mask, feat_sizes, tgt_label, label_sizes, args, tgt=tgt)
+        ctc_out, att_out, pred_embed, true_embed, tgt_mask_pred = model(src, src_mask, feat_sizes, tgt_label, label_sizes, args, tgt=tgt)
         bs, max_feat_size, _ = ctc_out.size()
         feat_sizes = (feat_sizes * max_feat_size).long()
         # loss computation
@@ -299,6 +302,8 @@ def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_trai
             tgt_mask = tgt_mask & subsequent_mask(tgt.size(-1)).type_as(tgt_mask)
             at_prob = args.at_model.forward_att(src, tgt, src_mask, tgt_mask)
             att_loss = criterion[1](att_out.view(-1, att_out.size(-1)), at_prob.view(-1, at_prob.size(-1)), tgt_label.view(-1))
+        elif args.use_best_path:
+            att_loss = criterion[1].forward_best_path(att_out, tgt_label, tgt_mask_pred)
         else:
             att_loss = criterion[1](att_out.view(-1, att_out.size(-1)), tgt_label.view(-1))
         loss = att_loss

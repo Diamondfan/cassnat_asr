@@ -24,5 +24,7 @@ use_gpu: True
 beam_width: 5
 ctc_beam: 20
 length_penalty: 0
+ctc_beam: 0
+length_penalty: 0.2
 T: 1.0
  

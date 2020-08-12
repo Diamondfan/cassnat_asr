@@ -19,10 +19,10 @@ noam_warmup: 25000
 cosine_total: 100000
 cosine_warmup: 1000
 
-decay_rate: 0.1
+decay_rate: 0.01
 s_warm: 1000
 s_decay: 40000
-s_keep: 120000
+s_keep: 160000
 
 padding_idx: 0
 accum_grad: 1
@@ -30,7 +30,7 @@ grad_clip: 5
 
 use_gpu: True
 
-use_specaug: True
+use_specaug: False
 spec_aug:
   resize_mode: "PIL"
   max_time_warp: 5
