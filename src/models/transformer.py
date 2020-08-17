@@ -197,4 +197,105 @@ class Transformer(nn.Module):
                 batch_top_seqs[b] = sorted(all_seqs[b], key=sort_f, reverse=True)[:args.beam_width]
         return batch_top_seqs
 
+    def fast_decode_with_ctc(self, src, src_mask, vocab, args, lm_model=None):
+        bs = src.size(0)
+        sos = vocab.word2index['sos']
+        eos = vocab.word2index['eos']
+        blank = vocab.word2index['blank']
+
+        x, src_mask = self.src_embed(src, src_mask)
+        enc_h = self.encoder(x, src_mask)
+        ctc_out = self.ctc_generator(enc_h)
+        bs, xmax, _ = ctc_out.size()
+        best_paths = ctc_out.argmax(-1)
+        best_paths = best_paths.masked_fill(src_mask.squeeze(1)==0, 0)
+
+        aligned_seq_shift = best_paths.new_zeros(best_paths.size())
+        aligned_seq_shift[:, 1:] = best_paths[:,:-1]
+        dup = best_paths == aligned_seq_shift
+        best_paths.masked_fill_(dup, 0)
+        ctc_greedy, length = [], []
+        for b in range(bs):
+            ctc_greedy.append(best_paths[b][best_paths[b].nonzero()])
+            length.append(ctc_greedy[-1].size(0))
+        max_length = max(length)
+        tgt_input = best_paths.new_zeros(bs, max_length+1).fill_(args.padding_idx)
+        tgt_input[:,0] = sos
+        for b in range(bs):
+            tgt_input[b].narrow(0, 1, length[b]).copy_(ctc_greedy[b][:,0])
+        tgt_mask = (tgt_input != args.padding_idx).unsqueeze(1)
+        tgt_mask = tgt_mask & self.subsequent_mask(tgt_input.size(-1)).type_as(tgt_mask)
+        dec_h = self.decoder(self.tgt_embed(tgt_input), enc_h, src_mask, tgt_mask)
+        att_out = self.att_generator(dec_h)
+
+        ys = torch.ones(1, 1).fill_(sos).long()
+        if args.use_gpu:
+            ys = ys.cuda()
+        
+        batch_top_seqs = [ [{'ys': ys, 'score': 0.0, 'hyp': [sos] } ] for b in range(bs) ]
+        
+        for i in range(max_length+1):
+            # batchify the batch and beam
+            all_seqs, ys, att_prob = [], [], []
+            
+            for b in range(bs):
+                all_seqs.append([])
+                for seq in batch_top_seqs[b]:
+                    if i > length[b]:
+                        all_seqs[b].append(seq)
+                        continue
+            
+                    att_prob.append(att_out[b,i:i+1,:])
+                    if args.lm_weight > 0:
+                        ys.append(seq['ys'])
+
+            if len(att_prob) == 0: #if no beam active, end decoding
+                break
+            # concat and get decoder out probability
+            att_prob = torch.cat(att_prob, dim=0)
+       
+            if args.lm_weight > 0:
+                ys = torch.cat(ys, dim=0)
+
+            if args.lm_weight > 0:
+                tgt_mask = (ys != args.padding_idx).unsqueeze(1)
+                tgt_mask = tgt_mask & self.subsequent_mask(ys.size(-1)).type_as(src_mask)
+                lm_prob = lm_model(ys, tgt_mask)[:,-1,:]
+                local_prob = att_prob + args.lm_weight * lm_prob
+            else:
+                local_prob = att_prob
+            
+            local_scores, indices = torch.topk(local_prob, args.beam_width, dim=-1)
+            
+            # distribute scores to corresponding sample and beam
+            s_idx = -1
+            for b in range(bs):
+                for seq in batch_top_seqs[b]:
+                    if i > length[b]:
+                       continue
+                    s_idx += 1
+
+                    for j in range(args.beam_width):
+                        next_token = indices[s_idx][j]
+                        token_score = local_scores[s_idx][j].item()
+                        score = seq['score'] + token_score
+
+                        if args.lm_weight > 0:
+                            ys = torch.cat([seq['ys'],next_token.view(-1,1)],dim=-1)
+                        else:
+                            ys = seq['ys']
+
+                        hyp = seq['hyp'] + [next_token.item()] if next_token.item() != eos else seq['hyp']
+                        rs_seq = {'ys':ys, 'score': score, 'hyp': hyp } 
+                        all_seqs[b].append(rs_seq)
+
+                sort_f = lambda x:x['score'] + (len(x['hyp'])-1) * args.length_penalty \
+                            if args.length_penalty is not None else lambda x:x['score']                
+                batch_top_seqs[b] = sorted(all_seqs[b], key=sort_f, reverse=True)[:args.beam_width]
+        #batch_top_seqs = []
+        #for b in range(bs):
+        #    batch_top_seqs.append([])
+        #    batch_top_seqs[b].append({'hyp': best_paths[b].cpu().numpy()})
+        return batch_top_seqs
+
 

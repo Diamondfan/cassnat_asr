@@ -134,6 +134,8 @@ def main():
 
             if args.decode_type == 'ctc_only':
                 recog_results = ctc_beam_decode(model, src, src_mask, feat_sizes, vocab, args, lm_model)
+            elif args.decode_type == 'att_ctc':
+                recog_results = model.fast_decode_with_ctc(src, src_mask, vocab, args, lm_model)
             else:
                 recog_results = model.beam_decode(src, src_mask, vocab, args, lm_model)
             

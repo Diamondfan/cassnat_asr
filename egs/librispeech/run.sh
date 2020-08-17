@@ -6,8 +6,8 @@
 data=/data/nas1/user/ruchao/Database/LibriSpeech/
 lm_data=/data/nas1/user/ruchao/Database/LibriSpeech/libri_lm
 
-stage=3
-end_stage=3
+stage=8
+end_stage=8
 featdir=data/fbank
 
 unit=wp
@@ -122,13 +122,13 @@ if [ $stage -le 5 ] && [ $end_stage -ge 5 ]; then
 fi
 
 if [ $stage -le 6 ] && [ $end_stage -ge 6 ]; then
-  exp=exp/1kh_small_unigram_4card_ctc1_att1_multistep_accum1_gc5_spec_aug_first/
+  exp=exp/1kh_small_unigram_4card_ctc1_att1_multistep_accum1_gc5_stream/
 
   if [ ! -d $exp ]; then
     mkdir -p $exp
   fi
 
-  CUDA_VISIBLE_DEVICES="0,1,2,3" asr_train.py \
+  CUDA_VISIBLE_DEVICES="0,1,2,3" st_train.py \
     --exp_dir $exp \
     --train_config conf/transformer.yaml \
     --data_config conf/data.yaml \
@@ -152,9 +152,8 @@ fi
 
 out_name='averaged.mdl'
 if [ $stage -le 7 ] && [ $end_stage -ge 7 ]; then
-  #exp=exp/1kh_small_unigram_4card_ctc1_att1_noamwarm_accum1_gc5_spec_aug/
-  exp=exp/1kh_small_unigram_4card_ctc1_att1_multistep_accum1_gc5_spec_aug_first
-  last_epoch=86  
+  exp=exp/1kh_small_unigram_4card_ctc1_att1_multistep_accum1_gc5_stream
+  last_epoch=58  
   
   average_checkpoints.py \
     --exp_dir $exp \
@@ -176,21 +175,21 @@ if [ $stage -le 7 ] && [ $end_stage -ge 7 ]; then
 fi
 
 if [ $stage -le 8 ] && [ $end_stage -ge 8 ]; then
-  exp=exp/1kh_small_unigram_4card_ctc1_att1_multistep_accum1_gc5_spec_aug_first/
-  #exp=exp/1kh_small_unigram_4card_ctc1_att1_multistep_accum1_gc5_spec_aug
+  #exp=exp/1kh_small_unigram_4card_ctc1_att1_multistep_accum1_gc5_spec_aug_first/
+  exp=exp/1kh_small_unigram_4card_ctc1_att1_multistep_accum1_gc5_stream
 
   test_model=$exp/$out_name
   rnnlm_model=exp/averaged_lm.mdl
   global_cmvn=data/fbank/cmvn.ark
-  decode_type='ctc_att'
-  beam1=10 # check beam1 and beam2 in conf/decode.yaml, att beam
-  beam2=20 # ctc beam
-  ctcwt=0.5
-  lp=0
-  lmwt=0.7
+  decode_type='att_only'
+  beam1=5 # check beam1 and beam2 in conf/decode.yaml, att beam
+  beam2=0 # ctc beam
+  ctcwt=0
+  lp=0.2
+  lmwt=0
   nj=4
   
-  for tset in $test_set; do
+  for tset in dev_clean; do #$test_set; do
     echo "Decoding $tset..."
     desdir=$exp/${decode_type}_decode_average_ctc${ctcwt}_bm1_${beam1}_bm2_${beam2}_lmwt${lmwt}_lp${lp}/$tset/
     #desdir=$exp/decode_average_best/$tset
@@ -205,7 +204,7 @@ if [ $stage -le 8 ] && [ $end_stage -ge 8 ]; then
     utils/split_scp.pl data/$tset/feats.scp $split_scps || exit 1;
     
     $cmd JOB=1:$nj $desdir/log/decode.JOB.log \
-      CUDA_VISIBLE_DEVICES="0" asr_decode.py \
+      CUDA_VISIBLE_DEVICES="1" st_decode.py \
         --test_config conf/decode.yaml \
         --lm_config conf/lm.yaml \
         --data_path $desdir/feats.JOB.scp \
