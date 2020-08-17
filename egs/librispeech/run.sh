@@ -122,7 +122,11 @@ if [ $stage -le 5 ] && [ $end_stage -ge 5 ]; then
 fi
 
 if [ $stage -le 6 ] && [ $end_stage -ge 6 ]; then
+<<<<<<< Updated upstream
   exp=exp/1kh_small_unigram_4card_ctc1_att1_multistep_accum1_gc5_stream/
+=======
+  exp=exp/1kh_large_multistep_accum2_gc5_specaug_before_f30t40_ctc03/
+>>>>>>> Stashed changes
 
   if [ ! -d $exp ]; then
     mkdir -p $exp
@@ -132,9 +136,9 @@ if [ $stage -le 6 ] && [ $end_stage -ge 6 ]; then
     --exp_dir $exp \
     --train_config conf/transformer.yaml \
     --data_config conf/data.yaml \
-    --batch_size 32 \
+    --batch_size 16 \
     --epochs 100 \
-    --save_epoch 40 \
+    --save_epoch 50 \
     --anneal_lr_ratio 0.5 \
     --learning_rate 0.001 \
     --min_lr 0.00001 \
@@ -143,7 +147,7 @@ if [ $stage -le 6 ] && [ $end_stage -ge 6 ]; then
     --opt_type "multistep" \
     --weight_decay 0 \
     --label_smooth 0.1 \
-    --ctc_alpha 1 \
+    --ctc_alpha 0.3 \
     --use_cmvn \
     --print_freq 50 > $exp/train.log 2>&1 &
     
@@ -152,8 +156,13 @@ fi
 
 out_name='averaged.mdl'
 if [ $stage -le 7 ] && [ $end_stage -ge 7 ]; then
+<<<<<<< Updated upstream
   exp=exp/1kh_small_unigram_4card_ctc1_att1_multistep_accum1_gc5_stream
   last_epoch=58  
+=======
+  exp=exp/1kh_large_multistep_accum2_gc5_specaug_before_f30t40_ctc03
+  last_epoch=80
+>>>>>>> Stashed changes
   
   average_checkpoints.py \
     --exp_dir $exp \
@@ -175,18 +184,17 @@ if [ $stage -le 7 ] && [ $end_stage -ge 7 ]; then
 fi
 
 if [ $stage -le 8 ] && [ $end_stage -ge 8 ]; then
-  #exp=exp/1kh_small_unigram_4card_ctc1_att1_multistep_accum1_gc5_spec_aug_first/
-  exp=exp/1kh_small_unigram_4card_ctc1_att1_multistep_accum1_gc5_stream
+  exp=exp/1kh_large_multistep_accum2_gc5_specaug_before_f30t40_ctc03
 
   test_model=$exp/$out_name
   rnnlm_model=exp/averaged_lm.mdl
   global_cmvn=data/fbank/cmvn.ark
-  decode_type='att_only'
-  beam1=5 # check beam1 and beam2 in conf/decode.yaml, att beam
-  beam2=0 # ctc beam
-  ctcwt=0
-  lp=0.2
-  lmwt=0
+  decode_type='ctc_att'
+  beam1=10 # check beam1 and beam2 in conf/decode.yaml, att beam
+  beam2=20 # ctc beam
+  ctcwt=0.5
+  lp=0
+  lmwt=0.7
   nj=4
   
   for tset in dev_clean; do #$test_set; do
