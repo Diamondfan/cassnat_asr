@@ -28,6 +28,7 @@ def main():
     parser.add_argument("--test_config")
     parser.add_argument("--lm_config")
     parser.add_argument("--data_path")
+    parser.add_argument("--text_label")
     parser.add_argument("--use_cmvn", default=False, action='store_true', help="Use global cmvn or not")
     parser.add_argument("--global_cmvn", type=str, help="Cmvn file to load")
     parser.add_argument("--batch_size", default=32, type=int, help="Training minibatch size")
@@ -46,8 +47,12 @@ def main():
     args = parser.parse_args()
     with open(args.test_config) as f:
         config = yaml.safe_load(f)
+    
+    if args.text_label:
+        config['test_paths'] = [{'name': 'test', 'scp_path': args.data_path, 'text_label': args.text_label} ]
+    else:
+        config['test_paths'] = [{'name': 'test', 'scp_path': args.data_path} ]
 
-    config['test_paths'] = [{'name': 'test', 'scp_path': args.data_path} ]
     for key, val in config.items():
         setattr(args, key, val)
     for var in vars(args):
@@ -138,12 +143,13 @@ def main():
             lm_model.eval()
 
         for i, data in enumerate(test_loader):
-            utt_list, feats, _, feat_sizes, _ = data
+            utt_list, feats, labels, feat_sizes, label_sizes = data
             src, src_mask = feats, (feats[:,:,0] != args.padding_idx).unsqueeze(1)
         
             if args.use_gpu:
                 src, src_mask = src.cuda(), src_mask.cuda()
                 feat_sizes = feat_sizes.cuda()
+                labels, label_sizes = labels.cuda(), label_sizes.cuda()
 
             if args.decode_type == 'ctc_only':
                 recog_results = ctc_beam_decode(model, src, src_mask, feat_sizes, vocab, args, lm_model)
@@ -151,7 +157,7 @@ def main():
                 batch_top_seqs = ctc_beam_decode(model, src, src_mask, feat_sizes, vocab, args, lm_model)
                 recog_results = model.beam_decode(src, src_mask, feat_sizes, vocab, args, lm_model, batch_top_seqs)
             else:
-                recog_results = model.beam_decode(src, src_mask, feat_sizes, vocab, args, lm_model)
+                recog_results = model.beam_decode(src, src_mask, feat_sizes, vocab, args, lm_model, labels=labels, label_sizes=label_sizes)
             
             for j in range(len(utt_list)):
                 hyp = []

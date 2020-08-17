@@ -128,6 +128,7 @@ class SpeechDataset(Dataset):
 class SpeechDataLoader(DataLoader):
     def __init__(self, dataset, batch_size, padding_idx=-1, distributed=False, shuffle=False, num_workers=0, timeout=1000):
         self.padding_idx = padding_idx
+        self.dataset = dataset
         if distributed:
             base_sampler = torch.utils.data.distributed.DistributedSampler(dataset)
             self.base_sampler = base_sampler
