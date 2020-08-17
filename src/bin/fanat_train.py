@@ -95,7 +95,7 @@ def main():
 def main_worker(rank, world_size, args, backend='nccl'):
     args.rank, args.world_size = rank, world_size
     if args.distributed:
-        dist.init_process_group(backend=backend, init_method='tcp://localhost:23456',
+        dist.init_process_group(backend=backend, init_method='tcp://localhost:12345',
                                     world_size=world_size, rank=rank)
     
     ## 2. Define model and optimizer
@@ -216,6 +216,8 @@ def main_worker(rank, world_size, args, backend='nccl'):
     for epoch in range(start_epoch, args.epochs):
         if args.distributed:
             train_loader.set_epoch(epoch)
+
+        train_loader.dataset.use_specaug = (epoch >= args.specaug_start_epoch)
 
         model.train()
         train_loss, train_wer, train_ctc_wer = run_epoch(epoch, train_loader, model, criterion, args, optimizer, is_train=True)
