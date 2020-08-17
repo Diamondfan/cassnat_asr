@@ -69,12 +69,14 @@ if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
   ctclm=0 #0.7
   ctclp=0 #2
   lp=0
-  nj=4
+  nj=2
   test_set="dev_clean test_clean dev_other test_other"
 
   for tset in $test_set; do
     echo "Decoding $tset..."
-    desdir=$exp/${decode_type}_decode_average_ctc${ctcwt}_bm1_${beam1}_bm2_${beam2}_lmwt${lmwt}_ctclm${ctclm}_ctclp${ctclp}_lp${lp}/$tset/
+    #desdir=$exp/${decode_type}_decode_average_ctc${ctcwt}_bm1_${beam1}_bm2_${beam2}_lmwt${lmwt}_ctclm${ctclm}_ctclp${ctclp}_lp${lp}/$tset/
+    desdir=$exp/${decode_type}_decode_average_bm1_${beam1}_sampdist_1_samplenum_20/$tset/
+
     if [ ! -d $desdir ]; then
       mkdir -p $desdir
     fi
@@ -90,6 +92,7 @@ if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
         --test_config conf/fanat_decode.yaml \
         --lm_config conf/lm.yaml \
         --data_path $desdir/feats.JOB.scp \
+        --text_label data/$tset/token.scp \
         --resume_model $test_model \
         --result_file $desdir/token_results.JOB.txt \
         --batch_size 8 \

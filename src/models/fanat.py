@@ -214,7 +214,7 @@ class FaNat(nn.Module):
         ymax += 1
         return trigger_mask, ylen, ymax
 
-    def best_path_align(self, ctc_out, src_mask, src_size, blank):
+    def best_path_align(self, ctc_out, src_mask, src_size, blank, sample_dist=0, sample_num=0):
         "This is used for decoding, forced alignment is needed for training"
         bs, xmax, _ = ctc_out.size()
         best_paths = ctc_out.argmax(-1)
@@ -225,8 +225,16 @@ class FaNat(nn.Module):
         dup = best_paths == aligned_seq_shift
         best_paths.masked_fill_(dup, 0)
         aligned_seq_shift[:,1:] = best_paths[:,:-1]
-        
-        ylen = torch.sum((best_paths != blank), 1)
+
+        if sample_dist > 0:
+            for b in range(bs // sample_num):
+                orig_pos = torch.nonzero(aligned_seq_shift[b*sample_num+1:(b+1)*sample_num,:], as_tuple=True)
+                sample_shift = torch.randint(-sample_dist, sample_dist, orig_pos[1].size()).type_as(aligned_seq_shift)
+                aligned_seq_shift[b*sample_num+1:(b+1)*sample_num,:][orig_pos] = blank
+                orig_pos[1].add_(sample_shift)
+                aligned_seq_shift[b*sample_num+1:(b+1)*sample_num,:][orig_pos] = 1
+            
+        ylen = torch.sum((aligned_seq_shift != blank), 1)
         ymax = torch.max(ylen).item()
         trigger_mask = (aligned_seq_shift != blank).cumsum(1).unsqueeze(1).repeat(1, ymax+1, 1)
         trigger_mask = trigger_mask == torch.arange(ymax+1).type_as(trigger_mask).unsqueeze(0).unsqueeze(2)
@@ -265,7 +273,7 @@ class FaNat(nn.Module):
         ret = torch.ones(size, size, dtype=torch.uint8)
         return torch.tril(ret, out=ret).unsqueeze(0)
     
-    def beam_decode(self, src, src_mask, src_size, vocab, args, lm_model=None, ctc_top_seqs=None):
+    def beam_decode(self, src, src_mask, src_size, vocab, args, lm_model=None, ctc_top_seqs=None, labels=None, label_sizes=None):
         """att decoding with rnnlm and ctc out probability
 
         args.rnnlm: path of rnnlm model
@@ -284,8 +292,16 @@ class FaNat(nn.Module):
             src_size = (src_size * ctc_out.size(1)).long()
             if args.decode_type == 'ctc_att':
                 trigger_mask, ylen, ymax = self.beam_path_align(ctc_out, src_mask, src_size, blank, ctc_top_seqs)
+            elif args.decode_type == 'oracle_att':
+                trigger_mask, ylen, ymax = self.viterbi_align(ctc_out, src_mask, src_size, labels[:,1:-1], label_sizes, blank)
             else:
-                trigger_mask, ylen, ymax = self.best_path_align(ctc_out, src_mask, src_size, blank)
+                if args.sample_num > 0:
+                    ctc_out = ctc_out.unsqueeze(1).repeat(1, args.sample_num, 1, 1).reshape(-1, ctc_out.size(1), ctc_out.size(2))
+                    enc_h = enc_h.unsqueeze(1).repeat(1, args.sample_num, 1, 1).reshape(-1, enc_h.size(1), enc_h.size(2))
+                    src_mask = src_mask.unsqueeze(1).repeat(1, args.sample_num, 1, 1).reshape(-1, src_mask.size(1), src_mask.size(2))
+                    src_size = src_size.unsqueeze(1).repeat(1, args.sample_num).reshape(-1)
+                trigger_mask, ylen, ymax = self.best_path_align(ctc_out, src_mask, src_size, blank, args.sample_dist, args.sample_num)
+
             if args.context_trigger > 0:
                 trigger_shift_right = trigger_mask.new_zeros(trigger_mask.size())
                 trigger_shift_right[:, :, 1:] = trigger_mask[:,:, :-1]
@@ -295,7 +311,9 @@ class FaNat(nn.Module):
             trigger_mask = trigger_mask & src_mask
         else:
             trigger_mask = src_mask
-            ylen = src_size.new_zeros(src_size.size()).fill_(args.decode_length).long()
+            src_size = (src_size * ctc_out.size(1)).long()
+            _, ylen, ymax = self.best_path_align(ctc_out, src_mask, src_size, blank)
+            #ylen = (src_size * ctc_out.size(1) * 0.3).long()
             ymax = ylen.max().item()
 
         bs, _, d_model = enc_h.size()
@@ -325,6 +343,16 @@ class FaNat(nn.Module):
         else:
             dec_h = self.decoder(pred_embed, tgt_mask)
         att_out = self.att_generator(dec_h)
+        
+        if args.sample_num > 0:
+            _, seql, dim = att_out.size()
+            att_out = att_out.reshape(-1, args.sample_num, seql, dim).masked_fill(tgt_mask.reshape(-1, args.sample_num, tgt_mask.size(-2), tgt_mask.size(-1)).transpose(2,3)==0, 0)
+            max_prob = att_out.max(-1)[0]
+            prob_sum = max_prob.sum(-1) / (max_prob != 0).sum(-1).float()
+            max_indices = prob_sum.max(-1, keepdim=True)[1]
+            att_out = torch.gather(att_out, 1, max_indices.unsqueeze(2).unsqueeze(3).repeat(1,1,seql,dim)).squeeze(1)
+            bs = att_out.size(0)
+            ylen = ylen.reshape(bs, args.sample_num)[:,0]
         #best_scores, best_indices = torch.topk(att_out, args.beam_width, dim=-1)
         #log_probs, best_paths = torch.max(ctc_out, -1)
         #aligned_seq_shift = best_paths.new_zeros(best_paths.size())

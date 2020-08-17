@@ -22,6 +22,7 @@ padding_idx: 0
 use_gpu: True
 
 #beam_decode
+<<<<<<< HEAD
 beam_width: 1 #5
 ctc_beam: 0 #10
 ctc_pruning: 0 #30
@@ -35,4 +36,6 @@ use_src: True
 src_trigger: False
 use_unimask: False
 context_trigger: 0
+sample_dist: 1
+sample_num: 20
 
