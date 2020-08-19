@@ -27,13 +27,13 @@ def make_model(input_size, args):
     else:
         decoder_use = Encoder(args.d_model, c(attn), c(ff), args.dropout, args.N_dec)
 
-    model = FaNat(
+    model = FaNatTp(
         ConvEmbedding(input_size, args.d_model, args.dropout),
         Encoder(args.d_model, c(attn), c(ff), args.dropout, args.N_enc),
         AcEmbedExtractor(args.d_model, c(attn), c(ff), args.dropout, args.N_extra),
         EmbedMapper(args.d_model, c(attn), c(ff), args.dropout, args.N_map),
         decoder_use,
-        c(generator), c(generator), pe)
+        c(generator), c(generator), c(generator), pe)
         
     
     for p in model.parameters():
@@ -59,15 +59,16 @@ class Generator(nn.Module):
     def forward(self, x, T=1.0):
         return F.log_softmax(self.proj(x)/T, dim=-1)
 
-class FaNat(nn.Module):
-    def __init__(self, src_embed, encoder, acembed_extractor, embed_mapper, decoder, ctc_gen, att_gen, pe):
-        super(FaNat, self).__init__()
+class FaNatTp(nn.Module):
+    def __init__(self, src_embed, encoder, acembed_extractor, embed_mapper, decoder, ctc_gen, trig_pred, att_gen, pe):
+        super(FaNatTp, self).__init__()
         self.src_embed = src_embed
         self.encoder = encoder
         self.acembed_extractor = acembed_extractor
         self.embed_mapper = embed_mapper
         self.decoder = decoder
         self.ctc_generator = ctc_gen
+        self.trigger_predictor = trig_pred
         self.att_generator = att_gen
         self.pe = pe
 
@@ -75,21 +76,20 @@ class FaNat(nn.Module):
         # 1. compute ctc output
         x, x_mask = self.src_embed(src, src_mask)
         enc_h = self.encoder(x, x_mask)
+        tp_out = self.trigger_predictor(enc_h)
         if args.ctc_alpha > 0:
             ctc_out = self.ctc_generator(enc_h)
         else:
             ctc_out = enc_h.new_zeros(enc_h.size())
         
         # 2. prepare different masks,
-        if args.use_trigger:
+        if args.online_trigger:
             assert args.ctc_alpha > 0
             src_size = (src_size * ctc_out.size(1)).long()
             blank = args.padding_idx
-            if args.use_best_path:
-                trigger_mask, ylen, ymax = self.best_path_align(ctc_out, x_mask, src_size, blank)
-            else:
-                trigger_mask, ylen, ymax = self.viterbi_align(ctc_out, x_mask, src_size, tgt_label[:,:-1], ylen, blank, args.sample_dist)
-
+            with torch.no_grad():
+                aligned_seq, trigger_mask, ylen, ymax = self.viterbi_align(ctc_out, x_mask, src_size, tgt_label[:,:-1], ylen, blank, args.sample_dist)
+            
             if args.context_trigger > 0:
                 trigger_shift_right = trigger_mask.new_zeros(trigger_mask.size())
                 trigger_shift_right[:, :, 1:] = trigger_mask[:,:, :-1]
@@ -98,9 +98,7 @@ class FaNat(nn.Module):
                 trigger_mask = trigger_mask | trigger_shift_right #| trigger_shift_left
             trigger_mask = trigger_mask & x_mask
         else:
-            trigger_mask = x_mask
-            ylen = ylen + 1
-            ymax = ylen.max().item()
+            raise NotImplementError
 
         bs, _, d_model = enc_h.size()
         tgt_mask1 = torch.full((bs, ymax), 1).type_as(src_mask)
@@ -130,7 +128,7 @@ class FaNat(nn.Module):
         else:
             dec_h = self.decoder(pred_embed, tgt_mask)
         att_out = self.att_generator(dec_h)
-        return ctc_out, att_out, pred_embed, true_embed, tgt_mask1
+        return ctc_out, tp_out, att_out, tgt_mask1, aligned_seq, x_mask
 
     def viterbi_align(self, ctc_out, src_mask, src_size, ys, ylens, blank, sample_dist):
         """
@@ -209,10 +207,10 @@ class FaNat(nn.Module):
         trigger_mask[:,-1:,:].masked_fill_(src_mask==0, 0)   # remove position with padding_idx
         trigger_mask[:,-1,:].scatter_(1, src_size.unsqueeze(1)-1, 1) # give the last character one to keep at least one active position for eos
         #trigger_mask = torch.cat([sos_mask, trigger_mask], 1)
-        
+                 
         ylen = ylens + 1
         ymax += 1
-        return trigger_mask, ylen, ymax
+        return aligned_seq, trigger_mask, ylen, ymax
 
     def best_path_align(self, ctc_out, src_mask, src_size, blank, sample_dist=0, sample_num=0):
         "This is used for decoding, forced alignment is needed for training"

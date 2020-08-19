@@ -62,4 +62,16 @@ class KLDivLoss(nn.Module):
         tokens = mask.sum().item()
         return self.criterion(x, at_prob).masked_fill(mask.unsqueeze(1)==0, 0).sum() / tokens
 
+class TPLoss(nn.Module):
+    def __init__(self):
+        super(TPLoss, self).__init__()
+        self.criterion = nn.CrossEntropyLoss(reduction='none')
+    
+    def forward(self, tp_out, aligned_seq, src_mask):
+        """tp_out: b * T * d, aligned_seq: b * T src_mask: b * 1 * T"""
+        tp_loss = self.criterion(tp_out.view(-1, tp_out.size(-1)), aligned_seq.view(-1))
+        tokens = src_mask.sum().item()
+        tp_loss = tp_loss.masked_fill(src_mask.squeeze(1).reshape(-1)==0, 0).sum() / tokens
+        acc = (torch.argmax(tp_out, -1) == aligned_seq).masked_fill(src_mask.squeeze(1)==0, 0).sum().item()
+        return tp_loss, acc, tokens
 
