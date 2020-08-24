@@ -6,7 +6,7 @@ stage=3
 end_stage=3
 
 if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
-  exp=exp/fanat_large_specaug_multistep_trig_src/
+  exp=exp/fanat_multistep_trig_src_initenc_ctc1_sample_path_SchD/
 
   if [ ! -d $exp ]; then
     mkdir -p $exp
@@ -16,7 +16,7 @@ if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
     --exp_dir $exp \
     --train_config conf/fanat_train.yaml \
     --data_config conf/data.yaml \
-    --batch_size 16 \
+    --batch_size 32 \
     --epochs 100 \
     --save_epoch 40 \
     --anneal_lr_ratio 0.5 \
@@ -41,8 +41,8 @@ fi
 
 out_name='averaged.mdl'
 if [ $stage -le 2 ] && [ $end_stage -ge 2 ]; then
-  exp=exp/fanat_large_specaug_multistep_trig_src
-  last_epoch=89
+  exp=exp/fanat_multistep_trig_src_initenc_ctc1_sample_path_SchD
+  last_epoch=65
   
   average_checkpoints.py \
     --exp_dir $exp \
@@ -55,17 +55,17 @@ if [ $stage -le 2 ] && [ $end_stage -ge 2 ]; then
 fi
 
 if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
-  exp=exp/fanat_large_specaug_multistep_trig_src
+  exp=exp/fanat_multistep_trig_src_initenc_ctc1_sample_path_SchD
 
   bpemodel=data/dict/bpemodel_unigram_5000
   rnnlm_model=exp/libri_tflm_unigram_4card_cosineanneal_ep10/$out_name
   global_cmvn=data/fbank/cmvn.ark
   test_model=$exp/$out_name
   decode_type='att_only'
-  beam1=1 #5 # check beam1 and beam2 in conf/decode.yaml, att beam
+  beam1=1 # check beam1 and beam2 in conf/decode.yaml, att beam
   beam2=0 #10 # ctc beam
   ctcwt=0
-  lmwt=0 #0.5
+  lmwt=0
   ctclm=0 #0.7
   ctclp=0 #2
   lp=0

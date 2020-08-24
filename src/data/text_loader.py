@@ -2,6 +2,7 @@
 # 2020 Ruchao Fan
 
 import torch
+import random
 import numpy as np
 
 from torch.utils.data import Dataset, DataLoader
@@ -29,8 +30,6 @@ class SingleSet(object):
                     continue
                 all_text.append([self.vocab.word2index[word] if word in self.vocab.word2index else
                         self.vocab.word2index['unk'] for word in line])
-                all_text[-1].insert(0, self.vocab.word2index['sos'])
-                all_text[-1].append(self.vocab.word2index['eos'])
                 line = fin.readline()
         if self.rank == 0:
             print("Reading %d lines from %s" % (len(all_text), lab_path))
@@ -41,6 +40,7 @@ class TextDataset(Dataset):
         self.vocab = vocab
         self.max_len = args.max_len
         self.rank = args.rank
+        self.type = args.lm_type
         self.data_streams = self._load_streams(data_paths)
         self.data_stream_sizes = [i.get_len() for i in self.data_streams]
         self.data_stream_cum_sizes = [self.data_stream_sizes[0]]
@@ -68,10 +68,46 @@ class TextDataset(Dataset):
             internal_idx = idx - self.data_stream_cum_sizes[stream_idx-1]
         
         text = self.data_streams[stream_idx].items[internal_idx]
-        return text
+        if self.type == 'MLM':
+            text, label = self.random_mask(text)
+            label.insert(0, 0)
+            label.append(0)
+        elif self.type == "uniLM":
+            label = None
+        text.insert(0, self.vocab.word2index['sos'])
+        text.append(self.vocab.word2index['eos'])
+
+        return (text, label)
 
     def __len__(self):
         return sum(self.data_stream_sizes)
+
+    def random_mask(self, text):
+        tgt_input, label = [], []
+        for i, token in enumerate(text):
+            prob = random.random()
+            if prob < 0.15:
+                prob /= 0.15
+
+                # 80% randomly change token to mask token
+                if prob < 0.8:
+                    tgt_input.append(self.vocab.word2index['mask'])
+
+                # 10% randomly change token to random token
+                elif prob < 0.9:
+                    tgt_input.append(random.randrange(5, self.vocab.n_words))
+
+                # 10% randomly change token to current token
+                else:
+                    tgt_input.append(text[i])
+
+                label.append(text[i])
+
+            else:
+                tgt_input.append(text[i])
+                label.append(0)
+
+        return tgt_input, label
 
 class TextDataLoader(DataLoader):
     def __init__(self, dataset, batch_size, padding_idx=-1, distributed=False, shuffle=False, num_workers=0, timeout=1000):
@@ -91,17 +127,20 @@ class TextDataLoader(DataLoader):
                                                 collate_fn=self.collate_fn)
 
     def collate_fn(self, batch):
-        text_max_length = max(len(x) for x in batch)
+        text_max_length = max(len(x[0]) for x in batch)
         batch_size = len(batch)
         texts = torch.full([batch_size, text_max_length], self.padding_idx)
+        labels = torch.full([batch_size, text_max_length], self.padding_idx)
         text_sizes = torch.zeros(batch_size)
 
         for x in range(batch_size):
-            text = batch[x]
+            text, label = batch[x]
             text_length = len(text)
             texts[x].narrow(0, 0, text_length).copy_(torch.Tensor(text))
+            if label is not None:
+                labels[x].narrow(0, 0, text_length).copy_(torch.Tensor(label))
             text_sizes[x] = text_length - 2 #substract sos and eos
-        return texts.long(), text_sizes.long()
+        return texts.long(), text_sizes.long(), labels.long()
 
     def set_epoch(self, epoch):
         self.base_sampler.set_epoch(epoch)

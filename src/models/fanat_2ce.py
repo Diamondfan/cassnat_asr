@@ -27,13 +27,14 @@ def make_model(input_size, args):
     else:
         decoder_use = Encoder(args.d_model, c(attn), c(ff), args.dropout, args.N_dec)
 
-    model = FaNat(
+    model = FaNat2CE(
         ConvEmbedding(input_size, args.d_model, args.dropout),
         Encoder(args.d_model, c(attn), c(ff), args.dropout, args.N_enc),
         AcEmbedExtractor(args.d_model, c(attn), c(ff), args.dropout, args.N_extra),
         EmbedMapper(args.d_model, c(attn), c(ff), args.dropout, args.N_map),
         decoder_use,
-        c(generator), c(generator), pe)
+        c(generator), c(generator), c(generator),
+        TextEmbedding(args.d_model, 1), pe)
         
     
     for p in model.parameters():
@@ -59,9 +60,9 @@ class Generator(nn.Module):
     def forward(self, x, T=1.0):
         return F.log_softmax(self.proj(x)/T, dim=-1)
 
-class FaNat(nn.Module):
-    def __init__(self, src_embed, encoder, acembed_extractor, embed_mapper, decoder, ctc_gen, att_gen, pe):
-        super(FaNat, self).__init__()
+class FaNat2CE(nn.Module):
+    def __init__(self, src_embed, encoder, acembed_extractor, embed_mapper, decoder, ctc_gen, att_gen, att_gen2, sos_embed, pe):
+        super(FaNat2CE, self).__init__()
         self.src_embed = src_embed
         self.encoder = encoder
         self.acembed_extractor = acembed_extractor
@@ -69,6 +70,8 @@ class FaNat(nn.Module):
         self.decoder = decoder
         self.ctc_generator = ctc_gen
         self.att_generator = att_gen
+        self.att_generator2 = att_gen2
+        self.sos_embed = sos_embed
         self.pe = pe
 
     def forward(self, src, src_mask, src_size, tgt_label, ylen, args, tgt=None):
@@ -85,17 +88,7 @@ class FaNat(nn.Module):
             assert args.ctc_alpha > 0
             src_size = (src_size * ctc_out.size(1)).long()
             blank = args.padding_idx
-            if args.use_best_path:
-                trigger_mask, ylen, ymax = self.best_path_align(ctc_out, x_mask, src_size, blank)
-            else:
-                trigger_mask, ylen, ymax = self.viterbi_align(ctc_out, x_mask, src_size, tgt_label[:,:-1], ylen, blank, args.sample_dist)
-
-            if args.context_trigger > 0:
-                trigger_shift_right = trigger_mask.new_zeros(trigger_mask.size())
-                trigger_shift_right[:, :, 1:] = trigger_mask[:,:, :-1]
-                #trigger_shift_left = trigger_mask.new_zeros(trigger_mask.size())
-                #trigger_shift_left[:,:,:-1] = trigger_mask[:,:,1:]
-                trigger_mask = trigger_mask | trigger_shift_right #| trigger_shift_left
+            trigger_mask, ylen, ymax = self.viterbi_align(ctc_out, x_mask, src_size, tgt_label[:,:-1], ylen, blank)
             trigger_mask = trigger_mask & x_mask
         else:
             trigger_mask = x_mask
@@ -111,13 +104,13 @@ class FaNat(nn.Module):
         pe = self.pe.type_as(src).unsqueeze(0).repeat(bs, 1, 1)[:,:ymax,:]
         ac_embed = self.acembed_extractor(pe, enc_h, trigger_mask)
         pred_embed = self.embed_mapper(ac_embed, tgt_mask1)
+        att_out2 = self.att_generator2(pred_embed)
 
         # 4. decoder, output units generation
         if args.use_unimask:
-            true_embed = args.word_embed(tgt)
-            true_embed = true_embed.masked_fill(tgt_mask1.transpose(1,2) == 0, 0)
-            pred_embed = torch.cat([true_embed[:,0:1,:], pred_embed[:,:-1,:]], dim=1)
-            pred_embed = pred_embed.masked_fill(tgt_mask1.transpose(1,2) == 0, 0)
+            sos = src_size.new_zeros(bs, 1).fill_(0).long()
+            sos_embed = self.sos_embed(sos)
+            pred_embed = torch.cat([sos_embed, pred_embed[:,:-1,:]], dim=1)
             tgt_mask = tgt_mask1 & self.subsequent_mask(ymax).type_as(tgt_mask1) # uni-direc
         else:
             tgt_mask = tgt_mask1
@@ -130,9 +123,9 @@ class FaNat(nn.Module):
         else:
             dec_h = self.decoder(pred_embed, tgt_mask)
         att_out = self.att_generator(dec_h)
-        return ctc_out, att_out, pred_embed, true_embed, tgt_mask1
+        return ctc_out, att_out, att_out2
 
-    def viterbi_align(self, ctc_out, src_mask, src_size, ys, ylens, blank, sample_dist):
+    def viterbi_align(self, ctc_out, src_mask, src_size, ys, ylens, blank):
         """
         ctc_out: log probability of ctc output
         src_mask, src_size: specify the effective length of each sample in a batch
@@ -193,25 +186,7 @@ class FaNat(nn.Module):
         dup = aligned_seq == aligned_seq_shift
         aligned_seq.masked_fill_(dup, 0)
         aligned_seq_shift[:,1:] = aligned_seq[:,:-1]
-
-        if sample_dist > 0:
-            #orig_pos = torch.nonzero(aligned_seq_shift, as_tuple=True)
-            #sample_shift = torch.randint(-sample_dist, sample_dist, orig_pos[1].size()).type_as(aligned_seq_shift)
-            #aligned_seq_shift[orig_pos] = blank
-            #orig_pos[1].add_(sample_shift)
-            #aligned_seq_shift[orig_pos] = 1
-            for b in range(bs):
-                while True:
-                    orig_pos = torch.nonzero(aligned_seq_shift[b])
-                    sample_shift = torch.randint(-sample_dist, sample_dist, orig_pos.size()).type_as(aligned_seq_shift)
-                    new_pos = orig_pos + sample_shift
-                    new_aligned_seq = aligned_seq_shift[b].clone()
-                    new_aligned_seq[orig_pos] = blank
-                    new_aligned_seq[new_pos] = 1
-                    if torch.sum(new_aligned_seq) == ylens[b]:
-                        aligned_seq_shift[b] = new_aligned_seq
-                        break
-
+        
         # 6. transcribe aliged_seq to trigger mask
         trigger_mask = (aligned_seq_shift != blank).cumsum(1).unsqueeze(1).repeat(1, ymax+1, 1)
         trigger_mask = trigger_mask == torch.arange(ymax+1).type_as(trigger_mask).unsqueeze(0).unsqueeze(2)
@@ -225,7 +200,7 @@ class FaNat(nn.Module):
         ymax += 1
         return trigger_mask, ylen, ymax
 
-    def best_path_align(self, ctc_out, src_mask, src_size, blank, sample_dist=0, sample_num=0):
+    def best_path_align(self, ctc_out, src_mask, src_size, blank):
         "This is used for decoding, forced alignment is needed for training"
         bs, xmax, _ = ctc_out.size()
         best_paths = ctc_out.argmax(-1)
@@ -236,24 +211,9 @@ class FaNat(nn.Module):
         dup = best_paths == aligned_seq_shift
         best_paths.masked_fill_(dup, 0)
         aligned_seq_shift[:,1:] = best_paths[:,:-1]
-        ylen = torch.sum((aligned_seq_shift != blank), 1)
+        
+        ylen = torch.sum((best_paths != blank), 1)
         ymax = torch.max(ylen).item()
-
-        if sample_dist > 0:
-            for b in range(bs // sample_num):
-                i = 1
-                while i < sample_num:
-                    idx = b * sample_num + i
-                    orig_pos = torch.nonzero(aligned_seq_shift[idx,:])
-                    sample_shift = torch.randint(-sample_dist, sample_dist, orig_pos.size()).type_as(aligned_seq_shift)
-                    new_pos = orig_pos + sample_shift
-                    new_aligned_seq = aligned_seq_shift[idx,:].clone()
-                    new_aligned_seq[orig_pos] = blank
-                    new_aligned_seq[new_pos] = 1
-                    if torch.sum(new_aligned_seq) == ylen[idx]:
-                        aligned_seq_shift[idx,:] = new_aligned_seq
-                        i += 1
-                                    
         trigger_mask = (aligned_seq_shift != blank).cumsum(1).unsqueeze(1).repeat(1, ymax+1, 1)
         trigger_mask = trigger_mask == torch.arange(ymax+1).type_as(trigger_mask).unsqueeze(0).unsqueeze(2)
         #sos_mask = trigger_mask.new_zeros((bs,1, xmax))
@@ -266,32 +226,11 @@ class FaNat(nn.Module):
         ymax += 1
         return trigger_mask, ylen, ymax
 
-    def beam_path_align(self, ctc_out, src_mask, src_size, blank, ctc_top_seqs, sample_dist):
-        # Obatain a better alignment and then trigger mask with languag model
-        # This is similar with ctc beam search, but without merging the paths with same output
-        bs = ctc_out.size(0)
-        tgt_label, ylen = [], []
-        for b in range(bs):
-            tgt_label.append([])
-            ylen.append(0)
-            for idx in ctc_top_seqs[b][0]['hyp']:
-                tgt_label[-1].append(idx)
-                ylen[-1] += 1
-
-        ymax = max(ylen)
-        tgt = src_size.new_zeros(bs, ymax).long()
-        for b in range(bs):
-            tgt[b].narrow(0, 0, ylen[b]).copy_(torch.Tensor(tgt_label[b]).type_as(src_size))
-        ylen = torch.Tensor(ylen).type_as(src_size)
-        
-        trigger_mask, ylen, ymax = self.viterbi_align(ctc_out, src_mask, src_size, tgt, ylen, blank, sample_dist)
-        return trigger_mask, ylen, ymax
-
     def subsequent_mask(self, size):
         ret = torch.ones(size, size, dtype=torch.uint8)
         return torch.tril(ret, out=ret).unsqueeze(0)
     
-    def beam_decode(self, src, x_mask, src_size, vocab, args, lm_model=None, ctc_top_seqs=None, labels=None, label_sizes=None):
+    def beam_decode(self, src, src_mask, src_size, vocab, args, lm_model=None):
         """att decoding with rnnlm and ctc out probability
 
         args.rnnlm: path of rnnlm model
@@ -302,36 +241,17 @@ class FaNat(nn.Module):
         eos = vocab.word2index['eos']
         blank = vocab.word2index['blank']
 
-        x, src_mask = self.src_embed(src, x_mask)
+        x, src_mask = self.src_embed(src, src_mask)
         enc_h = self.encoder(x, src_mask)
         ctc_out = self.ctc_generator(enc_h)
 
         if args.use_trigger:
             src_size = (src_size * ctc_out.size(1)).long()
-            if args.decode_type == 'ctc_att':
-                trigger_mask, ylen, ymax = self.beam_path_align(ctc_out, src_mask, src_size, blank, ctc_top_seqs, args.sample_dist)
-            elif args.decode_type == 'oracle_att':
-                trigger_mask, ylen, ymax = self.viterbi_align(ctc_out, src_mask, src_size, labels[:,1:-1], label_sizes, blank, args.sample_dist)
-            else:
-                if args.sample_num > 0:
-                    ctc_out = ctc_out.unsqueeze(1).repeat(1, args.sample_num, 1, 1).reshape(-1, ctc_out.size(1), ctc_out.size(2))
-                    enc_h = enc_h.unsqueeze(1).repeat(1, args.sample_num, 1, 1).reshape(-1, enc_h.size(1), enc_h.size(2))
-                    src_mask = src_mask.unsqueeze(1).repeat(1, args.sample_num, 1, 1).reshape(-1, src_mask.size(1), src_mask.size(2))
-                    src_size = src_size.unsqueeze(1).repeat(1, args.sample_num).reshape(-1)
-                trigger_mask, ylen, ymax = self.best_path_align(ctc_out, src_mask, src_size, blank, args.sample_dist, args.sample_num)
-
-            if args.context_trigger > 0:
-                trigger_shift_right = trigger_mask.new_zeros(trigger_mask.size())
-                trigger_shift_right[:, :, 1:] = trigger_mask[:,:, :-1]
-                #trigger_shift_left = trigger_mask.new_zeros(trigger_mask.size())
-                #trigger_shift_left[:,:,:-1] = trigger_mask[:,:,1:]
-                trigger_mask = trigger_mask | trigger_shift_right #| trigger_shift_left
+            trigger_mask, ylen, ymax = self.best_path_align(ctc_out, src_mask, src_size, blank)
             trigger_mask = trigger_mask & src_mask
         else:
             trigger_mask = src_mask
-            src_size = (src_size * ctc_out.size(1)).long()
-            _, ylen, ymax = self.best_path_align(ctc_out, src_mask, src_size, blank)
-            #ylen = (src_size * ctc_out.size(1) * 0.3).long()
+            ylen = ylen + 1
             ymax = ylen.max().item()
 
         bs, _, d_model = enc_h.size()
@@ -343,39 +263,26 @@ class FaNat(nn.Module):
         pe = self.pe.type_as(src).unsqueeze(0).repeat(bs, 1, 1)[:,:ymax,:]
         ac_embed = self.acembed_extractor(pe, enc_h, trigger_mask)
         pred_embed = self.embed_mapper(ac_embed, tgt_mask1)
-
-        # 4. decoder, output units generation
-        if args.use_unimask:
-            sos_input = src_size.new_zeros(bs, 1).fill_(sos).long()
-            sos_embed = args.word_embed(sos_input)
-            pred_embed = torch.cat([sos_embed, pred_embed[:,:-1,:]], dim=1)
-            pred_embed = pred_embed.masked_fill(tgt_mask1.transpose(1,2) == 0, 0)
-            tgt_mask = tgt_mask1 & self.subsequent_mask(ymax).type_as(tgt_mask1) # uni-direc
-        else:
-            tgt_mask = tgt_mask1
-
-        if args.use_src:
-            if args.src_trigger:
-                src_mask = trigger_mask
-            dec_h = self.decoder(pred_embed, enc_h, src_mask, tgt_mask)
-        else:
-            dec_h = self.decoder(pred_embed, tgt_mask)
-        att_out = self.att_generator(dec_h)
+        att_out = self.att_generator2(pred_embed)
         
-        if args.sample_num > 0:
-            _, seql, dim = att_out.size()
-            att_pred = att_out.argmax(-1)
-            lm_input = torch.cat([att_out.new_zeros(att_out.size(0), 1).fill_(sos).long(), att_pred[:,:-1]], 1)
-            lm_tgt_mask = tgt_mask1 & self.subsequent_mask(ymax).type_as(tgt_mask1)
-            lm_out = lm_model(lm_input, lm_tgt_mask)
-            lm_score = torch.gather(lm_out, -1, att_out.argmax(-1).unsqueeze(-1)).squeeze(-1)
-            lm_score = lm_score.reshape(-1, args.sample_num, seql).masked_fill(tgt_mask.reshape(-1, args.sample_num, tgt_mask.size(-1))==0, 0)
-            att_out = att_out.reshape(-1, args.sample_num, seql, dim).masked_fill(tgt_mask.reshape(-1, args.sample_num, tgt_mask.size(-2), tgt_mask.size(-1)).transpose(2,3)==0, 0)
-            prob_sum = lm_score.sum(-1) / (lm_score != 0).sum(-1).float()
-            max_indices = prob_sum.max(-1, keepdim=True)[1]
-            att_out = torch.gather(att_out, 1, max_indices.unsqueeze(2).unsqueeze(3).repeat(1,1,seql,dim)).squeeze(1)
-            bs = att_out.size(0)
-            ylen = ylen.reshape(bs, args.sample_num)[:,0]
+        # 4. decoder, output units generation
+        #if args.use_unimask:
+        #    sos_ = src_size.new_zeros(bs, 1).fill_(0).long()
+        #    sos_embed = self.sos_embed(sos_)
+        #    #sos_input = src_size.new_zeros(bs, 1).fill_(sos).long()
+        #    #sos_embed = args.word_embed(sos_input)
+        #    pred_embed = torch.cat([sos_embed, pred_embed[:,:-1,:]], dim=1)
+        #    tgt_mask = tgt_mask1 & self.subsequent_mask(ymax).type_as(tgt_mask1) # uni-direc
+        #else:
+        #    tgt_mask = tgt_mask1
+
+        #if args.use_src:
+        #    if args.src_trigger:
+        #        src_mask = trigger_mask
+        #    dec_h = self.decoder(pred_embed, enc_h, src_mask, tgt_mask)
+        #else:
+        #    dec_h = self.decoder(pred_embed, tgt_mask)
+        #att_out = self.att_generator(dec_h)
         #best_scores, best_indices = torch.topk(att_out, args.beam_width, dim=-1)
         #log_probs, best_paths = torch.max(ctc_out, -1)
         #aligned_seq_shift = best_paths.new_zeros(best_paths.size())

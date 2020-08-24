@@ -15,7 +15,7 @@ from torch.distributed import ReduceOp
 
 sys.path.append(os.environ['E2EASR']+'/src')
 import utils.util as util
-from data.vocab import Vocab
+from data.vocab import Vocab, VocabMask
 from utils.optimizer import get_opt
 from data.text_loader import TextDataset, TextDataLoader
 
@@ -86,11 +86,13 @@ def main_worker(rank, world_size, args, backend='nccl'):
     if use_cuda:
         torch.cuda.manual_seed(args.seed)
 
-    vocab = Vocab(args.vocab_file, args.rank)
+    if args.lm_type == 'uniLM':
+        vocab = Vocab(args.vocab_file, args.rank)
+    elif args.lm_type == 'MLM':
+        vocab = VocabMask(args.vocab_file, args.rank)
     args.vocab_size = vocab.n_words
-    if args.lm_type == "":
-        from models.lm import make_model
-        model = make_model(args)
+    from models.lm import make_model
+    model = make_model(args)
     optimizer = get_opt(args.opt_type, model, args)
     
     if args.resume_model:
@@ -132,7 +134,7 @@ def main_worker(rank, world_size, args, backend='nccl'):
     if args.rank == 0:
         print("Finish Loading dev files. Number batches: {}".format(len(valid_loader)))
     
-    criterion = torch.nn.CrossEntropyLoss(ignore_index=args.padding_idx, reduction='mean')
+    criterion = torch.nn.NLLLoss(ignore_index=args.padding_idx, reduction='mean')
     
     ## 4. Start training iteratively
     best_loss = 100
@@ -199,12 +201,17 @@ def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_trai
     
     for i, data in enumerate(dataloader):
         start = time.time()
-        text, text_sizes = data
-        tgt, tgt_label = text[:,:-1], text[:,1:]
-        tgt_mask = (tgt != args.padding_idx).unsqueeze(1)
-        tgt_mask_tril = tgt_mask & subsequent_mask(tgt.size(-1)).type_as(tgt_mask)
+        text, text_sizes, labels = data
+        if args.lm_type == 'uniLM':
+            tgt, tgt_label = text[:,:-1], text[:,1:]
+            tgt_mask = (tgt != args.padding_idx).unsqueeze(1)
+            tgt_mask_tril = tgt_mask & subsequent_mask(tgt.size(-1)).type_as(tgt_mask)            
+        elif args.lm_type == 'MLM':
+            tgt, tgt_label = text, labels
+            tgt_mask = (tgt != args.padding_idx).unsqueeze(1)
+            tgt_mask_tril = tgt_mask
+
         tokens = (tgt_label != args.padding_idx).sum().item()
-        
         if args.use_gpu:
             tgt, tgt_mask = tgt.cuda(), tgt_mask.cuda()
             tgt_mask_tril = tgt_mask_tril.cuda()
