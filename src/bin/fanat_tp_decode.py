@@ -14,7 +14,7 @@ import torch.nn.functional as F
 sys.path.append(os.environ['E2EASR']+'/src')
 import utils.util as util
 from data.vocab import Vocab
-from models.transformer import make_model
+from models.fanat_tp import make_model
 from data.speech_loader import SpeechDataset, SpeechDataLoader
 from utils.beam_decode import ctc_beam_decode
 
@@ -28,6 +28,7 @@ def main():
     parser.add_argument("--test_config")
     parser.add_argument("--lm_config")
     parser.add_argument("--data_path")
+    parser.add_argument("--text_label")
     parser.add_argument("--use_cmvn", default=False, action='store_true', help="Use global cmvn or not")
     parser.add_argument("--global_cmvn", type=str, help="Cmvn file to load")
     parser.add_argument("--batch_size", default=32, type=int, help="Training minibatch size")
@@ -39,15 +40,19 @@ def main():
     parser.add_argument("--ctc_weight", type=float, default=0.0, help="CTC weight in joint decoding")
     parser.add_argument("--rnnlm", type=str, default=None, help="RNNLM model file to read")
     parser.add_argument("--lm_weight", type=float, default=0.1, help="RNNLM weight")
+    parser.add_argument("--word_embed", default='', type=str, help='Ground truth of word embedding')
     parser.add_argument("--max_decode_ratio", type=float, default=0, help='Decoding step to length ratio')
-    parser.add_argument("--max_decode_step", type=int, default=60, help='use when ratio=0')
     parser.add_argument("--seed", default=1, type=int, help="random number seed")
 
     args = parser.parse_args()
     with open(args.test_config) as f:
         config = yaml.safe_load(f)
     
-    config['test_paths'] = [{'name': 'test', 'scp_path': args.data_path} ]
+    if args.text_label:
+        config['test_paths'] = [{'name': 'test', 'scp_path': args.data_path, 'text_label': args.text_label} ]
+    else:
+        config['test_paths'] = [{'name': 'test', 'scp_path': args.data_path} ]
+
     for key, val in config.items():
         setattr(args, key, val)
     for var in vars(args):
@@ -59,7 +64,6 @@ def main():
         lm_args = Config()
         for key, val in lm_config.items():
             setattr(lm_args, key, val)
-    
     print("Experiment starts with config {}".format(json.dumps(config, sort_keys=True, indent=4)))
 
     use_cuda = args.use_gpu
@@ -99,6 +103,19 @@ def main():
     else:
         lm_model = None
 
+    if args.use_unimask:
+        checkpoint = torch.load(args.word_embed, map_location='cpu')['state_dict']
+        from models.modules.embedding import TextEmbedding
+        word_embed = TextEmbedding(args.d_model, args.vocab_size)
+        for name, param in word_embed.named_parameters():
+            param.data.copy_(checkpoint['module.tgt_embed.0.lut.weight'])
+            param.requires_grad = False
+        if use_cuda:
+            torch.cuda.set_device(args.rank)
+            word_embed = word_embed.cuda()
+        args.word_embed = word_embed
+
+
     num_params = 0
     for name, param in model.named_parameters():
         num_params += param.numel()
@@ -126,19 +143,21 @@ def main():
             lm_model.eval()
 
         for i, data in enumerate(test_loader):
-            utt_list, feats, _, feat_sizes, _ = data
+            utt_list, feats, labels, feat_sizes, label_sizes = data
             src, src_mask = feats, (feats[:,:,0] != args.padding_idx).unsqueeze(1)
         
             if args.use_gpu:
                 src, src_mask = src.cuda(), src_mask.cuda()
                 feat_sizes = feat_sizes.cuda()
+                labels, label_sizes = labels.cuda(), label_sizes.cuda()
 
             if args.decode_type == 'ctc_only':
                 recog_results = ctc_beam_decode(model, src, src_mask, feat_sizes, vocab, args, lm_model)
-            elif args.decode_type == 'att_ctc':
-                recog_results = model.fast_decode_with_ctc(src, src_mask, vocab, args, lm_model)
+            elif args.decode_type == 'ctc_att':
+                batch_top_seqs = ctc_beam_decode(model, src, src_mask, feat_sizes, vocab, args, lm_model)
+                recog_results = model.beam_decode(src, src_mask, feat_sizes, vocab, args, lm_model, batch_top_seqs)
             else:
-                recog_results = model.beam_decode(src, src_mask, vocab, args, lm_model)
+                recog_results = model.beam_decode(src, src_mask, feat_sizes, vocab, args, lm_model, labels=labels, label_sizes=label_sizes)
             
             for j in range(len(utt_list)):
                 hyp = []
@@ -149,6 +168,7 @@ def main():
                         break
                     hyp.append(vocab.index2word[idx])
                 #print(utt_list[j]+' '+' '.join(hyp))
+                #print(recog_results[j][0]['score_ctc'], recog_results[j][0]['score_lm'])
                 print(utt_list[j]+' '+' '.join(hyp), flush=True, file=out_file)
     
             batch_time.update(time.time() - end)

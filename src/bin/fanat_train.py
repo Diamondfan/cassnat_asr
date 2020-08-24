@@ -19,7 +19,7 @@ from utils.wer import ctc_greedy_wer, att_greedy_wer
 from data.vocab import Vocab
 from utils.optimizer import get_opt
 from models.fanat import make_model
-from utils.loss import LabelSmoothing, KLDivLoss
+from utils.loss import LabelSmoothing, KLDivLoss, EmbedLoss
 from data.speech_loader import SpeechDataset, SpeechDataLoader
 
 class Config():
@@ -46,9 +46,9 @@ def main():
     parser.add_argument("--load_data_workers", default=2, type=int, help="Number of parallel data loaders")
     parser.add_argument("--ctc_alpha", default=0, type=float, help="Task ratio of CTC")
     parser.add_argument("--embed_alpha", default=0, type=float, help="Task ratio of embedding prediction loss")
+    parser.add_argument("--embed_loss_type", default='l2', type=str, help="Type of embedding prediction loss")
     parser.add_argument("--resume_model", default='', type=str, help="The model path to resume")
     parser.add_argument("--init_encoder", default=False, action='store_true', help="decide whether use encoder initialization")
-    parser.add_argument("--word_embed", default='', type=str, help='Ground truth of word embedding')
     parser.add_argument("--knowlg_dist", default=False, action='store_true', help='AT model for knowledge distillation')
     parser.add_argument("--print_freq", default=100, type=int, help="Number of iter to print")
     parser.add_argument("--seed", default=1, type=int, help="Random number seed")
@@ -95,7 +95,7 @@ def main():
 def main_worker(rank, world_size, args, backend='nccl'):
     args.rank, args.world_size = rank, world_size
     if args.distributed:
-        dist.init_process_group(backend=backend, init_method='tcp://localhost:12345',
+        dist.init_process_group(backend=backend, init_method='tcp://localhost:23456',
                                     world_size=world_size, rank=rank)
     
     ## 2. Define model and optimizer
@@ -150,10 +150,10 @@ def main_worker(rank, world_size, args, backend='nccl'):
         args.at_model = at_model
         args.at_model.eval()
     
-    if args.word_embed:
+    if args.use_unimask:
         if rank == 0:
-            print("Loading word embedding from {}".format(args.word_embed))
-        checkpoint = torch.load(args.word_embed, map_location='cpu')['state_dict']
+            print("Loading word embedding from {}".format(args.resume_model))
+        checkpoint = torch.load(args.resume_model, map_location='cpu')['state_dict']
         from models.modules.embedding import TextEmbedding
         word_embed = TextEmbedding(args.d_model, args.vocab_size)
         for name, param in word_embed.named_parameters():
@@ -200,7 +200,7 @@ def main_worker(rank, world_size, args, backend='nccl'):
         criterion_att = KLDivLoss(args.padding_idx)
     else:
         criterion_att = LabelSmoothing(args.vocab_size, args.padding_idx, args.label_smooth)
-    criterion_embed = torch.nn.MSELoss(reduction='mean')
+    criterion_embed = EmbedLoss(args.padding_idx, args.embed_loss_type)
     criterion = (criterion_ctc, criterion_att, criterion_embed)    
 
     ## 4. Start training iteratively
@@ -295,7 +295,9 @@ def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_trai
             feat_sizes = feat_sizes.cuda()
             label_sizes = label_sizes.cuda()
         
-        ctc_out, att_out, pred_embed, true_embed, tgt_mask_pred = model(src, src_mask, feat_sizes, tgt_label, label_sizes, args, tgt=tgt)
+        if args.use_unimask:
+            args.sos_embed = args.word_embed(tgt)[:,0:1,:]
+        ctc_out, att_out, pred_embed, tgt_mask_pred = model(src, src_mask, feat_sizes, tgt_label, label_sizes, args)
         bs, max_feat_size, _ = ctc_out.size()
         feat_sizes = (feat_sizes * max_feat_size).long()
         # loss computation
@@ -316,7 +318,7 @@ def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_trai
             ctc_loss = torch.Tensor([0])
 
         if args.embed_alpha > 0:
-            embed_loss = criterion[2](pred_embed.view(-1, pred_embed.size(-1)), true_embed.view(-1, true_embed.size(-1)))
+            embed_loss = criterion[2](pred_embed, args.word_embed, tgt, tgt_mask_pred)
             loss += args.embed_alpha * embed_loss
         else:
             embed_loss = torch.Tensor([0])

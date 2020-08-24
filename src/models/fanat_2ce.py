@@ -33,9 +33,7 @@ def make_model(input_size, args):
         AcEmbedExtractor(args.d_model, c(attn), c(ff), args.dropout, args.N_extra),
         EmbedMapper(args.d_model, c(attn), c(ff), args.dropout, args.N_map),
         decoder_use,
-        c(generator), c(generator), c(generator),
-        TextEmbedding(args.d_model, 1), pe)
-        
+        c(generator), c(generator), c(generator), pe)
     
     for p in model.parameters():
         if p.dim() > 1:
@@ -61,7 +59,7 @@ class Generator(nn.Module):
         return F.log_softmax(self.proj(x)/T, dim=-1)
 
 class FaNat2CE(nn.Module):
-    def __init__(self, src_embed, encoder, acembed_extractor, embed_mapper, decoder, ctc_gen, att_gen, att_gen2, sos_embed, pe):
+    def __init__(self, src_embed, encoder, acembed_extractor, embed_mapper, decoder, ctc_gen, att_gen, att_gen2, pe):
         super(FaNat2CE, self).__init__()
         self.src_embed = src_embed
         self.encoder = encoder
@@ -71,7 +69,7 @@ class FaNat2CE(nn.Module):
         self.ctc_generator = ctc_gen
         self.att_generator = att_gen
         self.att_generator2 = att_gen2
-        self.sos_embed = sos_embed
+        #self.sos_embed = sos_embed
         self.pe = pe
 
     def forward(self, src, src_mask, src_size, tgt_label, ylen, args, tgt=None):
@@ -104,12 +102,15 @@ class FaNat2CE(nn.Module):
         pe = self.pe.type_as(src).unsqueeze(0).repeat(bs, 1, 1)[:,:ymax,:]
         ac_embed = self.acembed_extractor(pe, enc_h, trigger_mask)
         pred_embed = self.embed_mapper(ac_embed, tgt_mask1)
-        att_out2 = self.att_generator2(pred_embed)
+        if args.embed_alpha > 0:
+            att_out2 = self.att_generator2(pred_embed)
+        else:
+            att_out2 = None
 
         # 4. decoder, output units generation
         if args.use_unimask:
-            sos = src_size.new_zeros(bs, 1).fill_(0).long()
-            sos_embed = self.sos_embed(sos)
+            sos = src_size.new_zeros(bs, 1).fill_(1).long()
+            sos_embed = args.word_embed(sos)
             pred_embed = torch.cat([sos_embed, pred_embed[:,:-1,:]], dim=1)
             tgt_mask = tgt_mask1 & self.subsequent_mask(ymax).type_as(tgt_mask1) # uni-direc
         else:

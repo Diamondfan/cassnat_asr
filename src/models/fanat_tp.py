@@ -284,9 +284,9 @@ class FaNatTp(nn.Module):
 
         x, src_mask = self.src_embed(src, src_mask)
         enc_h = self.encoder(x, src_mask)
-        ctc_out = self.ctc_generator(enc_h)
-
-        if args.use_trigger:
+        
+        if args.use_ctc_trigger:
+            ctc_out = self.ctc_generator(enc_h)
             src_size = (src_size * ctc_out.size(1)).long()
             if args.decode_type == 'ctc_att':
                 trigger_mask, ylen, ymax = self.beam_path_align(ctc_out, src_mask, src_size, blank, ctc_top_seqs, args.sample_dist)
@@ -308,11 +308,9 @@ class FaNatTp(nn.Module):
                 trigger_mask = trigger_mask | trigger_shift_right #| trigger_shift_left
             trigger_mask = trigger_mask & src_mask
         else:
-            trigger_mask = src_mask
-            src_size = (src_size * ctc_out.size(1)).long()
-            _, ylen, ymax = self.best_path_align(ctc_out, src_mask, src_size, blank)
-            #ylen = (src_size * ctc_out.size(1) * 0.3).long()
-            ymax = ylen.max().item()
+            tp_out = self.trigger_predictor(enc_h)
+            src_size = (src_size * tp_out.size(1)).long()
+            trigger_mask, ylen, ymax = self.best_path_align(tp_out, src_mask, src_size, blank, args.sample_dist, args.sample_num)
 
         bs, _, d_model = enc_h.size()
         tgt_mask1 = torch.full((bs, ymax), 1).type_as(src_mask)

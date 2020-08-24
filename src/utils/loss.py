@@ -75,3 +75,28 @@ class TPLoss(nn.Module):
         acc = (torch.argmax(tp_out, -1) == aligned_seq).masked_fill(src_mask.squeeze(1)==0, 0).sum().item()
         return tp_loss, acc, tokens
 
+class EmbedLoss(nn.Module):
+    def __init__(self, padding_idx, embed_loss_type='l1'):
+        super(EmbedLoss, self).__init__()
+        self.padding_idx = padding_idx
+        self.loss_type = embed_loss_type # ce, regression, contrasitive
+        if embed_loss_type == 'l2':
+            self.criterion = torch.nn.MSELoss(reduction='none')
+        elif embed_loss_type == 'l1':
+            self.criterion = torch.nn.L1Loss(reduction='none')
+        elif embed_loss_type == 'ce':
+            self.criterion = torch.nn.CrossEntropyLoss(reduction='none')
+        elif embed_loss_type == 'contrast':
+            self.criterion = 1
+        else:
+            raise NotImplementedError
+
+    def forward(self, pred_embed, word_embed, tgt, tgt_mask):
+        if self.loss_type == 'l2':
+            true_embed = word_embed(tgt)
+            tgt_mask = tgt_mask.transpose(1,2).reshape(-1, 1)
+            tokens = tgt_mask.sum().item()
+            loss = self.criterion(pred_embed.view(-1, pred_embed.size(-1)), true_embed.view(-1, true_embed.size(-1)))
+            return loss.masked_fill(tgt_mask==0, 0).sum() / tokens / loss.size(1)
+
+

@@ -71,7 +71,7 @@ class FaNat(nn.Module):
         self.att_generator = att_gen
         self.pe = pe
 
-    def forward(self, src, src_mask, src_size, tgt_label, ylen, args, tgt=None):
+    def forward(self, src, src_mask, src_size, tgt_label, ylen, args):
         # 1. compute ctc output
         x, x_mask = self.src_embed(src, src_mask)
         enc_h = self.encoder(x, x_mask)
@@ -114,10 +114,7 @@ class FaNat(nn.Module):
 
         # 4. decoder, output units generation
         if args.use_unimask:
-            true_embed = args.word_embed(tgt)
-            true_embed = true_embed.masked_fill(tgt_mask1.transpose(1,2) == 0, 0)
-            pred_embed = torch.cat([true_embed[:,0:1,:], pred_embed[:,:-1,:]], dim=1)
-            pred_embed = pred_embed.masked_fill(tgt_mask1.transpose(1,2) == 0, 0)
+            pred_embed = torch.cat([args.sos_embed, pred_embed[:,:-1,:]], dim=1)
             tgt_mask = tgt_mask1 & self.subsequent_mask(ymax).type_as(tgt_mask1) # uni-direc
         else:
             tgt_mask = tgt_mask1
@@ -130,7 +127,7 @@ class FaNat(nn.Module):
         else:
             dec_h = self.decoder(pred_embed, tgt_mask)
         att_out = self.att_generator(dec_h)
-        return ctc_out, att_out, pred_embed, true_embed, tgt_mask1
+        return ctc_out, att_out, pred_embed, tgt_mask1
 
     def viterbi_align(self, ctc_out, src_mask, src_size, ys, ylens, blank, sample_dist):
         """
@@ -349,7 +346,6 @@ class FaNat(nn.Module):
             sos_input = src_size.new_zeros(bs, 1).fill_(sos).long()
             sos_embed = args.word_embed(sos_input)
             pred_embed = torch.cat([sos_embed, pred_embed[:,:-1,:]], dim=1)
-            pred_embed = pred_embed.masked_fill(tgt_mask1.transpose(1,2) == 0, 0)
             tgt_mask = tgt_mask1 & self.subsequent_mask(ymax).type_as(tgt_mask1) # uni-direc
         else:
             tgt_mask = tgt_mask1

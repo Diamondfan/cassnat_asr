@@ -94,7 +94,7 @@ def main():
 def main_worker(rank, world_size, args, backend='nccl'):
     args.rank, args.world_size = rank, world_size
     if args.distributed:
-        dist.init_process_group(backend=backend, init_method='tcp://localhost:23456',
+        dist.init_process_group(backend=backend, init_method='tcp://localhost:12345',
                                     world_size=world_size, rank=rank)
     
     ## 2. Define model and optimizer
@@ -128,10 +128,10 @@ def main_worker(rank, world_size, args, backend='nccl'):
     else:
         start_epoch = 0
     
-    if args.word_embed:
+    if args.use_unimask:
         if rank == 0:
-            print("Loading word embedding from {}".format(args.word_embed))
-        checkpoint = torch.load(args.word_embed, map_location='cpu')['state_dict']
+            print("Loading word embedding from {}".format(args.resume_model))
+        checkpoint = torch.load(args.resume_model, map_location='cpu')['state_dict']
         from models.modules.embedding import TextEmbedding
         word_embed = TextEmbedding(args.d_model, args.vocab_size)
         for name, param in word_embed.named_parameters():
@@ -188,15 +188,19 @@ def main_worker(rank, world_size, args, backend='nccl'):
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=args.anneal_lr_ratio, 
                             patience=args.patience, min_lr=args.min_lr)
     
+    sample_dist = args.sample_dist
     for epoch in range(start_epoch, args.epochs):
         if args.distributed:
             train_loader.set_epoch(epoch)
-
+        
+        train_loader.dataset.use_specaug = (epoch >= args.specaug_start_epoch)
         model.train()
+        args.sample_dist = sample_dist
         train_loss, train_wer, train_ctc_wer, train_wer2 = run_epoch(epoch, train_loader, model, criterion, args, optimizer, is_train=True)
         
         model.eval()
         with torch.no_grad():
+            args.sample_dist = 0
             valid_loss, valid_wer, valid_ctc_wer, valid_wer2 = run_epoch(epoch, valid_loader, model, criterion, args, is_train=False)
 
         temp_lr = optimizer.param_groups[0]['lr'] if args.opt_type == "normal" else optimizer.optimizer.param_groups[0]['lr']
@@ -288,7 +292,10 @@ def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_trai
         # unit error rate computation
         ctc_errs, all_tokens = ctc_greedy_wer(ctc_out, tgt_label.cpu().numpy(), feat_sizes.cpu().numpy(), args.padding_idx)
         att_errs, all_tokens = att_greedy_wer(att_out, tgt_label.cpu().numpy(), args.padding_idx)
-        att2_errs, _ = att_greedy_wer(att_out2, tgt_label.cpu().numpy(), args.padding_idx)
+        if att_out2 is not None:
+            att2_errs, _ = att_greedy_wer(att_out2, tgt_label.cpu().numpy(), args.padding_idx)
+        else:
+            att2_errs = 0
 
         ctc_wers.update(ctc_errs/all_tokens, all_tokens)
         att_wers.update(att_errs/all_tokens, all_tokens)

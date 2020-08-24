@@ -6,19 +6,19 @@ stage=3
 end_stage=3
 
 if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
-  exp=exp/fanat_multistep_trig_src_initenc_ctc1_sample_path_SchD/
+  exp=exp/fanat_tp_large_specaug_multistep_trig_src_ctc1_tp01
 
   if [ ! -d $exp ]; then
     mkdir -p $exp
   fi
 
-  CUDA_VISIBLE_DEVICES="0,1,2,3" fanat_train.py \
+  CUDA_VISIBLE_DEVICES="0,1,2,3" fanat_tp_train.py \
     --exp_dir $exp \
     --train_config conf/fanat_train.yaml \
     --data_config conf/data.yaml \
     --batch_size 32 \
     --epochs 100 \
-    --save_epoch 40 \
+    --save_epoch 20 \
     --anneal_lr_ratio 0.5 \
     --patience 1 \
     --end_patience 10 \
@@ -28,12 +28,12 @@ if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
     --weight_decay 0 \
     --label_smooth 0.1 \
     --ctc_alpha 1 \
-    --embed_alpha 0 \
+    --tp_alpha 0.1 \
     --use_cmvn \
+    --init_encoder \
+    --resume_model exp/large_averaged.mdl \
     --print_freq 100 > $exp/train.log 2>&1 &
     
-    #--init_encoder \
-    #--resume_model exp/baseline/averaged.mdl \
     #--word_embed exp/averaged.mdl \
     #--knowlg_dist \
   echo "[Stage 1] ASR Training Finished."
@@ -41,26 +41,26 @@ fi
 
 out_name='averaged.mdl'
 if [ $stage -le 2 ] && [ $end_stage -ge 2 ]; then
-  exp=exp/fanat_multistep_trig_src_initenc_ctc1_sample_path_SchD
-  last_epoch=65
+  exp=exp/fanat_tp_large_specaug_multistep_trig_src_ctc1_tp05
+  last_epoch=45
   
   average_checkpoints.py \
     --exp_dir $exp \
     --out_name $out_name \
     --last_epoch $last_epoch \
-    --num 12
+    --num 5
   
   echo "[Stage 2] Average checkpoints Finished."
 
 fi
 
 if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
-  exp=exp/fanat_multistep_trig_src_initenc_ctc1_sample_path_SchD
+  exp=exp/fanat_tp_large_specaug_multistep_trig_src_ctc1_tp05
 
   bpemodel=data/dict/bpemodel_unigram_5000
   rnnlm_model=exp/libri_tflm_unigram_4card_cosineanneal_ep10/$out_name
   global_cmvn=data/fbank/cmvn.ark
-  test_model=$exp/$out_name
+  test_model=$exp/best_model.mdl #$out_name
   decode_type='att_only'
   beam1=1 # check beam1 and beam2 in conf/decode.yaml, att beam
   beam2=0 #10 # ctc beam
@@ -69,13 +69,13 @@ if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
   ctclm=0 #0.7
   ctclp=0 #2
   lp=0
-  nj=2
+  nj=4
   test_set="dev_clean test_clean dev_other test_other"
 
   for tset in $test_set; do
     echo "Decoding $tset..."
-    #desdir=$exp/${decode_type}_decode_average_ctc${ctcwt}_bm1_${beam1}_bm2_${beam2}_lmwt${lmwt}_ctclm${ctclm}_ctclp${ctclp}_lp${lp}/$tset/
-    desdir=$exp/${decode_type}_decode_average_bm1_${beam1}_sampdist_1_samplenum_20/$tset/
+    desdir=$exp/${decode_type}_decode_average_ctctrigger_ctc${ctcwt}_bm1_${beam1}_bm2_${beam2}_lmwt${lmwt}_ctclm${ctclm}_ctclp${ctclp}_lp${lp}_tptrigger/$tset/
+    #desdir=$exp/${decode_type}_decode_average_bm1_${beam1}_sampdist_1_samplenum_20/$tset/
 
     if [ ! -d $desdir ]; then
       mkdir -p $desdir
@@ -88,7 +88,7 @@ if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
     utils/split_scp.pl data/$tset/feats.scp $split_scps || exit 1;
     
     $cmd JOB=1:$nj $desdir/log/decode.JOB.log \
-      CUDA_VISIBLE_DEVICES="1" fanat_decode.py \
+      CUDA_VISIBLE_DEVICES="1" fanat_tp_decode.py \
         --test_config conf/fanat_decode.yaml \
         --lm_config conf/lm.yaml \
         --data_path $desdir/feats.JOB.scp \

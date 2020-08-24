@@ -112,7 +112,7 @@ class Transformer(nn.Module):
                 init_score = torch.Tensor([[0.0]])
                 batch_top_seqs[b][0]['ctc_score_prev'] = init_score.cuda() if args.use_gpu else init_score
 
-        max_decode_step = int(args.max_decode_ratio * enc_h.size(1)) if args.max_decode_ratio > 0 else enc_h.size(1)
+        max_decode_step = int(args.max_decode_ratio * enc_h.size(1)) if args.max_decode_ratio > 0 else args.max_decode_step
         for i in range(max_decode_step):
             # batchify the batch and beam
             all_seqs, ys, ench_use, src_mask_use = [], [], [], []

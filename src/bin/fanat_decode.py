@@ -103,7 +103,7 @@ def main():
     else:
         lm_model = None
 
-    if args.word_embed:
+    if args.use_unimask:
         checkpoint = torch.load(args.word_embed, map_location='cpu')['state_dict']
         from models.modules.embedding import TextEmbedding
         word_embed = TextEmbedding(args.d_model, args.vocab_size)
