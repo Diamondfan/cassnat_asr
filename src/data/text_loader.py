@@ -26,8 +26,7 @@ class SingleSet(object):
             while line:
                 line = line.strip().split(' ')
                 if len(line) > self.max_len:
-                    line = fin.readline()
-                    continue
+                    line = line[:self.max_len]
                 all_text.append([self.vocab.word2index[word] if word in self.vocab.word2index else
                         self.vocab.word2index['unk'] for word in line])
                 line = fin.readline()
@@ -77,10 +76,7 @@ class TextDataset(Dataset):
         text.insert(0, self.vocab.word2index['sos'])
         text.append(self.vocab.word2index['eos'])
 
-        return (text, label)
-
-    def __len__(self):
-        return sum(self.data_stream_sizes)
+        return text, label
 
     def random_mask(self, text):
         tgt_input, label = [], []
@@ -95,7 +91,7 @@ class TextDataset(Dataset):
 
                 # 10% randomly change token to random token
                 elif prob < 0.9:
-                    tgt_input.append(random.randrange(5, self.vocab.n_words))
+                    tgt_input.append(random.randrange(4, self.vocab.n_words-1))
 
                 # 10% randomly change token to current token
                 else:
@@ -108,6 +104,9 @@ class TextDataset(Dataset):
                 label.append(0)
 
         return tgt_input, label
+
+    def __len__(self):
+        return sum(self.data_stream_sizes)
 
 class TextDataLoader(DataLoader):
     def __init__(self, dataset, batch_size, padding_idx=-1, distributed=False, shuffle=False, num_workers=0, timeout=1000):

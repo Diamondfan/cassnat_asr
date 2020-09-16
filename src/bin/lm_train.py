@@ -15,7 +15,7 @@ from torch.distributed import ReduceOp
 
 sys.path.append(os.environ['E2EASR']+'/src')
 import utils.util as util
-from data.vocab import Vocab, VocabMask
+from data.vocab import Vocab
 from utils.optimizer import get_opt
 from data.text_loader import TextDataset, TextDataLoader
 
@@ -39,7 +39,7 @@ def main():
     parser.add_argument("--opt_type", default='normal', type=str, help="Type of optimizer, normal or noam")
     parser.add_argument("--anneal_lr_ratio", default=0.5, type=float, help="Learning rate decay ratio, used when opt_type='normal'")
     parser.add_argument("--weight_decay", default=0.00001, type=float, help="Weight decay in optimizer")
-    parser.add_argument("--load_data_workers", default=1, type=int, help="Number of parallel data loaders")
+    parser.add_argument("--load_data_workers", default=0, type=int, help="Number of parallel data loaders")
     parser.add_argument("--resume_model", default='', type=str, help="The model path to resume")
     parser.add_argument("--print_freq", default=100, type=int, help="Number of iter to print")
     parser.add_argument("--seed", default=1, type=int, help="Random number seed")
@@ -86,10 +86,12 @@ def main_worker(rank, world_size, args, backend='nccl'):
     if use_cuda:
         torch.cuda.manual_seed(args.seed)
 
-    if args.lm_type == 'uniLM':
-        vocab = Vocab(args.vocab_file, args.rank)
-    elif args.lm_type == 'MLM':
-        vocab = VocabMask(args.vocab_file, args.rank)
+    vocab = Vocab(args.vocab_file, args.rank)
+    if args.lm_type == 'MLM':
+        vocab.word2index['mask'] = vocab.n_words
+        vocab.index2word[vocab.n_words] = 'mask'
+        vocab.n_words += 1
+
     args.vocab_size = vocab.n_words
     from models.lm import make_model
     model = make_model(args)
@@ -145,7 +147,7 @@ def main_worker(rank, world_size, args, backend='nccl'):
     if args.opt_type == 'normal':
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=args.anneal_lr_ratio, 
                             patience=args.patience, min_lr=args.min_lr)
-    
+
     for epoch in range(start_epoch, args.epochs):
         if args.distributed:
             train_loader.set_epoch(epoch)
@@ -225,7 +227,6 @@ def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_trai
         # loss computation
         loss = criterion(lm_out.view(-1, lm_out.size(-1)), tgt_label.view(-1))
         losses.update(loss.item(), tokens)
-
         if is_train:
             loss = loss / args.accum_grad
             loss.backward()
@@ -233,7 +234,7 @@ def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_trai
                 grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
                 optimizer.step()
                 optimizer.zero_grad()
-        
+
         batch_time.update(time.time() - end)
         token_speed.update(tokens/(time.time()-start))
 

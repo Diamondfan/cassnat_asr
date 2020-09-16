@@ -140,7 +140,7 @@ class LRMulStepScheduler(BaseOpt):
             "optimizer": self.optimizer.state_dict()}
             
 def get_opt(opt_type, model, args):
-    opt = torch.optim.Adam(model.parameters(), lr=args.learning_rate, betas=(0.9, 0.98), eps=1e-9, weight_decay=args.weight_decay)
+    opt = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.learning_rate, betas=(0.9, 0.98), eps=1e-9, weight_decay=args.weight_decay)
     if opt_type == "noam":
         return NoamOpt(args.d_model, args.noam_factor, args.noam_warmup, opt)
     elif opt_type == "normal":
