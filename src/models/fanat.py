@@ -88,14 +88,15 @@ class FaNat(nn.Module):
             if args.use_best_path:
                 trigger_mask, ylen, ymax = self.best_path_align(ctc_out, x_mask, src_size, blank)
             else:
-                trigger_mask, ylen, ymax = self.viterbi_align(ctc_out, x_mask, src_size, tgt_label[:,:-1], ylen, blank, args.sample_dist)
+                aligned_seq_shift, ylen, ymax = self.viterbi_align(ctc_out, x_mask, src_size, tgt_label[:,:-1], ylen, blank, args.sample_dist, args.sample_topk)
+                trigger_mask, ylen, ymax = self.align_to_mask(aligned_seq_shift, ylen, ymax, x_mask, src_size, blank)
 
             if args.context_trigger > 0:
                 trigger_shift_right = trigger_mask.new_zeros(trigger_mask.size())
                 trigger_shift_right[:, :, 1:] = trigger_mask[:,:, :-1]
-                #trigger_shift_left = trigger_mask.new_zeros(trigger_mask.size())
-                #trigger_shift_left[:,:,:-1] = trigger_mask[:,:,1:]
-                trigger_mask = trigger_mask | trigger_shift_right #| trigger_shift_left
+                trigger_shift_left = trigger_mask.new_zeros(trigger_mask.size())
+                trigger_shift_left[:,:,:-1] = trigger_mask[:,:,1:]
+                trigger_mask = trigger_mask | trigger_shift_right | trigger_shift_left
             trigger_mask = trigger_mask & x_mask
         else:
             trigger_mask = x_mask
@@ -129,7 +130,7 @@ class FaNat(nn.Module):
         att_out = self.att_generator(dec_h)
         return ctc_out, att_out, pred_embed, tgt_mask1
 
-    def viterbi_align(self, ctc_out, src_mask, src_size, ys, ylens, blank, sample_dist):
+    def viterbi_align(self, ctc_out, src_mask, src_size, ys, ylens, blank, sample_dist, sample_topk):
         """
         ctc_out: log probability of ctc output
         src_mask, src_size: specify the effective length of each sample in a batch
@@ -162,13 +163,23 @@ class FaNat(nn.Module):
         index_fix = torch.arange(max_path_len).type_as(ylens)
         outside = index_fix >= path_lens.unsqueeze(1)
         
+        if sample_topk > 1:
+            t_sample = torch.randint(1, xmax, (1, sample_topk)).numpy().tolist()
+        
         for t in range(xmax):
             mat = alpha.new_zeros(3, bs, max_path_len).fill_(logzero)
             mat[0, :, :] = alpha[t]
             mat[1, :, 1:] = alpha[t, :, :-1]
             mat[2, :, 2:] = alpha[t, :, :-2]
             mat[2, :, 2:][same_transition] = logzero   # blank and same label have only two previous nodes
-            max_prob, max_indices = torch.max(mat, dim=0)
+            if sample_topk > 1 and t in t_sample[0]:
+                topk_prob, topk_indices = torch.topk(mat, 2, dim=0)
+                max_prob = topk_prob[1]
+                max_prob[:,0] = topk_prob[0,:,0]   # the first position has only one prefix
+                max_indices = topk_indices[1]
+                max_indices[:,0] = topk_indices[0,:,0]
+            else:
+                max_prob, max_indices = torch.max(mat, dim=0)
             max_prob[outside] = logzero
             bp[:,t,:] = index_fix - max_indices
             alpha[t+1,:,:] = max_prob + log_probs_path[t,:,:]
@@ -192,31 +203,30 @@ class FaNat(nn.Module):
         aligned_seq_shift[:,1:] = aligned_seq[:,:-1]
 
         if sample_dist > 0:
-            #orig_pos = torch.nonzero(aligned_seq_shift, as_tuple=True)
-            #sample_shift = torch.randint(-sample_dist, sample_dist, orig_pos[1].size()).type_as(aligned_seq_shift)
-            #aligned_seq_shift[orig_pos] = blank
-            #orig_pos[1].add_(sample_shift)
-            #aligned_seq_shift[orig_pos] = 1
             for b in range(bs):
-                while True:
+                i = 0
+                while i < 3:
+                    i += 1
                     orig_pos = torch.nonzero(aligned_seq_shift[b])
-                    sample_shift = torch.randint(-sample_dist, sample_dist, orig_pos.size()).type_as(aligned_seq_shift)
+                    sample_shift = torch.randint(-sample_dist, sample_dist+1, orig_pos.size()).type_as(aligned_seq_shift)
                     new_pos = orig_pos + sample_shift
+                    if new_pos.size(0) > 1:
+                        new_pos[-2] = min(new_pos[-2], xmax-1)  # useful when sample_dist = 2
+                    new_pos[-1] = min(new_pos[-1], xmax-1)
                     new_aligned_seq = aligned_seq_shift[b].clone()
                     new_aligned_seq[orig_pos] = blank
                     new_aligned_seq[new_pos] = 1
                     if torch.sum(new_aligned_seq) == ylens[b]:
                         aligned_seq_shift[b] = new_aligned_seq
                         break
+        return aligned_seq_shift, ylens, ymax
 
+    def align_to_mask(self, aligned_seq_shift, ylens, ymax, src_mask, src_size, blank):
         # 6. transcribe aliged_seq to trigger mask
         trigger_mask = (aligned_seq_shift != blank).cumsum(1).unsqueeze(1).repeat(1, ymax+1, 1)
         trigger_mask = trigger_mask == torch.arange(ymax+1).type_as(trigger_mask).unsqueeze(0).unsqueeze(2)
-        #sos_mask = trigger_mask.new_zeros((bs,1, xmax))
-        #sos_mask[:,:,0] = 1
         trigger_mask[:,-1:,:].masked_fill_(src_mask==0, 0)   # remove position with padding_idx
         trigger_mask[:,-1,:].scatter_(1, src_size.unsqueeze(1)-1, 1) # give the last character one to keep at least one active position for eos
-        #trigger_mask = torch.cat([sos_mask, trigger_mask], 1)
         
         ylen = ylens + 1
         ymax += 1
@@ -225,9 +235,16 @@ class FaNat(nn.Module):
     def best_path_align(self, ctc_out, src_mask, src_size, blank, sample_dist=0, sample_num=0):
         "This is used for decoding, forced alignment is needed for training"
         bs, xmax, _ = ctc_out.size()
-        best_paths = ctc_out.argmax(-1)
+        if sample_dist == 0 and sample_num > 1:
+            mask = (ctc_out.max(-1)[0].exp() < 0.9).unsqueeze(-1)
+            topk = ctc_out.topk(2, -1)[1]
+            select = torch.randint(0, 2, (topk.size(0), topk.size(1), 1)).type_as(topk).masked_fill(mask==0, 0)
+            select.index_fill_(0, torch.arange(0, bs, sample_num).type_as(select), 0)
+            best_paths = topk.gather(-1, select).squeeze(-1)
+        else:
+            best_paths = ctc_out.argmax(-1)
+        
         best_paths = best_paths.masked_fill(src_mask.squeeze(1)==0, 0)
-
         aligned_seq_shift = best_paths.new_zeros(best_paths.size())
         aligned_seq_shift[:, 1:] = best_paths[:,:-1]
         dup = best_paths == aligned_seq_shift
@@ -242,47 +259,41 @@ class FaNat(nn.Module):
                 while i < sample_num:
                     idx = b * sample_num + i
                     orig_pos = torch.nonzero(aligned_seq_shift[idx,:])
-                    sample_shift = torch.randint(-sample_dist, sample_dist, orig_pos.size()).type_as(aligned_seq_shift)
+                    sample_shift = torch.randint(-sample_dist, sample_dist+1, orig_pos.size()).type_as(aligned_seq_shift)
                     new_pos = orig_pos + sample_shift
+                    new_pos[-1] = min(new_pos[-1], xmax-1)
                     new_aligned_seq = aligned_seq_shift[idx,:].clone()
                     new_aligned_seq[orig_pos] = blank
                     new_aligned_seq[new_pos] = 1
                     if torch.sum(new_aligned_seq) == ylen[idx]:
                         aligned_seq_shift[idx,:] = new_aligned_seq
                         i += 1
-                                    
-        trigger_mask = (aligned_seq_shift != blank).cumsum(1).unsqueeze(1).repeat(1, ymax+1, 1)
-        trigger_mask = trigger_mask == torch.arange(ymax+1).type_as(trigger_mask).unsqueeze(0).unsqueeze(2)
-        #sos_mask = trigger_mask.new_zeros((bs,1, xmax))
-        #sos_mask[:,:,0] = 1
-        trigger_mask[:,-1:,:].masked_fill_(src_mask==0, 0)
-        trigger_mask[:,-1,:].scatter_(1, src_size.unsqueeze(1)-1, 1)
-        #trigger_mask = torch.cat([sos_mask, trigger_mask], 1)
-        
-        ylen = ylen + 1
-        ymax += 1
-        return trigger_mask, ylen, ymax
+        return aligned_seq_shift, ylen, ymax
 
-    def beam_path_align(self, ctc_out, src_mask, src_size, blank, ctc_top_seqs, sample_dist):
+    def beam_path_align(self, ctc_out, src_mask, src_size, blank, ctc_top_seqs, sample_num):
         # Obatain a better alignment and then trigger mask with languag model
         # This is similar with ctc beam search, but without merging the paths with same output
-        bs = ctc_out.size(0)
+        bs = int(ctc_out.size(0) /  sample_num)
         tgt_label, ylen = [], []
         for b in range(bs):
-            tgt_label.append([])
-            ylen.append(0)
-            for idx in ctc_top_seqs[b][0]['hyp']:
-                tgt_label[-1].append(idx)
-                ylen[-1] += 1
+            for i in range(sample_num):
+                tgt_label.append([])
+                ylen.append(0)
+                for idx in ctc_top_seqs[b][i]['hyp']:
+                    tgt_label[-1].append(idx)
+                    ylen[-1] += 1
 
         ymax = max(ylen)
-        tgt = src_size.new_zeros(bs, ymax).long()
-        for b in range(bs):
+        tgt = src_size.new_zeros(bs*sample_num, ymax).long()
+        for b in range(bs*sample_num):
             tgt[b].narrow(0, 0, ylen[b]).copy_(torch.Tensor(tgt_label[b]).type_as(src_size))
         ylen = torch.Tensor(ylen).type_as(src_size)
         
-        trigger_mask, ylen, ymax = self.viterbi_align(ctc_out, src_mask, src_size, tgt, ylen, blank, sample_dist)
-        return trigger_mask, ylen, ymax
+        if ymax == 0:
+            aligned_seq_shift = ctc_out.new_zeros(ctc_out.size(0), ctc_out.size(1)).long()
+        else:
+            aligned_seq_shift, ylen, ymax = self.viterbi_align(ctc_out, src_mask, src_size, tgt, ylen, blank, 0, 0)
+        return aligned_seq_shift, ylen, ymax
 
     def subsequent_mask(self, size):
         ret = torch.ones(size, size, dtype=torch.uint8)
@@ -305,30 +316,47 @@ class FaNat(nn.Module):
 
         if args.use_trigger:
             src_size = (src_size * ctc_out.size(1)).long()
-            if args.decode_type == 'ctc_att':
-                trigger_mask, ylen, ymax = self.beam_path_align(ctc_out, src_mask, src_size, blank, ctc_top_seqs, args.sample_dist)
-            elif args.decode_type == 'oracle_att':
-                trigger_mask, ylen, ymax = self.viterbi_align(ctc_out, src_mask, src_size, labels[:,1:-1], label_sizes, blank, args.sample_dist)
-            else:
-                if args.sample_num > 0:
-                    ctc_out = ctc_out.unsqueeze(1).repeat(1, args.sample_num, 1, 1).reshape(-1, ctc_out.size(1), ctc_out.size(2))
-                    enc_h = enc_h.unsqueeze(1).repeat(1, args.sample_num, 1, 1).reshape(-1, enc_h.size(1), enc_h.size(2))
-                    src_mask = src_mask.unsqueeze(1).repeat(1, args.sample_num, 1, 1).reshape(-1, src_mask.size(1), src_mask.size(2))
-                    src_size = src_size.unsqueeze(1).repeat(1, args.sample_num).reshape(-1)
-                trigger_mask, ylen, ymax = self.best_path_align(ctc_out, src_mask, src_size, blank, args.sample_dist, args.sample_num)
+            #used to include oracle path in sampe path
+            if args.test_hitrate:
+                aligned_seq_shift1, ylen1, ymax1 = self.viterbi_align(ctc_out, src_mask, src_size, labels[:,1:-1], label_sizes, blank, args.sample_dist, 0)
 
+            if args.sample_num > 1:
+                ctc_out = ctc_out.unsqueeze(1).repeat(1, args.sample_num, 1, 1).reshape(-1, ctc_out.size(1), ctc_out.size(2))
+                enc_h = enc_h.unsqueeze(1).repeat(1, args.sample_num, 1, 1).reshape(-1, enc_h.size(1), enc_h.size(2))
+                src_mask = src_mask.unsqueeze(1).repeat(1, args.sample_num, 1, 1).reshape(-1, src_mask.size(1), src_mask.size(2))
+                src_size = src_size.unsqueeze(1).repeat(1, args.sample_num).reshape(-1)
+            
+            if args.decode_type == 'ctc_att':
+                aligned_seq_shift, ylen, ymax = self.beam_path_align(ctc_out, src_mask, src_size, blank, ctc_top_seqs, args.sample_num)
+            elif args.decode_type == 'oracle_att':
+                aligned_seq_shift, ylen, ymax = self.viterbi_align(ctc_out, src_mask, src_size, labels[:,1:-1], label_sizes, blank, args.sample_dist, 0)
+            else:             
+                aligned_seq_shift, ylen, ymax = self.best_path_align(ctc_out, src_mask, src_size, blank, args.sample_dist, args.sample_num)
+            
+            if args.test_hitrate and args.sample_num < 2:
+                args.total += (aligned_seq_shift1 != 0).sum().item()
+                aligned_seq_shift = aligned_seq_shift.masked_fill((aligned_seq_shift != 0), 1)
+                aligned_seq_shift1 = aligned_seq_shift1.masked_fill((aligned_seq_shift1 != 0), 1)
+                mask = (aligned_seq_shift == 0) & (aligned_seq_shift1 == 0)
+                args.num_correct += (aligned_seq_shift == aligned_seq_shift1).masked_fill(mask, 0).sum(-1).item()
+                args.length_total += 1
+                num = 1 if ((aligned_seq_shift != 0).sum().item() == (aligned_seq_shift1 != 0).sum().item()) else 0
+                args.length_correct += num
+                #args.err = (aligned_seq_shift != 0).sum().item() - (aligned_seq_shift1 != 0).sum().item()
+
+            trigger_mask, ylen, ymax = self.align_to_mask(aligned_seq_shift, ylen, ymax, src_mask, src_size, blank)
+                 
             if args.context_trigger > 0:
                 trigger_shift_right = trigger_mask.new_zeros(trigger_mask.size())
                 trigger_shift_right[:, :, 1:] = trigger_mask[:,:, :-1]
-                #trigger_shift_left = trigger_mask.new_zeros(trigger_mask.size())
-                #trigger_shift_left[:,:,:-1] = trigger_mask[:,:,1:]
-                trigger_mask = trigger_mask | trigger_shift_right #| trigger_shift_left
+                trigger_shift_left = trigger_mask.new_zeros(trigger_mask.size())
+                trigger_shift_left[:,:,:-1] = trigger_mask[:,:,1:]
+                trigger_mask = trigger_mask | trigger_shift_right | trigger_shift_left
             trigger_mask = trigger_mask & src_mask
         else:
             trigger_mask = src_mask
             src_size = (src_size * ctc_out.size(1)).long()
             _, ylen, ymax = self.best_path_align(ctc_out, src_mask, src_size, blank)
-            #ylen = (src_size * ctc_out.size(1) * 0.3).long()
             ymax = ylen.max().item()
 
         bs, _, d_model = enc_h.size()
@@ -358,27 +386,40 @@ class FaNat(nn.Module):
             dec_h = self.decoder(pred_embed, tgt_mask)
         att_out = self.att_generator(dec_h)
         
-        if args.sample_num > 0:
+        if args.sample_num > 1:
             _, seql, dim = att_out.size()
             att_pred = att_out.argmax(-1)
             lm_input = torch.cat([att_out.new_zeros(att_out.size(0), 1).fill_(sos).long(), att_pred[:,:-1]], 1)
             lm_tgt_mask = tgt_mask1 & self.subsequent_mask(ymax).type_as(tgt_mask1)
             lm_out = lm_model(lm_input, lm_tgt_mask)
-            lm_score = torch.gather(lm_out, -1, att_out.argmax(-1).unsqueeze(-1)).squeeze(-1)
+            # this part use ast baseline to do the score part
+            #x, src_mask = lm_model.src_embed(src, x_mask)
+            #enc_h = lm_model.encoder(x, src_mask)
+            #enc_h = enc_h.unsqueeze(1).repeat(1, args.sample_num, 1, 1).reshape(-1, enc_h.size(1), enc_h.size(2))
+            #src_mask = src_mask.unsqueeze(1).repeat(1, args.sample_num, 1, 1).reshape(-1, src_mask.size(1), src_mask.size(2))
+            #lm_out = lm_model.forward_att(enc_h, lm_input, src_mask, lm_tgt_mask)
+            
+            lm_score = torch.gather(lm_out, -1, att_pred.unsqueeze(-1)).squeeze(-1)
             lm_score = lm_score.reshape(-1, args.sample_num, seql).masked_fill(tgt_mask.reshape(-1, args.sample_num, tgt_mask.size(-1))==0, 0)
             att_out = att_out.reshape(-1, args.sample_num, seql, dim).masked_fill(tgt_mask.reshape(-1, args.sample_num, tgt_mask.size(-2), tgt_mask.size(-1)).transpose(2,3)==0, 0)
             prob_sum = lm_score.sum(-1) / (lm_score != 0).sum(-1).float()
             max_indices = prob_sum.max(-1, keepdim=True)[1]
             att_out = torch.gather(att_out, 1, max_indices.unsqueeze(2).unsqueeze(3).repeat(1,1,seql,dim)).squeeze(1)
             bs = att_out.size(0)
-            ylen = ylen.reshape(bs, args.sample_num)[:,0]
-        #best_scores, best_indices = torch.topk(att_out, args.beam_width, dim=-1)
-        #log_probs, best_paths = torch.max(ctc_out, -1)
-        #aligned_seq_shift = best_paths.new_zeros(best_paths.size())
-        #aligned_seq_shift[:, 1:] = best_paths[:,:-1]
-        #dup = best_paths == aligned_seq_shift
-        #best_paths.masked_fill_(dup, 0)
-        
+            ylen = ylen.reshape(bs, args.sample_num).gather(1, max_indices)
+            ymax = torch.max(ylen).item()
+
+            if args.test_hitrate:
+                args.total += (aligned_seq_shift1 != 0).sum(-1).item()
+                aligned_seq_shift = aligned_seq_shift.gather(0, max_indices.repeat(1, aligned_seq_shift.size(-1)))
+                aligned_seq_shift = aligned_seq_shift.masked_fill((aligned_seq_shift != 0), 1)
+                aligned_seq_shift1 = aligned_seq_shift1.masked_fill((aligned_seq_shift1 != 0), 1)
+                mask = (aligned_seq_shift == 0) & (aligned_seq_shift1 == 0)
+                args.num_correct += (aligned_seq_shift == aligned_seq_shift1).masked_fill(mask, 0).sum(-1).item()
+                args.length_total += 1
+                num = 1 if ((aligned_seq_shift != 0).sum().item() == (aligned_seq_shift1 != 0).sum().item()) else 0
+                args.length_correct += num
+                #args.err = (aligned_seq_shift != 0).sum().item() - (aligned_seq_shift1 != 0).sum().item()
         ys = torch.ones(1, 1).fill_(sos).long()
         if args.use_gpu:
             ys = ys.cuda()
@@ -442,10 +483,146 @@ class FaNat(nn.Module):
                 sort_f = lambda x:x['score'] + (len(x['hyp'])-1) * args.length_penalty \
                             if args.length_penalty is not None else lambda x:x['score']                
                 batch_top_seqs[b] = sorted(all_seqs[b], key=sort_f, reverse=True)[:args.beam_width]
+        return batch_top_seqs, args
 
-        #batch_top_seqs = []
-        #for b in range(bs):
-        #    batch_top_seqs.append([])
-        #    batch_top_seqs[b].append({'hyp': best_paths[b].cpu().numpy()})
-        return batch_top_seqs
+    def beam_decode_adapt_num(self, src, x_mask, src_size, vocab, args, lm_model=None, ctc_top_seqs=None, labels=None, label_sizes=None):
+        """
+        Use batch size 1 to do adpative path samping, not useful.
+        """
+        sos = vocab.word2index['sos']
+        eos = vocab.word2index['eos']
+        blank = vocab.word2index['blank']
+
+        x, src_mask = self.src_embed(src, x_mask)
+        enc_h = self.encoder(x, src_mask)
+        ctc_out = self.ctc_generator(enc_h)
+        bs, xmax, _ = ctc_out.size()
+        src_size = (src_size * xmax).long()
+        mask = (ctc_out.max(-1)[0].exp() < 0.9).unsqueeze(-1)
+        topk = ctc_out.topk(2, -1)[1]
+        sample_num = min(args.sample_num, 2 ** mask.sum().item())
+        
+        topk = topk.repeat(sample_num, 1, 1)
+        mask = mask.repeat(sample_num, 1, 1)
+        enc_h = enc_h.repeat(sample_num, 1, 1)
+        src_mask = src_mask.repeat(sample_num, 1, 1)
+        src_size = src_size.repeat(sample_num).reshape(-1)
+
+        select = torch.randint(0, 2, (topk.size(0), topk.size(1), 1)).type_as(topk).masked_fill(mask==0, 0)
+        select.index_fill_(0, torch.arange(0, bs, sample_num).type_as(select), 0)
+        best_paths = topk.gather(-1, select).squeeze(-1)
+        
+        best_paths = best_paths.masked_fill(src_mask.squeeze(1)==0, 0)
+        aligned_seq_shift = best_paths.new_zeros(best_paths.size())
+        aligned_seq_shift[:, 1:] = best_paths[:,:-1]
+        dup = best_paths == aligned_seq_shift
+        best_paths.masked_fill_(dup, 0)
+        aligned_seq_shift[:,1:] = best_paths[:,:-1]
+        ylen = torch.sum((aligned_seq_shift != blank), 1)
+        ymax = torch.max(ylen).item()
+
+        trigger_mask = (aligned_seq_shift != blank).cumsum(1).unsqueeze(1).repeat(1, ymax+1, 1)
+        trigger_mask = trigger_mask == torch.arange(ymax+1).type_as(trigger_mask).unsqueeze(0).unsqueeze(2)
+        trigger_mask[:,-1:,:].masked_fill_(src_mask==0, 0)
+        trigger_mask[:,-1,:].scatter_(1, src_size.unsqueeze(1)-1, 1)
+        
+        ylen = ylen + 1
+        ymax += 1
+        trigger_mask = trigger_mask & src_mask
+
+        bs, _, d_model = enc_h.size()
+        tgt_mask1 = torch.full((bs, ymax), 1).type_as(src_mask)
+        tgt_mask1 = tgt_mask1.scatter(1, ylen.unsqueeze(1)-1, 0).cumprod(1)
+        tgt_mask1 = tgt_mask1.scatter(1, ylen.unsqueeze(1)-1, 1).unsqueeze(1)
+        
+        # 3. Extract Acoustic embedding and Map it to Word embedding
+        pe = self.pe.type_as(src).unsqueeze(0).repeat(bs, 1, 1)[:,:ymax,:]
+        ac_embed = self.acembed_extractor(pe, enc_h, trigger_mask)
+        pred_embed = self.embed_mapper(ac_embed, tgt_mask1)
+        tgt_mask = tgt_mask1
+
+        if args.use_src:
+            if args.src_trigger:
+                src_mask = trigger_mask
+            dec_h = self.decoder(pred_embed, enc_h, src_mask, tgt_mask)
+        else:
+            dec_h = self.decoder(pred_embed, tgt_mask)
+        att_out = self.att_generator(dec_h)
+        
+        _, seql, dim = att_out.size()
+        att_pred = att_out.argmax(-1)
+        lm_input = torch.cat([att_out.new_zeros(att_out.size(0), 1).fill_(sos).long(), att_pred[:,:-1]], 1)
+        lm_tgt_mask = tgt_mask1 & self.subsequent_mask(ymax).type_as(tgt_mask1)
+        lm_out = lm_model(lm_input, lm_tgt_mask)
+        lm_score = torch.gather(lm_out, -1, att_pred.unsqueeze(-1)).squeeze(-1)
+        lm_score = lm_score.masked_fill(tgt_mask.squeeze(1)==0, 0)
+        att_out = att_out.masked_fill(tgt_mask.transpose(1,2)==0, 0)
+        prob_sum = lm_score.sum(-1) / (lm_score != 0).sum(-1).float()
+        max_indices = prob_sum.max(-1, keepdim=True)[1]
+        att_out = torch.gather(att_out, 0, max_indices.unsqueeze(1).unsqueeze(2).repeat(1,seql,dim))
+        bs = att_out.size(0)
+        ylen = ylen.gather(0, max_indices)
+        
+        ys = torch.ones(1, 1).fill_(sos).long()
+        if args.use_gpu:
+            ys = ys.cuda()
+        
+        batch_top_seqs = [{'ys': ys, 'score': 0.0, 'hyp': [sos] } ]
+        
+        for i in range(ymax):
+            # batchify the batch and beam
+            all_seqs, ys, att_prob = [], [], []
+            
+            for seq in batch_top_seqs:
+                if i > ylen[0].item():
+                    all_seqs.append(seq)
+                    continue
+        
+                att_prob.append(att_out[0,i:i+1,:])
+                if args.lm_weight > 0:
+                    ys.append(seq['ys'])
+
+            if len(att_prob) == 0: #if no beam active, end decoding
+                break
+            # concat and get decoder out probability
+            att_prob = torch.cat(att_prob, dim=0)
+       
+            if args.lm_weight > 0:
+                ys = torch.cat(ys, dim=0)
+
+            if args.lm_weight > 0:
+                tgt_mask = (ys != args.padding_idx).unsqueeze(1)
+                tgt_mask = tgt_mask & self.subsequent_mask(ys.size(-1)).type_as(src_mask)
+                lm_prob = lm_model(ys, tgt_mask)[:,-1,:]
+                local_prob = att_prob + args.lm_weight * lm_prob
+            else:
+                local_prob = att_prob
+            
+            local_scores, indices = torch.topk(local_prob, args.beam_width, dim=-1)
+            
+            # distribute scores to corresponding sample and beam
+            s_idx = -1
+            for seq in batch_top_seqs:
+                if i > ylen[0].item():
+                   continue
+                s_idx += 1
+
+                for j in range(args.beam_width):
+                    next_token = indices[s_idx][j]
+                    token_score = local_scores[s_idx][j].item()
+                    score = seq['score'] + token_score
+
+                    if args.lm_weight > 0:
+                        ys = torch.cat([seq['ys'],next_token.view(-1,1)],dim=-1)
+                    else:
+                        ys = seq['ys']
+
+                    rs_seq = {'ys':ys, 'score': score, 'hyp': seq['hyp']+ [next_token.item()] } 
+                    all_seqs.append(rs_seq)
+
+            sort_f = lambda x:x['score'] + (len(x['hyp'])-1) * args.length_penalty \
+                        if args.length_penalty is not None else lambda x:x['score']                
+            batch_top_seqs = sorted(all_seqs, key=sort_f, reverse=True)[:args.beam_width]
+
+        return [batch_top_seqs]
 

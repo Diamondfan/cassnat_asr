@@ -4,19 +4,19 @@ N_enc: 12
 N_extra: 1
 N_map: 3
 N_dec: 4
-d_model: 256
+d_model: 512 #256
 d_ff: 2048
-n_head: 4
+n_head: 8 #4
 dropout: 0.1
 
 use_trigger: True
-online_trigger: True
 use_src: True
 src_trigger: False
 use_unimask: False
 context_trigger: 0
 use_best_path: False
 sample_dist: 0
+sample_topk: 0
 
 n_features: 80
 vocab_size: 4999
@@ -28,14 +28,14 @@ noam_factor: 10.0
 noam_warmup: 12500
 
 decay_rate: 0.01
-s_warm: 500
-s_decay: 20000
-s_keep: 80000
+s_warm: 1000
+s_decay: 40000
+s_keep: 160000
 
 cosine_total: 100000
 cosine_warmup: 1000
 padding_idx: 0
-accum_grad: 1
+accum_grad: 2
 grad_clip: 5
 
 use_gpu: True

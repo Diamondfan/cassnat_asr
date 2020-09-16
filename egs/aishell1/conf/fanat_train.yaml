@@ -1,39 +1,48 @@
 #model configuration
 input_size: 240
-N_enc: 12
-N_dec: 6
+N_enc: 6 #12
+N_extra: 1
+N_map: 3
+N_dec: 4
 d_model: 512 #256
 d_ff: 2048
 n_head: 8 #4
 dropout: 0.1
 
+use_trigger: True
+use_src: True
+src_trigger: False
+use_unimask: False
+context_trigger: 0
+use_best_path: False
+sample_dist: 0
+sample_topk: 0
+
+
 n_features: 80
-vocab_size: 4990
+vocab_size: 4999
 left_ctx: 0
 right_ctx: 2
 skip_frame: 1
 
-#noam warm up
 noam_factor: 10.0
-noam_warmup: 25000
+noam_warmup: 12500
 
-#cosine learning schedule
-cosine_total: 100000
-cosine_warmup: 1000
-
-#Double, multistep
 decay_rate: 0.01
 s_warm: 1000
 s_decay: 40000
 s_keep: 160000
 
+cosine_total: 100000
+cosine_warmup: 1000
 padding_idx: 0
-accum_grad: 2
+accum_grad: 1
 grad_clip: 5
 
 use_gpu: True
 
 use_specaug: True
+specaug_start_epoch: 0
 spec_aug:
   resize_mode: "PIL"
   max_time_warp: 5

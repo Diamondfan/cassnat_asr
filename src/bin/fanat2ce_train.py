@@ -94,7 +94,7 @@ def main():
 def main_worker(rank, world_size, args, backend='nccl'):
     args.rank, args.world_size = rank, world_size
     if args.distributed:
-        dist.init_process_group(backend=backend, init_method='tcp://localhost:12345',
+        dist.init_process_group(backend=backend, init_method='tcp://localhost:23456',
                                     world_size=world_size, rank=rank)
     
     ## 2. Define model and optimizer
@@ -222,8 +222,8 @@ def main_worker(rank, world_size, args, backend='nccl'):
                             'state_dict': model.state_dict()}
             torch.save(checkpoint, output_file)
 
-        if valid_wer < best_wer:
-            best_wer = valid_wer
+        if valid_wer2 < best_wer:
+            best_wer = valid_wer2
             best_epoch = epoch
             if args.rank == 0:
                 output_file=args.exp_dir + '/best_model.mdl'
@@ -276,7 +276,7 @@ def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_trai
         # loss computation   
         feat_sizes = (feat_sizes * max_feat_size).long()
         att_loss = criterion[1](att_out.view(-1, att_out.size(-1)), tgt_label.view(-1))
-        loss = att_loss
+        loss = 0.5 * att_loss
         if args.ctc_alpha > 0:
             ctc_loss = criterion[0](ctc_out.transpose(0,1), tgt_label, feat_sizes, label_sizes)
             loss += args.ctc_alpha * ctc_loss

@@ -40,9 +40,9 @@ def main():
     parser.add_argument("--rnnlm", type=str, default=None, help="RNNLM model file to read")
     parser.add_argument("--lm_weight", type=float, default=0.1, help="RNNLM weight")
     parser.add_argument("--max_decode_ratio", type=float, default=0, help='Decoding step to length ratio')
-    parser.add_argument("--max_decode_step", type=int, default=60, help='use when ratio=0')
     parser.add_argument("--seed", default=1, type=int, help="random number seed")
 
+    os.environ['CUDA_VISIBLE_DEVICES'] = str(int(os.environ['CUDA_VISIBLE_DEVICES']) % 4)
     args = parser.parse_args()
     with open(args.test_config) as f:
         config = yaml.safe_load(f)

@@ -252,7 +252,9 @@ class FaNat2CE(nn.Module):
             trigger_mask = trigger_mask & src_mask
         else:
             trigger_mask = src_mask
-            ylen = ylen + 1
+            src_size = (src_size * ctc_out.size(1)).long()
+            _, ylen, ymax = self.best_path_align(ctc_out, src_mask, src_size, blank)
+            #ylen = (src_size * ctc_out.size(1) * 0.3).long()
             ymax = ylen.max().item()
 
         bs, _, d_model = enc_h.size()
@@ -265,32 +267,30 @@ class FaNat2CE(nn.Module):
         ac_embed = self.acembed_extractor(pe, enc_h, trigger_mask)
         pred_embed = self.embed_mapper(ac_embed, tgt_mask1)
         att_out = self.att_generator2(pred_embed)
-        
+        """
         # 4. decoder, output units generation
-        #if args.use_unimask:
-        #    sos_ = src_size.new_zeros(bs, 1).fill_(0).long()
-        #    sos_embed = self.sos_embed(sos_)
-        #    #sos_input = src_size.new_zeros(bs, 1).fill_(sos).long()
-        #    #sos_embed = args.word_embed(sos_input)
-        #    pred_embed = torch.cat([sos_embed, pred_embed[:,:-1,:]], dim=1)
-        #    tgt_mask = tgt_mask1 & self.subsequent_mask(ymax).type_as(tgt_mask1) # uni-direc
-        #else:
-        #    tgt_mask = tgt_mask1
+        if args.use_unimask:
+            sos_ = src_size.new_zeros(bs, 1).fill_(1).long()
+            sos_embed = args.word_embed(sos_)
+            pred_embed = torch.cat([sos_embed, pred_embed[:,:-1,:]], dim=1)
+            tgt_mask = tgt_mask1 & self.subsequent_mask(ymax).type_as(tgt_mask1)
+        else:
+            tgt_mask = tgt_mask1
 
-        #if args.use_src:
-        #    if args.src_trigger:
-        #        src_mask = trigger_mask
-        #    dec_h = self.decoder(pred_embed, enc_h, src_mask, tgt_mask)
-        #else:
-        #    dec_h = self.decoder(pred_embed, tgt_mask)
-        #att_out = self.att_generator(dec_h)
+        if args.use_src:
+            if args.src_trigger:
+                src_mask = trigger_mask
+            dec_h = self.decoder(pred_embed, enc_h, src_mask, tgt_mask)
+        else:
+            dec_h = self.decoder(pred_embed, tgt_mask)
+        att_out = self.att_generator(dec_h)
         #best_scores, best_indices = torch.topk(att_out, args.beam_width, dim=-1)
         #log_probs, best_paths = torch.max(ctc_out, -1)
         #aligned_seq_shift = best_paths.new_zeros(best_paths.size())
         #aligned_seq_shift[:, 1:] = best_paths[:,:-1]
         #dup = best_paths == aligned_seq_shift
         #best_paths.masked_fill_(dup, 0)
-        
+        """
         ys = torch.ones(1, 1).fill_(sos).long()
         if args.use_gpu:
             ys = ys.cuda()

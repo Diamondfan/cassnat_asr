@@ -1,10 +1,10 @@
 #model configuration
 input_size: 240
-N_enc: 12
+N_enc: 6
 N_dec: 6
-d_model: 512 #256
+d_model: 512
 d_ff: 2048
-n_head: 8 #4
+n_head: 8
 dropout: 0.1
 
 n_features: 80
@@ -13,22 +13,19 @@ left_ctx: 0
 right_ctx: 2
 skip_frame: 1
 
-#noam warm up
 noam_factor: 10.0
 noam_warmup: 25000
 
-#cosine learning schedule
 cosine_total: 100000
 cosine_warmup: 1000
 
-#Double, multistep
-decay_rate: 0.01
+decay_rate: 0.1
 s_warm: 1000
 s_decay: 40000
 s_keep: 160000
 
 padding_idx: 0
-accum_grad: 2
+accum_grad: 1
 grad_clip: 5
 
 use_gpu: True

@@ -66,10 +66,8 @@ class Transformer(nn.Module):
         att_out = self.att_generator(dec_h)
         return ctc_out, att_out, enc_h
 
-    def forward_att(self, src, tgt, src_mask, tgt_mask):
-        x, x_mask = self.src_embed(src, src_mask)
-        enc_h = self.encoder(x, x_mask)
-        dec_h = self.decoder(self.tgt_embed(tgt), enc_h, x_mask, tgt_mask)
+    def forward_att(self, enc_h, tgt, src_mask, tgt_mask):
+        dec_h = self.decoder(self.tgt_embed(tgt), enc_h, src_mask, tgt_mask)
         att_out = F.softmax(self.att_generator.proj(dec_h), dim=-1)
         return att_out
 
@@ -112,7 +110,7 @@ class Transformer(nn.Module):
                 init_score = torch.Tensor([[0.0]])
                 batch_top_seqs[b][0]['ctc_score_prev'] = init_score.cuda() if args.use_gpu else init_score
 
-        max_decode_step = int(args.max_decode_ratio * enc_h.size(1)) if args.max_decode_ratio > 0 else args.max_decode_step
+        max_decode_step = int(args.max_decode_ratio * enc_h.size(1)) if args.max_decode_ratio > 0 else enc_h.size(1)
         for i in range(max_decode_step):
             # batchify the batch and beam
             all_seqs, ys, ench_use, src_mask_use = [], [], [], []
@@ -198,6 +196,10 @@ class Transformer(nn.Module):
         return batch_top_seqs
 
     def fast_decode_with_ctc(self, src, src_mask, vocab, args, lm_model=None):
+        """
+        Take CTC output as the decoder input for decoder. Regard the decoder as 
+        a correction model.
+        """
         bs = src.size(0)
         sos = vocab.word2index['sos']
         eos = vocab.word2index['eos']
@@ -292,10 +294,6 @@ class Transformer(nn.Module):
                 sort_f = lambda x:x['score'] + (len(x['hyp'])-1) * args.length_penalty \
                             if args.length_penalty is not None else lambda x:x['score']                
                 batch_top_seqs[b] = sorted(all_seqs[b], key=sort_f, reverse=True)[:args.beam_width]
-        #batch_top_seqs = []
-        #for b in range(bs):
-        #    batch_top_seqs.append([])
-        #    batch_top_seqs[b].append({'hyp': best_paths[b].cpu().numpy()})
         return batch_top_seqs
 
 

@@ -1,0 +1,6 @@
+editdistance==0.5.2
+kaldiio==2.15.1
+numpy==1.18.5
+torch==1.2.0
+Pillow==7.2.0
+PyYAML==5.3.1

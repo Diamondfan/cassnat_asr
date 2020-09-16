@@ -95,7 +95,7 @@ def main():
 def main_worker(rank, world_size, args, backend='nccl'):
     args.rank, args.world_size = rank, world_size
     if args.distributed:
-        dist.init_process_group(backend=backend, init_method='tcp://localhost:23456',
+        dist.init_process_group(backend=backend, init_method='tcp://localhost:12345',
                                     world_size=world_size, rank=rank)
     
     ## 2. Define model and optimizer
@@ -214,6 +214,7 @@ def main_worker(rank, world_size, args, backend='nccl'):
                             patience=args.patience, min_lr=args.min_lr)
     
     sample_dist = args.sample_dist
+    sample_topk = args.sample_topk
     for epoch in range(start_epoch, args.epochs):
         if args.distributed:
             train_loader.set_epoch(epoch)
@@ -222,11 +223,13 @@ def main_worker(rank, world_size, args, backend='nccl'):
 
         model.train()
         args.sample_dist = sample_dist
+        args.sample_topk = sample_topk
         train_loss, train_wer, train_ctc_wer = run_epoch(epoch, train_loader, model, criterion, args, optimizer, is_train=True)
         
         model.eval()
         with torch.no_grad():
             args.sample_dist = 0
+            args.sample_topk = 0
             valid_loss, valid_wer, valid_ctc_wer = run_epoch(epoch, valid_loader, model, criterion, args, is_train=False)
 
         temp_lr = optimizer.param_groups[0]['lr'] if args.opt_type == "normal" else optimizer.optimizer.param_groups[0]['lr']

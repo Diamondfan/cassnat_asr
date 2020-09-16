@@ -9,12 +9,20 @@ export PATH=$KALDI_ROOT/tools/sctk/bin:$PATH
 . $KALDI_ROOT/tools/config/common_path.sh
 export LC_ALL=C
 
+# we use this both in the (optional) LM training and the G2P-related scripts
+PYTHON='python2.7'
+
 ### Below are the paths used by the optional parts of the recipe
 
 # We only need the Festival stuff below for the optional text normalization(for LM-training) step
 FEST_ROOT=tools/festival
 NSW_PATH=${FEST_ROOT}/festival/bin:${FEST_ROOT}/nsw/bin
 export PATH=$PATH:$NSW_PATH
+
+# SRILM is needed for LM model building
+SRILM_ROOT=$KALDI_ROOT/tools/srilm
+SRILM_PATH=$SRILM_ROOT/bin:$SRILM_ROOT/bin/i686-m64
+export PATH=$PATH:$SRILM_PATH
 
 # Sequitur G2P executable
 sequitur=$KALDI_ROOT/tools/sequitur/g2p.py

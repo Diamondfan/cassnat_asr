@@ -6,11 +6,11 @@
 data=/data/nas1/user/ruchao/Database/LibriSpeech/
 lm_data=/data/nas1/user/ruchao/Database/LibriSpeech/libri_lm
 
-stage=8
-end_stage=8
+stage=1
+end_stage=1
 featdir=data/fbank
 
-unit=wp
+unit=wp         #word piece
 nbpe=5000
 bpemode=unigram #bpe or unigram
 
@@ -96,111 +96,97 @@ if [ $stage -le 4 ] && [ $end_stage -ge 4 ]; then
   echo "[Stage 4] LM Preparation Finished."
 fi
 
+lm_exp=exp/libri_tfunilm_unigram_4card_cosineanneal_ep10/
 if [ $stage -le 5 ] && [ $end_stage -ge 5 ]; then
-  exp=exp/libri_tflm_unigram_4card_cosineanneal_ep10/
-  if [ ! -d $exp ]; then
-    mkdir -p $exp
+
+  if [ ! -d $lm_exp ]; then
+    mkdir -p $lm_exp
   fi
   
   CUDA_VISIBLE_DEVICES="0,1,2,3" lm_train.py \
-    --exp_dir $exp \
+    --exp_dir $lm_exp \
     --train_config conf/lm.yaml \
     --data_config conf/lm_data.yaml \
     --batch_size 64 \
     --epochs 10 \
     --save_epoch 3 \
-    --anneal_lr_ratio 0.5 \
     --learning_rate 0.0001 \
-    --min_lr 0.00001 \
-    --patience 1 \
     --end_patience 5 \
     --opt_type "cosine" \
     --weight_decay 0 \
-    --print_freq 200 > $exp/train.log 2>&1 &
+    --print_freq 200 > $lm_exp/train.log #2>&1 &   #uncomment if you want to execute this in the backstage
  
   echo "[Stage 5] External LM Training Finished."
 fi
 
+asr_exp=exp/1kh_large_multistep_accum2_gc5_specaug_before_f30t40/
 if [ $stage -le 6 ] && [ $end_stage -ge 6 ]; then
-<<<<<<< Updated upstream
-  exp=exp/1kh_small_unigram_4card_ctc1_att1_multistep_accum1_gc5_stream/
-=======
-  exp=exp/1kh_large_multistep_accum2_gc5_specaug_before_f30t40_ctc03/
->>>>>>> Stashed changes
 
-  if [ ! -d $exp ]; then
-    mkdir -p $exp
+  if [ ! -d $asr_exp ]; then
+    mkdir -p $asr_exp
   fi
 
-  CUDA_VISIBLE_DEVICES="0,1,2,3" st_train.py \
-    --exp_dir $exp \
+  CUDA_VISIBLE_DEVICES="0,1,2,3" asr_train.py \
+    --exp_dir $asr_exp \
     --train_config conf/transformer.yaml \
     --data_config conf/data.yaml \
     --batch_size 16 \
     --epochs 100 \
     --save_epoch 50 \
-    --anneal_lr_ratio 0.5 \
     --learning_rate 0.001 \
     --min_lr 0.00001 \
-    --patience 1 \
     --end_patience 10 \
     --opt_type "multistep" \
     --weight_decay 0 \
     --label_smooth 0.1 \
-    --ctc_alpha 0.3 \
+    --ctc_alpha 1 \
     --use_cmvn \
-    --print_freq 50 > $exp/train.log 2>&1 &
+    --print_freq 50 > $asr_exp/train.log #2>&1 &
     
   echo "[Stage 6] ASR Training Finished."
 fi
 
 out_name='averaged.mdl'
 if [ $stage -le 7 ] && [ $end_stage -ge 7 ]; then
-<<<<<<< Updated upstream
-  exp=exp/1kh_small_unigram_4card_ctc1_att1_multistep_accum1_gc5_stream
-  last_epoch=58  
-=======
-  exp=exp/1kh_large_multistep_accum2_gc5_specaug_before_f30t40_ctc03
-  last_epoch=80
->>>>>>> Stashed changes
+  last_epoch=80  # Need to be modified according to the convergence
   
   average_checkpoints.py \
-    --exp_dir $exp \
+    --exp_dir $asr_exp \
     --out_name $out_name \
     --last_epoch $last_epoch \
     --num 12 
   
-  #lm_exp=exp/libri_tflm_unigram_4card_cosineanneal_ep10/
-  #last_epoch=9  
-  
-  #average_checkpoints.py \
-  #  --exp_dir $lm_exp \
-  #  --out_name $out_name \
-  #  --last_epoch $last_epoch \
-  #  --num 3
+  last_epoch=9  
+ 
+  average_checkpoints.py \
+    --exp_dir $lm_exp \
+    --out_name $out_name \
+    --last_epoch $last_epoch \
+    --num 3
 
   echo "[Stage 7] Average checkpoints Finished."
 
 fi
 
 if [ $stage -le 8 ] && [ $end_stage -ge 8 ]; then
-  exp=exp/1kh_large_multistep_accum2_gc5_specaug_before_f30t40_ctc03
+  exp=$asr_exp
 
   test_model=$exp/$out_name
-  rnnlm_model=exp/averaged_lm.mdl
+  rnnlm_model=$lm_exp/$out_name
   global_cmvn=data/fbank/cmvn.ark
   decode_type='ctc_att'
-  beam1=10 # check beam1 and beam2 in conf/decode.yaml, att beam
-  beam2=20 # ctc beam
-  ctcwt=0.5
-  lp=0
-  lmwt=0.7
+  beam1=20 # set in conf/decode.yaml, att beam
+  beam2=30 # set in conf/decode.yaml, ctc beam
+  lp=0 #set in conf/decode.yaml, length penalty
+  ctcwt=0.4
+  lmwt=0.6
   nj=4
+  batch_size=4
   
-  for tset in dev_clean; do #$test_set; do
+  for tset in $test_set; do
     echo "Decoding $tset..."
     desdir=$exp/${decode_type}_decode_average_ctc${ctcwt}_bm1_${beam1}_bm2_${beam2}_lmwt${lmwt}_lp${lp}/$tset/
-    #desdir=$exp/decode_average_best/$tset
+
     if [ ! -d $desdir ]; then
       mkdir -p $desdir
     fi
@@ -212,13 +198,13 @@ if [ $stage -le 8 ] && [ $end_stage -ge 8 ]; then
     utils/split_scp.pl data/$tset/feats.scp $split_scps || exit 1;
     
     $cmd JOB=1:$nj $desdir/log/decode.JOB.log \
-      CUDA_VISIBLE_DEVICES="1" st_decode.py \
+      CUDA_VISIBLE_DEVICES=JOB asr_decode.py \
         --test_config conf/decode.yaml \
         --lm_config conf/lm.yaml \
         --data_path $desdir/feats.JOB.scp \
         --resume_model $test_model \
         --result_file $desdir/token_results.JOB.txt \
-        --batch_size 8 \
+        --batch_size $batch_size \
         --decode_type $decode_type \
         --ctc_weight $ctcwt \
         --rnnlm $rnnlm_model \

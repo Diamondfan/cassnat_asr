@@ -44,6 +44,7 @@ def main():
     parser.add_argument("--max_decode_ratio", type=float, default=0, help='Decoding step to length ratio')
     parser.add_argument("--seed", default=1, type=int, help="random number seed")
 
+    os.environ['CUDA_VISIBLE_DEVICES'] = str(int(os.environ['CUDA_VISIBLE_DEVICES'])) #% 4)
     args = parser.parse_args()
     with open(args.test_config) as f:
         config = yaml.safe_load(f)
@@ -57,13 +58,7 @@ def main():
         setattr(args, key, val)
     for var in vars(args):
         config[var] = getattr(args, var)
-
-    if args.lm_weight > 0 or args.ctc_lm_weight > 0:
-        with open(args.lm_config) as f:
-            lm_config = yaml.safe_load(f)
-        lm_args = Config()
-        for key, val in lm_config.items():
-            setattr(lm_args, key, val)
+        
     print("Experiment starts with config {}".format(json.dumps(config, sort_keys=True, indent=4)))
 
     use_cuda = args.use_gpu
@@ -88,9 +83,17 @@ def main():
             param.data.copy_(model_state[name])
 
     if args.lm_weight > 0 or args.ctc_lm_weight > 0:
-        from models.lm import make_model as make_lm_model
+        with open(args.lm_config) as f:
+            lm_config = yaml.safe_load(f)
+        lm_args = Config()
+        for key, val in lm_config.items():
+            setattr(lm_args, key, val)
+        
         lm_args.vocab_size = vocab.n_words
+        from models.lm import make_model as make_lm_model
         lm_model = make_lm_model(lm_args)
+        #from models.transformer import make_model as make_lm_model
+        #lm_model = make_lm_model(args.input_size, lm_args)
         print("Loading language model from {}".format(args.rnnlm))
         checkpoint_lm = torch.load(args.rnnlm, map_location='cpu')
         model_state = checkpoint_lm["state_dict"]
@@ -136,6 +139,8 @@ def main():
     end = time.time()
     
     out_file = open(args.result_file, 'w')
+    args.num_correct, args.total = 0, 0
+    args.length_correct, args.length_total = 0, 0
     with torch.no_grad():
         model.eval()
         if lm_model is not None:
@@ -154,9 +159,11 @@ def main():
                 recog_results = ctc_beam_decode(model, src, src_mask, feat_sizes, vocab, args, lm_model)
             elif args.decode_type == 'ctc_att':
                 batch_top_seqs = ctc_beam_decode(model, src, src_mask, feat_sizes, vocab, args, lm_model)
-                recog_results = model.beam_decode(src, src_mask, feat_sizes, vocab, args, lm_model, batch_top_seqs)
+                recog_results, args = model.beam_decode(src, src_mask, feat_sizes, vocab, args, lm_model, batch_top_seqs, labels=labels, label_sizes=label_sizes)
+            elif args.decode_type == 'adapt_sample':
+                recog_results = model.beam_decode_adapt_num(src, src_mask, feat_sizes, vocab, args, lm_model, labels=labels, label_sizes=label_sizes)
             else:
-                recog_results = model.beam_decode(src, src_mask, feat_sizes, vocab, args, lm_model, labels=labels, label_sizes=label_sizes)
+                recog_results, args = model.beam_decode(src, src_mask, feat_sizes, vocab, args, lm_model, labels=labels, label_sizes=label_sizes)
             
             for j in range(len(utt_list)):
                 hyp = []
@@ -169,12 +176,16 @@ def main():
                 #print(utt_list[j]+' '+' '.join(hyp))
                 #print(recog_results[j][0]['score_ctc'], recog_results[j][0]['score_lm'])
                 print(utt_list[j]+' '+' '.join(hyp), flush=True, file=out_file)
-    
+            
             batch_time.update(time.time() - end)
             if i % args.print_freq == 0:
                 progress.print(i)
+
         progress.print(i)
-    
+        if args.test_hitrate:
+            print(args.num_correct, args.total, args.num_correct / args.total)
+            print(args.length_correct, args.length_total, args.length_correct / args.length_total)
+
 if __name__ == '__main__':
     main()
 
