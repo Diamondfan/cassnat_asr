@@ -43,6 +43,7 @@ def main():
     parser.add_argument("--anneal_lr_ratio", default=0.5, type=float, help="Learning rate decay ratio, used when opt_type='normal'")
     parser.add_argument("--weight_decay", default=0.00001, type=float, help="Weight decay in optimizer")
     parser.add_argument("--label_smooth", default=0.1, type=float, help="Label smoothing for CE loss")
+    parser.add_argument("--disable_ls", default=False, action='store_true', help="Disable label smoothing when decaying learning rate")
     parser.add_argument("--load_data_workers", default=1, type=int, help="Number of parallel data loaders")
     parser.add_argument("--ctc_alpha", default=0, type=float, help="Task ratio of CTC")
     parser.add_argument("--resume_model", default='', type=str, help="The model path to resume")
@@ -268,6 +269,12 @@ def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_trai
             if i % args.accum_grad == 0:
                 grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
                 optimizer.step()
+
+                if args.disable_ls and optimizer._step == optimizer.s_decay:
+                    if args.rank == 0:
+                        print("Disable label smoothing from here.")
+                    criterion[1].set_smoothing(0.0)
+
                 optimizer.zero_grad()
         
         batch_time.update(time.time() - end)

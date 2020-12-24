@@ -90,7 +90,10 @@ def time_mask(spec, T=40, n_mask=2, replace_with_zero=True, inplace=False):
     else:
         cloned = spec.copy()
     len_spectro = cloned.shape[0]
+    if isinstance(T, float):
+        T = int(len_spectro * T)  
     ts = numpy.random.randint(0, T, size=(n_mask, 2))
+
     for t, mask_end in ts:
         # avoid randint range error
         if len_spectro - t <= 0:
@@ -127,7 +130,7 @@ def spec_aug(x, args):
     """
     assert isinstance(x, numpy.ndarray)
     assert x.ndim == 2
-    x = time_warp(x, args.max_time_warp, inplace=args.inplace, mode=args.resize_mode)
+    #x = time_warp(x, args.max_time_warp, inplace=args.inplace, mode=args.resize_mode)
     x = freq_mask(
         x,
         args.max_freq_width,

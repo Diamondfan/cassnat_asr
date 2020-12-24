@@ -12,6 +12,9 @@ class LabelSmoothing(nn.Module):
         self.smoothing = smoothing
         self.size = size
         self.true_dist = None
+
+    def set_smoothing(self, smoothing):
+        self.smoothing = smoothing
         
     def forward(self, x, target):
         """

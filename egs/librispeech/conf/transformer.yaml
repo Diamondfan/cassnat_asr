@@ -23,24 +23,24 @@ cosine_warmup: 1000
 
 #Double, multistep
 decay_rate: 0.01
-s_warm: 1000
+s_warm: 2000
 s_decay: 40000
-s_keep: 160000
+s_keep: 100000
 
 padding_idx: 0
-accum_grad: 2
+accum_grad: 4
 grad_clip: 5
 
 use_gpu: True
 
 use_specaug: True
 spec_aug:
-  resize_mode: "PIL"
+  resize_mode: "PIL"         #time warp is temporarily deactivated
   max_time_warp: 5
-  max_freq_width: 30
+  max_freq_width: 27
   n_freq_mask: 2
-  max_time_width: 40
-  n_time_mask: 2
+  max_time_width: 0.05
+  n_time_mask: 10
   inplace: True
   replace_with_zero: False
 

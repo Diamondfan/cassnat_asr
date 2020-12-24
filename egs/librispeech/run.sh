@@ -6,8 +6,8 @@
 data=/data/nas1/user/ruchao/Database/LibriSpeech/
 lm_data=/data/nas1/user/ruchao/Database/LibriSpeech/libri_lm
 
-stage=1
-end_stage=1
+stage=6
+end_stage=6
 featdir=data/fbank
 
 unit=wp         #word piece
@@ -107,6 +107,7 @@ if [ $stage -le 5 ] && [ $end_stage -ge 5 ]; then
     --exp_dir $lm_exp \
     --train_config conf/lm.yaml \
     --data_config conf/lm_data.yaml \
+    --lm_type "uniLM" \
     --batch_size 64 \
     --epochs 10 \
     --save_epoch 3 \
@@ -114,12 +115,12 @@ if [ $stage -le 5 ] && [ $end_stage -ge 5 ]; then
     --end_patience 5 \
     --opt_type "cosine" \
     --weight_decay 0 \
-    --print_freq 200 > $lm_exp/train.log #2>&1 &   #uncomment if you want to execute this in the backstage
+    --print_freq 200 #> $lm_exp/train.log #2>&1 &   #uncomment if you want to execute this in the backstage
  
   echo "[Stage 5] External LM Training Finished."
 fi
 
-asr_exp=exp/1kh_large_multistep_accum2_gc5_specaug_before_f30t40/
+asr_exp=exp/1kh_e12d6_accum4_specaug_multistep2k_40k_100k_disls/
 if [ $stage -le 6 ] && [ $end_stage -ge 6 ]; then
 
   if [ ! -d $asr_exp ]; then
@@ -131,17 +132,18 @@ if [ $stage -le 6 ] && [ $end_stage -ge 6 ]; then
     --train_config conf/transformer.yaml \
     --data_config conf/data.yaml \
     --batch_size 16 \
-    --epochs 100 \
-    --save_epoch 50 \
-    --learning_rate 0.001 \
+    --epochs 150 \
+    --save_epoch 70 \
+    --learning_rate 0.0002 \
     --min_lr 0.00001 \
     --end_patience 10 \
     --opt_type "multistep" \
-    --weight_decay 0 \
+    --weight_decay 1e-6 \
     --label_smooth 0.1 \
+    --disable_ls \
     --ctc_alpha 1 \
     --use_cmvn \
-    --print_freq 50 > $asr_exp/train.log #2>&1 &
+    --print_freq 50 > $asr_exp/train.log 2>&1 &
     
   echo "[Stage 6] ASR Training Finished."
 fi
