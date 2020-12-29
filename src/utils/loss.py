@@ -15,7 +15,8 @@ class LabelSmoothing(nn.Module):
 
     def set_smoothing(self, smoothing):
         self.smoothing = smoothing
-        
+        self.confidence = 1.0 - smoothing
+
     def forward(self, x, target):
         """
         x: bU x class

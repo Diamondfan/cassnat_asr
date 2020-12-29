@@ -19,7 +19,7 @@ class SublayerConnection(nn.Module):
         self.norm = LayerNorm(size)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x, sublayer, has_cache=False):
+    def forward(self, x, sublayer, scale=1.0, has_cache=False):
         """Apply residual connection to any sublayer with the same size.
         Using pre-norm for stable training at early stage
         sublayer can be self attention and feedforward
@@ -28,7 +28,7 @@ class SublayerConnection(nn.Module):
             residual = x[:,-1:,:]
         else:
             residual = x
-        return residual + self.dropout(sublayer(self.norm(x)))
+        return residual + scale * self.dropout(sublayer(self.norm(x)))
 
 class StatsPoolingLayer(nn.Module):
     def __init__(self):

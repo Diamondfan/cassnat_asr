@@ -18,7 +18,7 @@ import utils.util as util
 from utils.wer import ctc_greedy_wer, att_greedy_wer
 from data.vocab import Vocab
 from utils.optimizer import get_opt
-from models.transformer import make_model
+from models import make_transformer, make_conformer
 from utils.loss import LabelSmoothing
 from data.speech_loader import SpeechDataset, SpeechDataLoader
 
@@ -104,7 +104,12 @@ def main_worker(rank, world_size, args, backend='nccl'):
     vocab = Vocab(args.vocab_file, args.rank)
     args.vocab_size = vocab.n_words
     assert args.input_size == (args.left_ctx + args.right_ctx + 1) // args.skip_frame * args.n_features
-    model = make_model(args.input_size, args)
+    if args.model_type == "transformer":
+        model = make_transformer(args.input_size, args)
+    elif args.model_type == "conformer":
+        model = make_conformer(args.input_size, args)
+    else:
+        raise NotImplementedError
     optimizer = get_opt(args.opt_type, model, args) 
     
     if args.resume_model:

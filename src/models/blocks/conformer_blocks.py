@@ -8,23 +8,29 @@ from models.modules.utils import clones, SublayerConnection
 
 class EncoderLayer(nn.Module):
     "Encoder is made up of self-attn and feed forward (defined below)"
-    def __init__(self, size, self_attn, feed_forward, dropout):
+    def __init__(self, size, feed_forward1, self_attn, conv_module, feed_forward2, dropout, ff_scale=0.5):
         super(EncoderLayer, self).__init__()
         self.self_attn = self_attn
-        self.feed_forward = feed_forward
-        self.sublayer = clones(SublayerConnection(size, dropout), 2)
+        self.feed_forward1 = feed_forward1
+        self.conv_module = conv_module
+        self.feed_forward2 = feed_forward2
+        self.sublayer = clones(SublayerConnection(size, dropout), 4)
         self.size = size
+        self.ff_scale = ff_scale
 
-    def forward(self, x, mask, cache=None):
+    def forward(self, x, pos_embed, mask, cache=None):
+        x = self.sublayer[0](x, self.feed_forward1, self.ff_scale)
+
         if cache is None:
-            x = self.sublayer[0](x, lambda x: self.self_attn(x, x, x, mask), has_cache=False)
+            x = self.sublayer[1](x, lambda x: self.self_attn(x, x, x, pos_embed, mask), has_cache=False)
         else:
             x_query = x[:,-1:,:]
             mask = None if mask is None else mask[:,-1:,:]
-            x_query = self.sublayer[0].norm(x_query)
-            x = self.sublayer[0](x, lambda x: self.self_attn(x_query, x, x, mask), has_cache=True)
-        
-        x = self.sublayer[1](x, self.feed_forward)
+            x_query = self.sublayer[1].norm(x_query)         
+            x = self.sublayer[1](x, lambda x: self.self_attn(x_query, x, x, pos_embed, mask), has_cache=True)
+
+        x = self.sublayer[2](x, self.conv_module)
+        x = self.sublayer[3](x, self.feed_forward2, self.ff_scale)
 
         if cache is not None:
             x = torch.cat([cache, x], dim=1)
@@ -49,25 +55,28 @@ class DecoderLayer(nn.Module):
 
 class Encoder(nn.Module):
     "Core encoder is a stack of N layers"
-    def __init__(self, size, self_attn, feed_forward, dropout, N):
+    def __init__(self, size, feed_forward1, self_attn, conv_module, feed_forward2, rel_position, dropout, N, ff_scale=0.5):
         super(Encoder, self).__init__()
-        layer = EncoderLayer(size, self_attn, feed_forward, dropout)
+        layer = EncoderLayer(size, feed_forward1, self_attn, conv_module, feed_forward2, dropout, ff_scale)
         self.layers = clones(layer, N)
-        self.norm = LayerNorm(layer.size)
+        self.rel_position = rel_position
+        self.norm = LayerNorm(size)
         
     def forward(self, x, mask):
         "Pass the input (and mask) through each layer in turn."
+        x, pos_embed = self.rel_position(x)
         for layer in self.layers:
-            x = layer(x, mask)
+            x = layer(x, pos_embed, mask)
         return self.norm(x)
 
     def forward_one_step(self, x, mask, cache=None):
+        pos_embed = self.rel_position(x)
         if cache is None:
             cache = [None for _ in range(len(self.layers))]
 
         new_cache = []
         for c, layer in zip(cache, self.layers):
-            x = layer(x, mask, cache=c)
+            x = layer(x, pos_embed, mask, cache=c)
             new_cache.append(x)
         return self.norm(x), new_cache
 
