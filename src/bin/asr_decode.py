@@ -14,7 +14,7 @@ import torch.nn.functional as F
 sys.path.append(os.environ['E2EASR']+'/src')
 import utils.util as util
 from data.vocab import Vocab
-from models.transformer import make_model
+from models import make_transformer, make_conformer
 from data.speech_loader import SpeechDataset, SpeechDataLoader
 from utils.beam_decode import ctc_beam_decode
 
@@ -72,7 +72,12 @@ def main():
     args.vocab_size = vocab.n_words
     args.rank = 0
     assert args.input_size == (args.left_ctx + args.right_ctx + 1) // args.skip_frame * args.n_features
-    model = make_model(args.input_size, args)
+    if args.model_type == "transformer":
+        model = make_transformer(args.input_size, args)
+    elif args.model_type == "conformer":
+        model = make_conformer(args.input_size, args)
+    else:
+        raise NotImplementedError
 
     if args.resume_model:
         print("Loading model from {}".format(args.resume_model))
