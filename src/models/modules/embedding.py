@@ -43,12 +43,11 @@ class RelativePositionalEncoding(nn.Module):
         self.d_model = d_model
         
     def forward(self, x):
-        x = x * math.sqrt(self.d_model)
         distance = x.size(1) - 1
         range_vec = torch.arange(-distance, distance+1).type_as(x).long()
         index_vec = torch.clamp(range_vec, -self.max_relative_len, self.max_relative_len)
         index_vec = index_vec + min(self.max_relative_len, distance)
-        return self.dropout(x), self.dropout(self.embedding(index_vec))
+        return (self.dropout(x), self.dropout(self.embedding(index_vec)))
         #range_mat = range_vec.repeat(x.size(1)).view(x.size(1), x.size(1))
         #index_mat = range_mat.transpose(0, 1) - range_mat
         #index_mat_clipped = torch.clamp(index_mat, -self.max_relative_len, self.max_relative_len)
@@ -68,7 +67,7 @@ class ConvEmbedding(nn.Module):
     """
     Mapping input features to embeddings and downsample with 4.
     """
-    def __init__(self, input_size, d_model, dropout, pos_type='absolute'):
+    def __init__(self, input_size, d_model, dropout, pos_enc):
         super(ConvEmbedding, self).__init__()
 
         self.conv = nn.Sequential(
@@ -80,9 +79,7 @@ class ConvEmbedding(nn.Module):
         self.d_model = d_model 
         
         self.linear_out = nn.Linear(128 * (((input_size-1)//2) // 2 + 1), d_model)
-        self.pos_type = pos_type
-        if self.pos_type == "absolute":
-            self.pos_enc = PositionalEncoding(d_model, dropout)
+        self.pos_enc = pos_enc
 
     def forward(self, x, mask):
         "mask needs to be revised to downsample version"
@@ -91,8 +88,7 @@ class ConvEmbedding(nn.Module):
         b, c, t, d = x.size()
         x = self.linear_out(x.transpose(1,2).contiguous().view(b, t, c*d))
         
-        if self.pos_type == "absolute":
-            x = self.pos_enc(x * math.sqrt(self.d_model))
+        x = self.pos_enc(x * math.sqrt(self.d_model))
         mask = mask[:, :, ::2][:, :, ::2]
         return x, mask
 

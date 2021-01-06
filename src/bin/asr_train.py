@@ -116,7 +116,11 @@ def main_worker(rank, world_size, args, backend='nccl'):
         if rank == 0:
             print("Loading model from {}".format(args.resume_model))
         checkpoint = torch.load(args.resume_model, map_location='cpu')
-        model.load_state_dict(checkpoint["state_dict"])
+        model_state = checkpoint["state_dict"]
+        for name, param in model.named_parameters():
+            if name not in model_state:
+                name = "module." + name
+            param.data.copy_(model_state[name])
         optimizer.load_state_dict(checkpoint['optimizer'])
         if use_cuda:
             for state in optimizer.state.values():
@@ -175,6 +179,7 @@ def main_worker(rank, world_size, args, backend='nccl'):
             train_loader.set_epoch(epoch)
         model.train()
         train_loss, train_wer, train_ctc_wer = run_epoch(epoch, train_loader, model, criterion, args, optimizer, is_train=True)
+        #train_loss, train_wer, train_ctc_wer = 0, 0, 0
         model.eval()
         with torch.no_grad():
             valid_loss, valid_wer, valid_ctc_wer = run_epoch(epoch, valid_loader, model, criterion, args, is_train=False)

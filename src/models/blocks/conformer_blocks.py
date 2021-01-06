@@ -8,32 +8,44 @@ from models.modules.utils import clones, SublayerConnection
 
 class EncoderLayer(nn.Module):
     "Encoder is made up of self-attn and feed forward (defined below)"
-    def __init__(self, size, feed_forward1, self_attn, conv_module, feed_forward2, dropout, ff_scale=0.5):
+    def __init__(self, size, feed_forward1, self_attn, conv_module, feed_forward2, dropout, pos_type, share_ff=False, ff_scale=0.5):
         super(EncoderLayer, self).__init__()
         self.self_attn = self_attn
         self.feed_forward1 = feed_forward1
         self.conv_module = conv_module
-        self.feed_forward2 = feed_forward2
+        if share_ff:
+            self.feed_forward2 = feed_forward1
+        else:
+            self.feed_forward2 = feed_forward2
+
         self.sublayer = clones(SublayerConnection(size, dropout), 4)
         self.size = size
+        self.pos_type = pos_type
         self.ff_scale = ff_scale
 
-    def forward(self, x, pos_embed, mask, cache=None):
+    def forward(self, x, mask, pos_embed, cache=None):
         x = self.sublayer[0](x, self.feed_forward1, self.ff_scale)
 
-        if cache is None:
-            x = self.sublayer[1](x, lambda x: self.self_attn(x, x, x, pos_embed, mask), has_cache=False)
-        else:
-            x_query = x[:,-1:,:]
-            mask = None if mask is None else mask[:,-1:,:]
-            x_query = self.sublayer[1].norm(x_query)         
-            x = self.sublayer[1](x, lambda x: self.self_attn(x_query, x, x, pos_embed, mask), has_cache=True)
-
-        x = self.sublayer[2](x, self.conv_module)
+        if self.pos_type == "absolute":
+            x = self.sublayer[1](x, self.conv_module) 
+            x = self.sublayer_selfattn(x, mask, pos_embed, cache)
+        elif self.pos_type == "relative":
+            x = self.sublayer_selfattn(x, mask, pos_embed, cache)
+            x = self.sublayer[1](x, self.conv_module)
         x = self.sublayer[3](x, self.feed_forward2, self.ff_scale)
 
         if cache is not None:
             x = torch.cat([cache, x], dim=1)
+        return x
+
+    def sublayer_selfattn(self, x, mask, pos_embed, cache=None):
+        if cache is None:
+            x = self.sublayer[2](x, lambda x: self.self_attn(x, x, x, mask, pos_embed), has_cache=False)
+        else:
+            x_query = x[:,-1:,:]
+            mask = None if mask is None else mask[:,-1:,:]
+            x_query = self.sublayer[2].norm(x_query)         
+            x = self.sublayer[2](x, lambda x: self.self_attn(x_query, x, x, mask, pos_embed), has_cache=True)
         return x
 
 class DecoderLayer(nn.Module):
@@ -55,28 +67,36 @@ class DecoderLayer(nn.Module):
 
 class Encoder(nn.Module):
     "Core encoder is a stack of N layers"
-    def __init__(self, size, feed_forward1, self_attn, conv_module, feed_forward2, rel_position, dropout, N, ff_scale=0.5):
+    def __init__(self, size, feed_forward1, self_attn, conv_module, feed_forward2, dropout, N, pos_type, share_ff=False, ff_scale=0.5):
         super(Encoder, self).__init__()
-        layer = EncoderLayer(size, feed_forward1, self_attn, conv_module, feed_forward2, dropout, ff_scale)
+        layer = EncoderLayer(size, feed_forward1, self_attn, conv_module, feed_forward2, dropout, pos_type, share_ff, ff_scale)
         self.layers = clones(layer, N)
-        self.rel_position = rel_position
+        self.pos_type = pos_type
         self.norm = LayerNorm(size)
         
     def forward(self, x, mask):
         "Pass the input (and mask) through each layer in turn."
-        x, pos_embed = self.rel_position(x)
+        if self.pos_type == "relative":
+            x, pos_embed = x[0], x[1]
+        elif self.pos_type == "absolute":
+            pos_embed = None
+
         for layer in self.layers:
-            x = layer(x, pos_embed, mask)
+            x = layer(x, mask, pos_embed)
         return self.norm(x)
 
     def forward_one_step(self, x, mask, cache=None):
-        pos_embed = self.rel_position(x)
+        if self.pos_type == "relative":
+            x, pos_embed = x[0], x[1]
+        elif self.pos_type == "absolute":
+            pos_embed = None
+
         if cache is None:
             cache = [None for _ in range(len(self.layers))]
 
         new_cache = []
         for c, layer in zip(cache, self.layers):
-            x = layer(x, pos_embed, mask, cache=c)
+            x = layer(x, mask, pos_embed, cache=c)
             new_cache.append(x)
         return self.norm(x), new_cache
 

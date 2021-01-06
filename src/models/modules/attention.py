@@ -39,7 +39,7 @@ class MultiHeadedAttention(nn.Module):
         self.attn = None
         self.dropout = nn.Dropout(p=dropout)
         
-    def forward(self, query, key, value, mask=None):
+    def forward(self, query, key, value, mask=None, pos_embed=None):
         """ Take cross attention as an example
         query: batch x U x d
         key: batch x T x d
@@ -85,7 +85,7 @@ class RelMultiHeadedAttention(nn.Module):
         self.attn = None
         self.dropout = nn.Dropout(p=dropout)
         
-    def forward(self, query, key, value, pos_embed, mask=None):
+    def forward(self, query, key, value, mask=None, pos_embed=None):
         """ Take cross attention as an example
         query: batch x U x d
         key: batch x T x d

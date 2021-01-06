@@ -23,7 +23,7 @@ class ConvModule(nn.Module):
         self.depthwise_conv = nn.Conv1d(channels, channels, kernel_size, stride=1,
                                         padding=padding, groups=channels, bias=bias)
 
-        self.norm = nn.BatchNorm1d(channels)
+        self.norm = nn.GroupNorm(channels, channels)
         self.pointwise_conv2 = nn.Conv1d(channels, channels, kernel_size=1,
                                          stride=1, padding=0, bias=bias)
 

@@ -1,11 +1,20 @@
 #model configuration
+model_type: "conformer"
 input_size: 240
 N_enc: 12
 N_dec: 6
 d_model: 512 #256
-d_ff: 2048
+d_ff: 2048          
 n_head: 8 #4
 dropout: 0.1
+
+#conformer related conf
+share_ff: False
+d_encff: 1024
+d_decff: 2048
+pos_type: "absolute"
+max_relative_len: 20
+kernel_size: 31
 
 n_features: 80
 vocab_size: 4990
@@ -23,12 +32,12 @@ cosine_warmup: 1000
 
 #Double, multistep
 decay_rate: 0.01
-s_warm: 2000
+s_warm: 1000
 s_decay: 40000
-s_keep: 100000
+s_keep: 160000
 
 padding_idx: 0
-accum_grad: 4
+accum_grad: 2
 grad_clip: 5
 
 use_gpu: True

@@ -22,7 +22,7 @@ def make_model(input_size, args):
     generator = Generator(args.d_model, args.vocab_size)
     
     model = Transformer(
-        ConvEmbedding(input_size, args.d_model, args.dropout),
+        ConvEmbedding(input_size, args.d_model, args.dropout, c(position)),
         Encoder(args.d_model, c(attn), c(ff), args.dropout, args.N_enc),
         nn.Sequential(TextEmbedding(args.d_model, args.vocab_size), c(position)), 
         Decoder(args.d_model, c(attn), c(attn), c(ff), args.dropout, args.N_dec),
