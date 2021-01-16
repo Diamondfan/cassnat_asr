@@ -75,9 +75,6 @@ def main():
     else:
         args.specaug_conf = None
 
-    torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
-    cudnn.deterministic = True
     if not os.path.isdir(args.exp_dir):
         os.makedirs(args.exp_dir)
 
@@ -89,7 +86,6 @@ def main():
     else:
         main_worker(0, 1, args)
         
-
 def main_worker(rank, world_size, args, backend='nccl'):
     args.rank, args.world_size = rank, world_size
     if args.distributed:
@@ -97,6 +93,9 @@ def main_worker(rank, world_size, args, backend='nccl'):
                                     world_size=world_size, rank=rank)
 
     ## 2. Define model and optimizer
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+    cudnn.deterministic = True
     use_cuda = args.use_gpu
     if use_cuda:
         torch.cuda.manual_seed(args.seed)

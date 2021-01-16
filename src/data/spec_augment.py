@@ -130,7 +130,7 @@ def spec_aug(x, args):
     """
     assert isinstance(x, numpy.ndarray)
     assert x.ndim == 2
-    #x = time_warp(x, args.max_time_warp, inplace=args.inplace, mode=args.resize_mode)
+    x = time_warp(x, args.max_time_warp, inplace=args.inplace, mode=args.resize_mode)
     x = freq_mask(
         x,
         args.max_freq_width,

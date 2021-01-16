@@ -1,8 +1,8 @@
 #model configuration
 model_type: "conformer"
 input_size: 240
-N_enc: 12
-N_dec: 6
+N_enc: 10
+N_dec: 5
 d_model: 512 #256
 d_ff: 2048          
 n_head: 8 #4
@@ -12,7 +12,7 @@ dropout: 0.1
 share_ff: False
 d_encff: 1024
 d_decff: 2048
-pos_type: "absolute"
+pos_type: "relative"
 max_relative_len: 20
 kernel_size: 31
 
@@ -32,7 +32,7 @@ cosine_warmup: 1000
 
 #Double, multistep
 decay_rate: 0.01
-s_warm: 1000
+s_warm: 2000
 s_decay: 40000
 s_keep: 160000
 
@@ -46,10 +46,10 @@ use_specaug: True
 spec_aug:
   resize_mode: "PIL"         #time warp is temporarily deactivated
   max_time_warp: 5
-  max_freq_width: 27
+  max_freq_width: 30
   n_freq_mask: 2
-  max_time_width: 0.05
-  n_time_mask: 10
+  max_time_width: 40
+  n_time_mask: 2
   inplace: True
   replace_with_zero: False
 

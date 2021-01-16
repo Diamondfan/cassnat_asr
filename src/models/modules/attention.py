@@ -101,8 +101,7 @@ class RelMultiHeadedAttention(nn.Module):
         query, key, value = [l(x).view(nbatches, -1, self.h, self.d_k)
              for l, x in zip(self.linears, (query, key, value))]
         t_q = query.size(1)
-        pos_embed = self.linear_pos(pos_embed).unsqueeze(0).repeat(nbatches,1,
-                        1).view(nbatches, -1, self.h, self.d_k).transpose(1, 2)  #(nb, h, 2*t_q-1, d_k)
+        pos_embed = self.linear_pos(pos_embed).view(-1, self.h, self.d_k).unsqueeze(0)  #(nb, 2*t_q-1, h, d_k)
         
         # 2) Apply attention on all the projected vectors in batch. 
         
@@ -110,7 +109,7 @@ class RelMultiHeadedAttention(nn.Module):
         q_with_bias_v = (query + self.pos_bias_v).transpose(1, 2)       #(nb, h, t_q, d_k)
 
         scores_ac = torch.matmul(q_with_bias_u, key.transpose(1, 2).transpose(-2, -1))   #(nb, h, t_q, t_k)
-        scores_bd = torch.matmul(q_with_bias_v, pos_embed.transpose(-2, -1))     #(nb, h, t_q, 2*t_q -1)   
+        scores_bd = torch.matmul(q_with_bias_v, pos_embed.transpose(1, 2).transpose(-2, -1))     #(nb, h, t_q, 2*t_q -1)   
         
         # select corresponding relative embeddings (out of memory)
         #ones = torch.ones(t_q, t_q).type_as(query)

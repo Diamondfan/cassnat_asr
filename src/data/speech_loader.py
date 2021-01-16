@@ -5,7 +5,7 @@ import torch
 import kaldiio
 import numpy as np
 
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, BatchSampler
 from data.feat_op import skip_feat, context_feat
 from data.spec_augment import spec_aug
 
@@ -131,12 +131,12 @@ class SpeechDataLoader(DataLoader):
         self.dataset = dataset
         if distributed:
             base_sampler = torch.utils.data.distributed.DistributedSampler(dataset)
-            self.base_sampler = base_sampler
         elif shuffle:
             base_sampler = torch.utils.data.RandomSampler(dataset)
         else:
             base_sampler = torch.utils.data.SequentialSampler(dataset)
         
+        self.base_sampler = base_sampler
         sampler = torch.utils.data.BatchSampler(base_sampler, batch_size, False)
         super(SpeechDataLoader, self).__init__(dataset, 
                                                 batch_sampler=sampler,
@@ -169,4 +169,26 @@ class SpeechDataLoader(DataLoader):
 
     def set_epoch(self, epoch):
         self.base_sampler.set_epoch(epoch)
+
+class AdaptiveBatchSampler(BatchSampler):
+    def __init__(self, sampler, batch_size, drop_last):
+        super(AdaptiveBatchSampler).__init__(sampler, batch_size, drop_last)
+
+    def __iter__(self):
+        batch = []
+        for idx in self.sampler:
+            batch.append(idx)
+            if len(batch) == self.batch_size:
+                yield batch
+                batch = []
+        if len(batch) > 0 and not self.drop_last:
+            yield batch
+
+    def __len__(self):
+        if self.drop_last:
+            return len(self.sampler) // self.batch_size  # type: ignore
+        else:
+            return (len(self.sampler) + self.batch_size - 1) // self.batch_size  # type: ignore
+
+
 

@@ -96,7 +96,7 @@ if [ $stage -le 4 ] && [ $end_stage -ge 4 ]; then
   echo "[Stage 4] LM Preparation Finished."
 fi
 
-lm_exp=exp/libri_tfunilm_unigram_4card_cosineanneal_ep10/
+lm_exp=exp_cassnat/libri_tfunilm_unigram_4card_cosineanneal_ep10/
 if [ $stage -le 5 ] && [ $end_stage -ge 5 ]; then
 
   if [ ! -d $lm_exp ]; then
@@ -120,7 +120,7 @@ if [ $stage -le 5 ] && [ $end_stage -ge 5 ]; then
   echo "[Stage 5] External LM Training Finished."
 fi
 
-asr_exp=exp/1kh_e12d6_accum4_specaug_multistep2k_40k_100k_disls/
+asr_exp=exp/1kh_e12d6_accum2_specaug_f30t40_multistep1k_40k_160k_lr1e-3/
 if [ $stage -le 6 ] && [ $end_stage -ge 6 ]; then
 
   if [ ! -d $asr_exp ]; then
@@ -132,15 +132,14 @@ if [ $stage -le 6 ] && [ $end_stage -ge 6 ]; then
     --train_config conf/transformer.yaml \
     --data_config conf/data.yaml \
     --batch_size 16 \
-    --epochs 150 \
-    --save_epoch 70 \
-    --learning_rate 0.0002 \
+    --epochs 120 \
+    --save_epoch 50 \
+    --learning_rate 0.001 \
     --min_lr 0.00001 \
     --end_patience 10 \
     --opt_type "multistep" \
-    --weight_decay 1e-6 \
+    --weight_decay 0 \
     --label_smooth 0.1 \
-    --disable_ls \
     --ctc_alpha 1 \
     --use_cmvn \
     --print_freq 50 > $asr_exp/train.log 2>&1 &
@@ -150,7 +149,7 @@ fi
 
 out_name='averaged.mdl'
 if [ $stage -le 7 ] && [ $end_stage -ge 7 ]; then
-  last_epoch=80  # Need to be modified according to the convergence
+  last_epoch=81  # Need to be modified according to the convergence
   
   average_checkpoints.py \
     --exp_dir $asr_exp \
@@ -158,13 +157,13 @@ if [ $stage -le 7 ] && [ $end_stage -ge 7 ]; then
     --last_epoch $last_epoch \
     --num 12 
   
-  last_epoch=9  
+  #last_epoch=9  
  
-  average_checkpoints.py \
-    --exp_dir $lm_exp \
-    --out_name $out_name \
-    --last_epoch $last_epoch \
-    --num 3
+  #average_checkpoints.py \
+  #  --exp_dir $lm_exp \
+  #  --out_name $out_name \
+  #  --last_epoch $last_epoch \
+  #  --num 3
 
   echo "[Stage 7] Average checkpoints Finished."
 
@@ -174,7 +173,7 @@ if [ $stage -le 8 ] && [ $end_stage -ge 8 ]; then
   exp=$asr_exp
 
   test_model=$exp/$out_name
-  rnnlm_model=$lm_exp/$out_name
+  rnnlm_model=exp_cassnat/tf_unilm/averaged.mdl    #$lm_exp/$out_name
   global_cmvn=data/fbank/cmvn.ark
   decode_type='ctc_att'
   beam1=20 # set in conf/decode.yaml, att beam

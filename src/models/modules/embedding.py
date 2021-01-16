@@ -43,11 +43,13 @@ class RelativePositionalEncoding(nn.Module):
         self.d_model = d_model
         
     def forward(self, x):
-        distance = x.size(1) - 1
-        range_vec = torch.arange(-distance, distance+1).type_as(x).long()
-        index_vec = torch.clamp(range_vec, -self.max_relative_len, self.max_relative_len)
-        index_vec = index_vec + min(self.max_relative_len, distance)
-        return (self.dropout(x), self.dropout(self.embedding(index_vec)))
+        with torch.no_grad():
+            distance = x.size(1) - 1
+            range_vec = torch.arange(-distance, distance+1).type_as(x).long()
+            index_vec = torch.clamp(range_vec, -self.max_relative_len, self.max_relative_len)
+            index_vec = index_vec + min(self.max_relative_len, distance)
+            pos_embed = self.embedding(index_vec)
+        return (self.dropout(x), self.dropout(pos_embed))
         #range_mat = range_vec.repeat(x.size(1)).view(x.size(1), x.size(1))
         #index_mat = range_mat.transpose(0, 1) - range_mat
         #index_mat_clipped = torch.clamp(index_mat, -self.max_relative_len, self.max_relative_len)
