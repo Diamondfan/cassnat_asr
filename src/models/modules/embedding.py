@@ -10,6 +10,7 @@ class PositionalEncoding(nn.Module):
     "Implement absolute position embedding."
     def __init__(self, d_model, dropout, max_len=5000):
         super(PositionalEncoding, self).__init__()
+        self.d_model = d_model
         self.dropout = nn.Dropout(p=dropout)
         
         # Compute the positional encodings once in log space.
@@ -47,7 +48,7 @@ class RelativePositionalEncoding(nn.Module):
             distance = x.size(1) - 1
             range_vec = torch.arange(-distance, distance+1).type_as(x).long()
             index_vec = torch.clamp(range_vec, -self.max_relative_len, self.max_relative_len)
-            index_vec = index_vec + min(self.max_relative_len, distance)
+            index_vec = index_vec + self.max_relative_len
             pos_embed = self.embedding(index_vec)
         return (self.dropout(x), self.dropout(pos_embed))
         #range_mat = range_vec.repeat(x.size(1)).view(x.size(1), x.size(1))

@@ -1,6 +1,6 @@
 /egs/*/data
 /egs/*/mfcc
-/egs/*/exp
+/egs/*/exp*
 /egs/*/fbank
 
 

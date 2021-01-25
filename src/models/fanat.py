@@ -6,7 +6,6 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from itertools import groupby
 
 from models.modules.attention import MultiHeadedAttention
 from models.modules.positionff import PositionwiseFeedForward
@@ -28,7 +27,7 @@ def make_model(input_size, args):
         decoder_use = Encoder(args.d_model, c(attn), c(ff), args.dropout, args.N_dec)
 
     model = FaNat(
-        ConvEmbedding(input_size, args.d_model, args.dropout),
+        ConvEmbedding(input_size, args.d_model, args.dropout, c(position)),
         Encoder(args.d_model, c(attn), c(ff), args.dropout, args.N_enc),
         AcEmbedExtractor(args.d_model, c(attn), c(ff), args.dropout, args.N_extra),
         EmbedMapper(args.d_model, c(attn), c(ff), args.dropout, args.N_map),
@@ -104,21 +103,21 @@ class FaNat(nn.Module):
             ymax = ylen.max().item()
 
         bs, _, d_model = enc_h.size()
-        tgt_mask1 = torch.full((bs, ymax), 1).type_as(src_mask)
-        tgt_mask1 = tgt_mask1.scatter(1, ylen.unsqueeze(1)-1, 0).cumprod(1)
-        tgt_mask1 = tgt_mask1.scatter(1, ylen.unsqueeze(1)-1, 1).unsqueeze(1)
+        tgt_mask_bidi = torch.full((bs, ymax), 1).type_as(src_mask)
+        tgt_mask_bidi = tgt_mask_bidi.scatter(1, ylen.unsqueeze(1)-1, 0).cumprod(1)
+        tgt_mask_bidi = tgt_mask_bidi.scatter(1, ylen.unsqueeze(1)-1, 1).unsqueeze(1)
         
         # 3. Extract Acoustic embedding and Map it to Word embedding
         pe = self.pe.type_as(src).unsqueeze(0).repeat(bs, 1, 1)[:,:ymax,:]
         ac_embed = self.acembed_extractor(pe, enc_h, trigger_mask)
-        pred_embed = self.embed_mapper(ac_embed, tgt_mask1)
+        pred_embed = self.embed_mapper(ac_embed, tgt_mask_bidi)
 
         # 4. decoder, output units generation
         if args.use_unimask:
             pred_embed = torch.cat([args.sos_embed, pred_embed[:,:-1,:]], dim=1)
-            tgt_mask = tgt_mask1 & self.subsequent_mask(ymax).type_as(tgt_mask1) # uni-direc
+            tgt_mask = tgt_mask_bidi & self.subsequent_mask(ymax).type_as(tgt_mask_bidi) # uni-direc
         else:
-            tgt_mask = tgt_mask1
+            tgt_mask = tgt_mask_bidi
             true_embed = None
 
         if args.use_src:
@@ -128,7 +127,7 @@ class FaNat(nn.Module):
         else:
             dec_h = self.decoder(pred_embed, tgt_mask)
         att_out = self.att_generator(dec_h)
-        return ctc_out, att_out, pred_embed, tgt_mask1
+        return ctc_out, att_out, pred_embed, tgt_mask_bidi
 
     def viterbi_align(self, ctc_out, src_mask, src_size, ys, ylens, blank, sample_dist, sample_topk):
         """

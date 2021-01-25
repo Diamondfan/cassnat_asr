@@ -18,7 +18,7 @@ import utils.util as util
 from utils.wer import ctc_greedy_wer, att_greedy_wer
 from data.vocab import Vocab
 from utils.optimizer import get_opt
-from models.fanat import make_model
+from models import make_fanat, make_fanat_conformer
 from utils.loss import LabelSmoothing, KLDivLoss, EmbedLoss
 from data.speech_loader import SpeechDataset, SpeechDataLoader
 
@@ -78,9 +78,6 @@ def main():
     else:
         args.specaug_conf = None
 
-    torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
-    cudnn.deterministic = True
     if not os.path.isdir(args.exp_dir):
         os.makedirs(args.exp_dir)
 
@@ -99,6 +96,9 @@ def main_worker(rank, world_size, args, backend='nccl'):
                                     world_size=world_size, rank=rank)
     
     ## 2. Define model and optimizer
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+    cudnn.deterministic = True
     use_cuda = args.use_gpu
     if use_cuda:
         torch.cuda.manual_seed(args.seed)
@@ -106,7 +106,11 @@ def main_worker(rank, world_size, args, backend='nccl'):
     vocab = Vocab(args.vocab_file, rank)
     args.vocab_size = vocab.n_words
     assert args.input_size == (args.left_ctx + args.right_ctx + 1) // args.skip_frame * args.n_features
-    model = make_model(args.input_size, args)
+    if args.model_type == "transformer":
+        model = make_fanat(args.input_size, args)
+    elif args.model_type == "conformer":
+        model = make_fanat_conformer(args.input_size, args)
+
     optimizer = get_opt(args.opt_type, model, args) 
     
     if args.init_encoder and args.resume_model:
@@ -173,7 +177,6 @@ def main_worker(rank, world_size, args, backend='nccl'):
     if use_cuda:
         torch.cuda.set_device(args.rank)
         model = model.cuda()
-    
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.rank], find_unused_parameters=True)
 
@@ -300,9 +303,11 @@ def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_trai
         
         if args.use_unimask:
             args.sos_embed = args.word_embed(tgt)[:,0:1,:]
+
         ctc_out, att_out, pred_embed, tgt_mask_pred = model(src, src_mask, feat_sizes, tgt_label, label_sizes, args)
         bs, max_feat_size, _ = ctc_out.size()
         feat_sizes = (feat_sizes * max_feat_size).long()
+        
         # loss computation
         if args.knowlg_dist:
             tgt_mask = (tgt != args.padding_idx).unsqueeze(1)
@@ -313,6 +318,7 @@ def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_trai
             att_loss = criterion[1].forward_best_path(att_out, tgt_label, tgt_mask_pred)
         else:
             att_loss = criterion[1](att_out.view(-1, att_out.size(-1)), tgt_label.view(-1))
+
         loss = att_loss
         if args.ctc_alpha > 0:
             ctc_loss = criterion[0](ctc_out.transpose(0,1), tgt_label, feat_sizes, label_sizes)

@@ -11,9 +11,9 @@
 stage=1
 end_stage=1
 lm_model=exp/newlm/averaged.mdl
-encoder_initial_model=exp/1kh_large_multistep_accum2_gc5_specaug_before_f30t40/averaged.mdl
+encoder_initial_model=exp_confomer_baseline/1kh_conformer_rel_maxlen20_e10d5_accum2_specaug_tmax10_multistep2k_40k_160k_ln/averaged.mdl
 
-asr_exp=exp/fanat_large_specaug_multistep_trig_src_initenc_SchD_topk_path0/
+asr_exp=exp/conv_fanat_e10m2d3_max_specaug_multistep_initenc_no_convdec/
 if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
 
   if [ ! -d $asr_exp ]; then
@@ -37,7 +37,8 @@ if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
     --use_cmvn \
     --init_encoder \
     --resume_model $encoder_initial_model \
-    --print_freq 100 > $exp/train.log #2>&1 &
+    --seed 1234 \
+    --print_freq 100 > $asr_exp/train.log 2>&1 &
     
   echo "[Stage 1] ASR Training Finished."
 fi
