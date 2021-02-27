@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from models.modules.norm import LayerNorm
 from models.modules.attention import MultiHeadedAttention
 from models.modules.positionff import PositionwiseFeedForward
 from models.modules.embedding import PositionalEncoding, ConvEmbedding, TextEmbedding
@@ -21,14 +22,14 @@ def make_model(input_size, args):
     position = PositionalEncoding(args.d_model, args.dropout)
     generator = Generator(args.d_model, args.vocab_size)
     
+    interctc_gen = Generator(args.d_model, args.vocab_size, add_norm=True) if args.interctc_alpha > 0 else None
     model = Transformer(
         ConvEmbedding(input_size, args.d_model, args.dropout, c(position)),
         Encoder(args.d_model, c(attn), c(ff), args.dropout, args.N_enc),
         nn.Sequential(TextEmbedding(args.d_model, args.vocab_size), c(position)), 
         Decoder(args.d_model, c(attn), c(attn), c(ff), args.dropout, args.N_dec),
-        c(generator), c(generator))
+        c(generator), c(generator), interctc_gen)
         
-    
     for p in model.parameters():
         if p.dim() > 1:
             nn.init.xavier_uniform_(p)
@@ -37,15 +38,20 @@ def make_model(input_size, args):
 
 class Generator(nn.Module):
     "Define standard linear + softmax generation step."
-    def __init__(self, d_model, vocab):
+    def __init__(self, d_model, vocab, add_norm=False):
         super(Generator, self).__init__()
         self.proj = nn.Linear(d_model, vocab)
+        self.add_norm = add_norm
+        if add_norm:
+            self.norm = LayerNorm(d_model)
 
     def forward(self, x, T=1.0):
+        if self.add_norm:
+            x = self.norm(x)
         return F.log_softmax(self.proj(x)/T, dim=-1)
 
 class Transformer(nn.Module):
-    def __init__(self, src_embed, encoder, tgt_embed, decoder, ctc_gen, att_gen):
+    def __init__(self, src_embed, encoder, tgt_embed, decoder, ctc_gen, att_gen, interctc_gen=None):
         super(Transformer, self).__init__()
         self.src_embed = src_embed
         self.tgt_embed = tgt_embed
@@ -53,18 +59,26 @@ class Transformer(nn.Module):
         self.decoder = decoder
         self.ctc_generator = ctc_gen
         self.att_generator = att_gen
+        if interctc_gen is not None:
+            self.interctc_generator = interctc_gen
 
-    def forward(self, src, tgt, src_mask, tgt_mask, ctc_alpha):
+    def forward(self, src, tgt, src_mask, tgt_mask, ctc_alpha, interctc_alpha=0):
         x, x_mask = self.src_embed(src, src_mask)
-        enc_h = self.encoder(x, x_mask)
+        enc_h = self.encoder(x, x_mask, interctc_alpha)
         #CTC Loss needs log probability as input
-        if ctc_alpha > 0:
+        if ctc_alpha > 0 and interctc_alpha == 0:
             ctc_out = self.ctc_generator(enc_h)
+            inter_out = 0
+        elif ctc_alpha > 0 and interctc_alpha > 0:
+            enc_h, inter_h = enc_h
+            ctc_out = self.ctc_generator(enc_h)
+            inter_out = self.interctc_generator(inter_h)
         else:
             ctc_out = 0
+            inter_out = 0
         dec_h = self.decoder(self.tgt_embed(tgt), enc_h, x_mask, tgt_mask)
         att_out = self.att_generator(dec_h)
-        return ctc_out, att_out, enc_h
+        return ctc_out, att_out, enc_h, inter_out
 
     def forward_att(self, enc_h, tgt, src_mask, tgt_mask):
         dec_h = self.decoder(self.tgt_embed(tgt), enc_h, src_mask, tgt_mask)

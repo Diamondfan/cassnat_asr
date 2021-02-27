@@ -46,6 +46,7 @@ def main():
     parser.add_argument("--disable_ls", default=False, action='store_true', help="Disable label smoothing when decaying learning rate")
     parser.add_argument("--load_data_workers", default=1, type=int, help="Number of parallel data loaders")
     parser.add_argument("--ctc_alpha", default=0, type=float, help="Task ratio of CTC")
+    parser.add_argument("--interctc_alpha", default=0, type=float, help="Task ratio of intermediate CTC")
     parser.add_argument("--resume_model", default='', type=str, help="The model path to resume")
     parser.add_argument("--print_freq", default=100, type=int, help="Number of iter to print")
     parser.add_argument("--seed", default=1, type=int, help="Random number seed")
@@ -89,7 +90,7 @@ def main():
 def main_worker(rank, world_size, args, backend='nccl'):
     args.rank, args.world_size = rank, world_size
     if args.distributed:
-        dist.init_process_group(backend=backend, init_method='tcp://localhost:21980',
+        dist.init_process_group(backend=backend, init_method='tcp://localhost:21789',
                                     world_size=world_size, rank=rank)
 
     ## 2. Define model and optimizer
@@ -161,7 +162,10 @@ def main_worker(rank, world_size, args, backend='nccl'):
     
     criterion_ctc = torch.nn.CTCLoss(reduction='mean')
     criterion_att = LabelSmoothing(args.vocab_size, args.padding_idx, args.label_smooth)
-    criterion = (criterion_ctc, criterion_att)
+    criterion = [criterion_ctc, criterion_att]
+    if args.interctc_alpha > 0:
+        criterion_interctc = torch.nn.CTCLoss(reduction='mean')
+        criterion.append(criterion_interctc)
     
     ## 4. Start training iteratively
     best_wer = 100
@@ -246,7 +250,7 @@ def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_trai
             feat_sizes = feat_sizes.cuda()
             label_sizes = label_sizes.cuda()
         
-        ctc_out, att_out, enc_h = model(src, tgt, src_mask, tgt_mask, args.ctc_alpha)
+        ctc_out, att_out, enc_h, inter_out = model(src, tgt, src_mask, tgt_mask, args.ctc_alpha, args.interctc_alpha)
         bs, max_feat_size, _ = enc_h.size()
 
         # loss computation
@@ -255,6 +259,10 @@ def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_trai
             feat_sizes = (feat_sizes * max_feat_size).long()
             ctc_loss = criterion[0](ctc_out.transpose(0,1), tgt_label, feat_sizes, label_sizes)
             loss = args.ctc_alpha * ctc_loss + att_loss #(1 - args.ctc_alpha) * att_loss
+            
+            if args.interctc_alpha > 0:
+                interctc_loss = criterion[2](inter_out.transpose(0,1), tgt_label, feat_sizes, label_sizes)
+                loss += args.interctc_alpha * interctc_loss
         else:
             ctc_loss = torch.Tensor([0])
             loss = att_loss
@@ -264,6 +272,7 @@ def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_trai
             ctc_errs, all_tokens = ctc_greedy_wer(ctc_out, tgt_label.cpu().numpy(), feat_sizes.cpu().numpy(), args.padding_idx)
         else:
             ctc_errs, all_tokens = 1, 1
+        
         ctc_wers.update(ctc_errs/all_tokens, all_tokens)
         att_errs, all_tokens = att_greedy_wer(att_out, tgt_label.cpu().numpy(), args.padding_idx)
         att_wers.update(att_errs/all_tokens, all_tokens)

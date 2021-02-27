@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from models.modules.norm import LayerNorm
 from models.modules.attention import MultiHeadedAttention, RelMultiHeadedAttention
 from models.modules.positionff import PositionwiseFeedForward
 from models.modules.embedding import PositionalEncoding, RelativePositionalEncoding, ConvEmbedding, TextEmbedding
@@ -31,26 +32,31 @@ def make_model(input_size, args):
     position = PositionalEncoding(args.d_model, args.dropout)
     generator = Generator(args.d_model, args.vocab_size)
     
+    interctc_gen = Generator(args.d_model, args.vocab_size, add_norm=True) if args.interctc_alpha > 0 else None
     model = Conformer(
         ConvEmbedding(input_size, args.d_model, args.dropout, enc_position),
         Encoder(args.d_model, c(enc_ff), enc_attn, conv_module, c(enc_ff), args.dropout, args.N_enc, args.pos_type, args.share_ff),
         nn.Sequential(TextEmbedding(args.d_model, args.vocab_size), position), 
         Decoder(args.d_model, c(attn), c(attn), dec_ff, args.dropout, args.N_dec),
-        c(generator), c(generator))
+        c(generator), c(generator), interctc_gen)
     
     for p in model.parameters():
         if p.dim() > 1:
             nn.init.xavier_uniform_(p)
     return model
 
-
 class Generator(nn.Module):
     "Define standard linear + softmax generation step."
-    def __init__(self, d_model, vocab):
+    def __init__(self, d_model, vocab, add_norm=False):
         super(Generator, self).__init__()
         self.proj = nn.Linear(d_model, vocab)
+        self.add_norm = add_norm
+        if add_norm:
+            self.norm = LayerNorm(d_model)
 
     def forward(self, x, T=1.0):
+        if self.add_norm:
+            x = self.norm(x)
         return F.log_softmax(self.proj(x)/T, dim=-1)
 
 class Conformer(Transformer):

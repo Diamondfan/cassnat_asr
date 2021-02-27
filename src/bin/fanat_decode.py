@@ -14,7 +14,7 @@ import torch.nn.functional as F
 sys.path.append(os.environ['E2EASR']+'/src')
 import utils.util as util
 from data.vocab import Vocab
-from models.fanat import make_model
+from models import make_fanat, make_fanat_conformer
 from data.speech_loader import SpeechDataset, SpeechDataLoader
 from utils.beam_decode import ctc_beam_decode
 
@@ -44,7 +44,7 @@ def main():
     parser.add_argument("--max_decode_ratio", type=float, default=0, help='Decoding step to length ratio')
     parser.add_argument("--seed", default=1, type=int, help="random number seed")
 
-    os.environ['CUDA_VISIBLE_DEVICES'] = str(int(os.environ['CUDA_VISIBLE_DEVICES'])) #% 4)
+    os.environ['CUDA_VISIBLE_DEVICES'] = str(int(os.environ['CUDA_VISIBLE_DEVICES']) % 4 + 4)
     args = parser.parse_args()
     with open(args.test_config) as f:
         config = yaml.safe_load(f)
@@ -71,7 +71,10 @@ def main():
     args.vocab_size = vocab.n_words
     args.rank = 0
     assert args.input_size == (args.left_ctx + args.right_ctx + 1) // args.skip_frame * args.n_features
-    model = make_model(args.input_size, args)
+    if args.model_type == "transformer":
+        model = make_fanat(args.input_size, args)
+    elif args.model_type == "conformer":
+        model = make_fanat_conformer(args.input_size, args)
 
     if args.resume_model:
         print("Loading model from {}".format(args.resume_model))

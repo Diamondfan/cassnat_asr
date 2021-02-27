@@ -90,12 +90,14 @@ class FaNat(nn.Module):
                 aligned_seq_shift, ylen, ymax = self.viterbi_align(ctc_out, x_mask, src_size, tgt_label[:,:-1], ylen, blank, args.sample_dist, args.sample_topk)
                 trigger_mask, ylen, ymax = self.align_to_mask(aligned_seq_shift, ylen, ymax, x_mask, src_size, blank)
 
-            if args.context_trigger > 0:
+            if args.right_trigger > 0:
                 trigger_shift_right = trigger_mask.new_zeros(trigger_mask.size())
                 trigger_shift_right[:, :, 1:] = trigger_mask[:,:, :-1]
+                trigger_mask = trigger_mask | trigger_shift_right
+            if args.left_trigger > 0:
                 trigger_shift_left = trigger_mask.new_zeros(trigger_mask.size())
                 trigger_shift_left[:,:,:-1] = trigger_mask[:,:,1:]
-                trigger_mask = trigger_mask | trigger_shift_right | trigger_shift_left
+                trigger_mask = trigger_mask | trigger_shift_left
             trigger_mask = trigger_mask & x_mask
         else:
             trigger_mask = x_mask
@@ -224,8 +226,8 @@ class FaNat(nn.Module):
         # 6. transcribe aliged_seq to trigger mask
         trigger_mask = (aligned_seq_shift != blank).cumsum(1).unsqueeze(1).repeat(1, ymax+1, 1)
         trigger_mask = trigger_mask == torch.arange(ymax+1).type_as(trigger_mask).unsqueeze(0).unsqueeze(2)
-        trigger_mask[:,-1:,:].masked_fill_(src_mask==0, 0)   # remove position with padding_idx
-        trigger_mask[:,-1,:].scatter_(1, src_size.unsqueeze(1)-1, 1) # give the last character one to keep at least one active position for eos
+        trigger_mask.masked_fill_(src_mask==0, 0)   # remove position with padding_idx
+        trigger_mask[torch.arange(trigger_mask.size(0)).cuda(), ylens, src_size-1] = 1 # give the last character one to keep at least one active position for eos
         
         ylen = ylens + 1
         ymax += 1
@@ -345,12 +347,14 @@ class FaNat(nn.Module):
 
             trigger_mask, ylen, ymax = self.align_to_mask(aligned_seq_shift, ylen, ymax, src_mask, src_size, blank)
                  
-            if args.context_trigger > 0:
+            if args.right_trigger > 0:
                 trigger_shift_right = trigger_mask.new_zeros(trigger_mask.size())
                 trigger_shift_right[:, :, 1:] = trigger_mask[:,:, :-1]
+                trigger_mask = trigger_mask | trigger_shift_right
+            if args.left_trigger > 0:
                 trigger_shift_left = trigger_mask.new_zeros(trigger_mask.size())
                 trigger_shift_left[:,:,:-1] = trigger_mask[:,:,1:]
-                trigger_mask = trigger_mask | trigger_shift_right | trigger_shift_left
+                trigger_mask = trigger_mask | trigger_shift_left
             trigger_mask = trigger_mask & src_mask
         else:
             trigger_mask = src_mask

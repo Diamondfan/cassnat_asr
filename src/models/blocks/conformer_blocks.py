@@ -73,17 +73,26 @@ class Encoder(nn.Module):
         self.layers = clones(layer, N)
         self.pos_type = pos_type
         self.norm = LayerNorm(size)
+        self.num_layers = N
         
-    def forward(self, x, mask):
+    def forward(self, x, mask, interctc_alpha=0):
         "Pass the input (and mask) through each layer in turn."
         if self.pos_type == "relative":
             x, pos_embed = x[0], x[1]
         elif self.pos_type == "absolute":
             pos_embed = None
 
+        n_layer = 0
         for layer in self.layers:
             x = layer(x, mask, pos_embed)
-        return self.norm(x)
+            if interctc_alpha > 0 and n_layer == int(self.num_layers / 2) - 1:
+                inter_out = x
+            n_layer += 1
+
+        if interctc_alpha > 0:
+            return (self.norm(x), inter_out)
+        else:
+            return self.norm(x)
 
     def forward_one_step(self, x, mask, cache=None):
         if self.pos_type == "relative":

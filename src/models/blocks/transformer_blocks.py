@@ -54,12 +54,20 @@ class Encoder(nn.Module):
         layer = EncoderLayer(size, self_attn, feed_forward, dropout)
         self.layers = clones(layer, N)
         self.norm = LayerNorm(layer.size)
+        self.num_layers = N
         
-    def forward(self, x, mask):
+    def forward(self, x, mask, interctc_alpha=0):
         "Pass the input (and mask) through each layer in turn."
+        n_layer = 0
         for layer in self.layers:
             x = layer(x, mask)
-        return self.norm(x)
+            if interctc_alpha > 0 and n_layer == int(self.num_layers / 2) - 1:
+                inter_out = x
+            n_layer += 1
+        if interctc_alpha > 0:
+            return (self.norm(x), inter_out)
+        else:
+            return self.norm(x)
 
     def forward_one_step(self, x, mask, cache=None):
         if cache is None:

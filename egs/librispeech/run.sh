@@ -120,20 +120,22 @@ if [ $stage -le 5 ] && [ $end_stage -ge 5 ]; then
   echo "[Stage 5] External LM Training Finished."
 fi
 
-asr_exp=exp/1kh_e12d6_accum2_specaug_f30t40_multistep1k_40k_160k_lr1e-3/
+#asr_exp=exp/1kh_conformer_rel_maxlen40_e10d5_accum2_specaug_f30t40_multistep2k_40k_160k_ln/ #_disls/ f30t40
+asr_exp=exp/1kh_conformer_baseline_interctc02_ctc1/ #_shareff/
+
 if [ $stage -le 6 ] && [ $end_stage -ge 6 ]; then
 
   if [ ! -d $asr_exp ]; then
     mkdir -p $asr_exp
   fi
 
-  CUDA_VISIBLE_DEVICES="0,1,2,3" asr_train.py \
+  CUDA_VISIBLE_DEVICES="4,5,6,7" asr_train.py \
     --exp_dir $asr_exp \
     --train_config conf/transformer.yaml \
     --data_config conf/data.yaml \
     --batch_size 16 \
     --epochs 120 \
-    --save_epoch 50 \
+    --save_epoch 40 \
     --learning_rate 0.001 \
     --min_lr 0.00001 \
     --end_patience 10 \
@@ -141,7 +143,9 @@ if [ $stage -le 6 ] && [ $end_stage -ge 6 ]; then
     --weight_decay 0 \
     --label_smooth 0.1 \
     --ctc_alpha 1 \
+    --interctc_alpha 0.2 \
     --use_cmvn \
+    --seed 1234 \
     --print_freq 50 > $asr_exp/train.log 2>&1 &
     
   echo "[Stage 6] ASR Training Finished."
@@ -155,7 +159,7 @@ if [ $stage -le 7 ] && [ $end_stage -ge 7 ]; then
     --exp_dir $asr_exp \
     --out_name $out_name \
     --last_epoch $last_epoch \
-    --num 12 
+    --num 12
   
   #last_epoch=9  
  
@@ -173,11 +177,12 @@ if [ $stage -le 8 ] && [ $end_stage -ge 8 ]; then
   exp=$asr_exp
 
   test_model=$exp/$out_name
-  rnnlm_model=exp_cassnat/tf_unilm/averaged.mdl    #$lm_exp/$out_name
+  #rnnlm_model=$lm_exp/$out_name
+  rnnlm_model=exp_cassnat/newlm/averaged.mdl
   global_cmvn=data/fbank/cmvn.ark
-  decode_type='ctc_att'
-  beam1=20 # set in conf/decode.yaml, att beam
-  beam2=30 # set in conf/decode.yaml, ctc beam
+  decode_type='att_only'
+  beam1=1 # set in conf/decode.yaml, att beam
+  beam2=0 # set in conf/decode.yaml, ctc beam
   lp=0 #set in conf/decode.yaml, length penalty
   ctcwt=0.4
   lmwt=0.6
