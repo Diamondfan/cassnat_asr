@@ -45,6 +45,9 @@ def main():
     parser.add_argument("--label_smooth", default=0.1, type=float, help="Label smoothing for CE loss")
     parser.add_argument("--load_data_workers", default=2, type=int, help="Number of parallel data loaders")
     parser.add_argument("--ctc_alpha", default=0, type=float, help="Task ratio of CTC")
+    parser.add_argument("--interctc_alpha", default=0, type=float, help="Task ratio of Intermediate CTC")
+    parser.add_argument("--att_alpha", default=1, type=float, help="Task ratio of decoder ce loss")
+    parser.add_argument("--interce_alpha", default=0, type=float, help="Task ratio of Intermediate CE loss")
     parser.add_argument("--embed_alpha", default=0, type=float, help="Task ratio of embedding prediction loss")
     parser.add_argument("--embed_loss_type", default='l2', type=str, help="Type of embedding prediction loss")
     parser.add_argument("--resume_model", default='', type=str, help="The model path to resume")
@@ -203,8 +206,22 @@ def main_worker(rank, world_size, args, backend='nccl'):
         criterion_att = KLDivLoss(args.padding_idx)
     else:
         criterion_att = LabelSmoothing(args.vocab_size, args.padding_idx, args.label_smooth)
-    criterion_embed = EmbedLoss(args.padding_idx, args.embed_loss_type)
-    criterion = (criterion_ctc, criterion_att, criterion_embed)    
+    criterion = [criterion_ctc, criterion_att]
+    if args.embed_alpha > 0:
+        criterion_embed = EmbedLoss(args.padding_idx, args.embed_loss_type)
+        criterion.append(criterion_embed)
+    else:
+        criterion.append(None)
+    if args.interctc_alpha > 0:
+        criterion_interctc = torch.nn.CTCLoss(reduction='mean')
+        criterion.append(criterion_interctc)
+    else:
+        criterion.append(None)
+    if args.interce_alpha > 0:
+        criterion_interce = LabelSmoothing(args.vocab_size, args.padding_idx, args.label_smooth)
+        criterion.append(criterion_interce)
+    else:
+        criterion.append(None)
 
     ## 4. Start training iteratively
     best_wer = 100
@@ -228,11 +245,10 @@ def main_worker(rank, world_size, args, backend='nccl'):
         args.sample_dist = sample_dist
         args.sample_topk = sample_topk
         train_loss, train_wer, train_ctc_wer = run_epoch(epoch, train_loader, model, criterion, args, optimizer, is_train=True)
-        
+
         model.eval()
         with torch.no_grad():
-            args.sample_dist = 0
-            args.sample_topk = 0
+            args.sample_dist, args.sample_topk = 0, 0
             valid_loss, valid_wer, valid_ctc_wer = run_epoch(epoch, valid_loader, model, criterion, args, is_train=False)
 
         temp_lr = optimizer.param_groups[0]['lr'] if args.opt_type == "normal" else optimizer.optimizer.param_groups[0]['lr']
@@ -304,7 +320,7 @@ def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_trai
         if args.use_unimask:
             args.sos_embed = args.word_embed(tgt)[:,0:1,:]
 
-        ctc_out, att_out, pred_embed, tgt_mask_pred = model(src, src_mask, feat_sizes, tgt_label, label_sizes, args)
+        ctc_out, att_out, pred_embed, tgt_mask_pred, interctc_out, interce_out = model(src, src_mask, feat_sizes, tgt_label, label_sizes, args)
         bs, max_feat_size, _ = ctc_out.size()
         feat_sizes = (feat_sizes * max_feat_size).long()
         
@@ -332,6 +348,13 @@ def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_trai
         else:
             embed_loss = torch.Tensor([0])
 
+        if args.interctc_alpha > 0:
+            interctc_loss = criterion[3](inter_out.transpose(0,1), tgt_label, feat_sizes, label_sizes)
+            loss += args.interctc_alpha * interctc_loss
+        if args.interce_alpha > 0:
+            interce_loss = criterion[4](interce_out.view(-1, interce_out.size(-1)), tgt_label.view(-1))
+            loss += args.interce_alpha * interce_loss
+
         # unit error rate computation
         ctc_errs, all_tokens = ctc_greedy_wer(ctc_out, tgt_label.cpu().numpy(), feat_sizes.cpu().numpy(), args.padding_idx)
         att_errs, all_tokens = att_greedy_wer(att_out, tgt_label.cpu().numpy(), args.padding_idx)
@@ -345,7 +368,7 @@ def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_trai
                 grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
                 optimizer.step()
                 optimizer.zero_grad()
-        
+
         losses.update(loss.item(), tokens)
         embed_losses.update(embed_loss.item(), tokens)
         ctc_losses.update(ctc_loss.item(), tokens)

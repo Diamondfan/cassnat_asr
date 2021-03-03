@@ -4,7 +4,7 @@ input_size: 240
 N_enc: 10
 N_extra: 1
 N_map: 2
-N_dec: 3
+N_dec: 4
 d_model: 512 #256
 d_ff: 2048          
 n_head: 8 #4
@@ -13,21 +13,21 @@ dropout: 0.1
 #conformer related conf
 share_ff: False
 d_encff: 1024
-d_decff: 2048
+d_decff: 1024 #2048
 pos_type: "relative"
 enc_max_relative_len: 20
 enc_kernel_size: 31
-use_conv_dec: False
-dec_max_relative_len: 4
-dec_kernel_size: 5
-
+use_conv_dec: True #False
+dec_max_relative_len: 8
+dec_kernel_size: 3
 
 #nat related conf
 use_trigger: True
 use_src: True
 src_trigger: False
 use_unimask: False
-context_trigger: 0
+left_trigger: 1
+right_trigger: 1
 use_best_path: False
 sample_dist: 0
 sample_topk: 0

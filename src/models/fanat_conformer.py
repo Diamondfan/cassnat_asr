@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from models.modules.norm import LayerNorm
 from models.modules.attention import MultiHeadedAttention, RelMultiHeadedAttention
 from models.modules.positionff import PositionwiseFeedForward
 from models.modules.embedding import PositionalEncoding, RelativePositionalEncoding, ConvEmbedding, TextEmbedding
@@ -27,6 +28,8 @@ def make_model(input_size, args):
 
     dec_ff = PositionwiseFeedForward(args.d_model, args.d_decff, args.dropout, activation=Swish())
     generator = Generator(args.d_model, args.vocab_size)
+    interctc_gen = Generator(args.d_model, args.vocab_size, add_norm=True) if args.interctc_alpha > 0 else None
+    interce_gen = Generator(args.d_model, args.vocab_size, add_norm=True) if args.interce_alpha > 0 else None
     pe = create_pe(args.d_model)
 
     if args.use_conv_dec:        
@@ -40,7 +43,7 @@ def make_model(input_size, args):
                     ConAcExtra(args.d_model, c(dec_src_attn), c(dec_ff), dec_position, args.pos_type, args.dropout, args.N_extra),
                     ConEmbedMapper(args.d_model, c(dec_ff), c(dec_self_attn), c(dec_conv_module), c(dec_ff), args.dropout, args.N_map, args.pos_type, args.share_ff),
                     ConDecoder(args.d_model, c(dec_ff), c(dec_self_attn), c(dec_conv_module), c(dec_src_attn), c(dec_ff), args.dropout, args.N_dec, args.pos_type, args.share_ff), 
-                    c(generator), c(generator), pe)
+                    c(generator), c(generator), pe, interctc_gen, interce_gen)
     else:
         dec_attn = MultiHeadedAttention(args.n_head, args.d_model, args.dropout)
         model = ConFaNat(
@@ -49,7 +52,7 @@ def make_model(input_size, args):
                     TrfAcExtra(args.d_model, c(dec_attn), c(dec_ff), args.dropout, args.N_extra),
                     TrfEmbedMapper(args.d_model, c(dec_attn), c(dec_ff), args.dropout, args.N_map),
                     TrfDecoder(args.d_model, c(dec_attn), c(dec_attn), c(dec_ff), args.dropout, args.N_dec), 
-                    c(generator), c(generator), pe)
+                    c(generator), c(generator), pe, interctc_gen, interce_gen)
     
     for p in model.parameters():
         if p.dim() > 1:
@@ -67,11 +70,16 @@ def create_pe(d_model, max_len=5000):
 
 class Generator(nn.Module):
     "Define standard linear + softmax generation step."
-    def __init__(self, d_model, vocab):
+    def __init__(self, d_model, vocab, add_norm=False):
         super(Generator, self).__init__()
         self.proj = nn.Linear(d_model, vocab)
+        self.add_norm = add_norm
+        if add_norm:
+            self.norm = LayerNorm(d_model)
 
     def forward(self, x, T=1.0):
+        if self.add_norm:
+            x = self.norm(x)
         return F.log_softmax(self.proj(x)/T, dim=-1)
 
 class ConFaNat(FaNat):

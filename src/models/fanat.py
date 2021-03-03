@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from models.modules.norm import LayerNorm
 from models.modules.attention import MultiHeadedAttention
 from models.modules.positionff import PositionwiseFeedForward
 from models.modules.embedding import PositionalEncoding, ConvEmbedding, TextEmbedding
@@ -21,6 +22,8 @@ def make_model(input_size, args):
     generator = Generator(args.d_model, args.vocab_size)
     pe = create_pe(args.d_model)
 
+    interctc_gen = Generator(args.d_model, args.vocab_size, add_norm=True) if args.interctc_alpha > 0 else None
+    interce_gen = Generator(args.d_model, args.vocab_size, add_norm=True) if args.interce_alpha > 0 else None
     if args.use_src:
         decoder_use = Decoder(args.d_model, c(attn), c(attn), c(ff), args.dropout, args.N_dec)
     else:
@@ -32,9 +35,8 @@ def make_model(input_size, args):
         AcEmbedExtractor(args.d_model, c(attn), c(ff), args.dropout, args.N_extra),
         EmbedMapper(args.d_model, c(attn), c(ff), args.dropout, args.N_map),
         decoder_use,
-        c(generator), c(generator), pe)
+        c(generator), c(generator), pe, interctc_gen, interce_gen)
         
-    
     for p in model.parameters():
         if p.dim() > 1:
             nn.init.xavier_uniform_(p)
@@ -51,15 +53,20 @@ def create_pe(d_model, max_len=5000):
 
 class Generator(nn.Module):
     "Define standard linear + softmax generation step."
-    def __init__(self, d_model, vocab):
+    def __init__(self, d_model, vocab, add_norm=False):
         super(Generator, self).__init__()
         self.proj = nn.Linear(d_model, vocab)
+        self.add_norm = add_norm
+        if add_norm:
+            self.norm = LayerNorm(d_model)
 
     def forward(self, x, T=1.0):
+        if self.add_norm:
+            x = self.norm(x)
         return F.log_softmax(self.proj(x)/T, dim=-1)
 
 class FaNat(nn.Module):
-    def __init__(self, src_embed, encoder, acembed_extractor, embed_mapper, decoder, ctc_gen, att_gen, pe):
+    def __init__(self, src_embed, encoder, acembed_extractor, embed_mapper, decoder, ctc_gen, att_gen, pe, interctc_gen=None, interce_gen=None):
         super(FaNat, self).__init__()
         self.src_embed = src_embed
         self.encoder = encoder
@@ -69,15 +76,25 @@ class FaNat(nn.Module):
         self.ctc_generator = ctc_gen
         self.att_generator = att_gen
         self.pe = pe
+        if interctc_gen is not None:
+            self.interctc_generator = interctc_gen
+        if interce_gen is not None:
+            self.interce_generator = interce_gen
 
     def forward(self, src, src_mask, src_size, tgt_label, ylen, args):
         # 1. compute ctc output
         x, x_mask = self.src_embed(src, src_mask)
-        enc_h = self.encoder(x, x_mask)
-        if args.ctc_alpha > 0:
+        enc_h = self.encoder(x, x_mask, args.interctc_alpha)
+        if args.ctc_alpha > 0 and args.interctc_alpha == 0:
             ctc_out = self.ctc_generator(enc_h)
+            interctc_out = 0
+        elif args.ctc_alpha > 0 and args.interctc_alpha > 0:
+            enc_h, inter_h = enc_h[0], enc_h[1]
+            ctc_out = self.ctc_generator(enc_h)
+            interctc_out = self.interctc_generator(inter_h)
         else:
             ctc_out = enc_h.new_zeros(enc_h.size())
+            interctc_out = 0
         
         # 2. prepare different masks,
         if args.use_trigger:
@@ -125,11 +142,16 @@ class FaNat(nn.Module):
         if args.use_src:
             if args.src_trigger:
                 x_mask = trigger_mask
-            dec_h = self.decoder(pred_embed, enc_h, x_mask, tgt_mask)
+            dec_h = self.decoder(pred_embed, enc_h, x_mask, tgt_mask, args.interce_alpha)
+            if args.interce_alpha > 0:
+                dec_h, interce_h = dec_h[0], dec_h[1]
+                interce_out = self.interce_generator(interce_h)
+            else:
+                interce_out = 0
         else:
             dec_h = self.decoder(pred_embed, tgt_mask)
         att_out = self.att_generator(dec_h)
-        return ctc_out, att_out, pred_embed, tgt_mask_bidi
+        return ctc_out, att_out, pred_embed, tgt_mask_bidi, interctc_out, interce_out
 
     def viterbi_align(self, ctc_out, src_mask, src_size, ys, ylens, blank, sample_dist, sample_topk):
         """

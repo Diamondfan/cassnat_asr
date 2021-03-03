@@ -134,7 +134,7 @@ if [ $stage -le 6 ] && [ $end_stage -ge 6 ]; then
     --train_config conf/transformer.yaml \
     --data_config conf/data.yaml \
     --batch_size 16 \
-    --epochs 120 \
+    --epochs 100 \
     --save_epoch 40 \
     --learning_rate 0.001 \
     --min_lr 0.00001 \
@@ -153,7 +153,7 @@ fi
 
 out_name='averaged.mdl'
 if [ $stage -le 7 ] && [ $end_stage -ge 7 ]; then
-  last_epoch=81  # Need to be modified according to the convergence
+  last_epoch=61  # Need to be modified according to the convergence
   
   average_checkpoints.py \
     --exp_dir $asr_exp \

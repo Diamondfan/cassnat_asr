@@ -2,15 +2,27 @@ vocab_file: data/dict/vocab_wp.txt
 global_cmvn: data/fbank/cmvn.ark
 
 #model configuration
+model_type: "conformer"
 input_size: 240
-N_enc: 12
+N_enc: 10
 N_extra: 1
-N_map: 3
+N_map: 2
 N_dec: 4
 d_model: 512 #256
 d_ff: 2048
 n_head: 8 #4
 dropout: 0
+
+#conformer related
+share_ff: False
+d_encff: 1024
+d_decff: 1024 #2048
+pos_type: "relative"
+enc_max_relative_len: 20
+enc_kernel_size: 31
+use_conv_dec: True
+dec_max_relative_len: 8
+dec_kernel_size: 3
 
 n_features: 80
 vocab_size: 4990
@@ -23,10 +35,10 @@ use_gpu: True
 
 #beam_decode
 beam_width: 1
-ctc_beam: 0 #20
+ctc_beam: 1 #20
 ctc_pruning: 0 #30
 ctc_lp: 0 #2
-ctc_lm_weight: 0 #0.7
+ctc_lm_weight: 0.1 #0.7
 length_penalty: 0
 T: 1.0
  
@@ -34,7 +46,8 @@ use_trigger: True
 use_src: True
 src_trigger: False
 use_unimask: False
-context_trigger: 0
+left_trigger: 2
+right_trigger: 2
 sample_dist: 0
 sample_num: 50
 

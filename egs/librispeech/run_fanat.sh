@@ -13,7 +13,9 @@ end_stage=1
 lm_model=exp/newlm/averaged.mdl
 encoder_initial_model=exp_confomer_baseline/1kh_conformer_rel_maxlen20_e10d5_accum2_specaug_tmax10_multistep2k_40k_160k_ln/averaged.mdl
 
-asr_exp=exp/conv_fanat_e10m2d3_max_specaug_multistep_initenc_no_convdec/
+#asr_exp=exp/conv_fanat_e10m2d4_max_specaug_multistep_initenc_convdec_maxlen8_kernel3_ctxtrig1/
+asr_exp=exp/conv_fanat_best_interce05_att05/
+
 if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
 
   if [ ! -d $asr_exp ]; then
@@ -34,6 +36,9 @@ if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
     --weight_decay 0 \
     --label_smooth 0.1 \
     --ctc_alpha 1 \
+    --interctc_alpha 0 \
+    --att_alpha 0.5 \
+    --interce_alpha 0.5 \
     --use_cmvn \
     --init_encoder \
     --resume_model $encoder_initial_model \
@@ -45,7 +50,7 @@ fi
 
 out_name='averaged.mdl'
 if [ $stage -le 2 ] && [ $end_stage -ge 2 ]; then
-  last_epoch=80  # need to be modified
+  last_epoch=75  # need to be modified
   
   average_checkpoints.py \
     --exp_dir $asr_exp \
@@ -61,12 +66,12 @@ if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
   exp=$asr_exp
 
   bpemodel=data/dict/bpemodel_unigram_5000
-  rnnlm_model=$lm_model
+  rnnlm_model=exp_cassnat/tf_unilm/averaged.mdl
   global_cmvn=data/fbank/cmvn.ark
   test_model=$asr_exp/$out_name
   decode_type='att_only'
   beam1=1
-  beam2=0 
+  beam2=1
   ctcwt=0
   lmwt=0
   ctclm=0

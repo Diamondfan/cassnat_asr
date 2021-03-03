@@ -2,19 +2,22 @@ vocab_file: data/dict/vocab_wp.txt
 global_cmvn: data/fbank/cmvn.ark
 
 #model configuration
-model_type: "transformer"
+model_type: "conformer"
 input_size: 240
-N_enc: 12
-N_dec: 6
+N_enc: 10
+N_dec: 5
 d_model: 512 #256
 d_ff: 2048
 n_head: 8 #4
 dropout: 0
 
 #conformer related
-#pos_type: 'relative'
-#max_relative_len: 20
-#kernel_size: 31
+share_ff: False
+d_encff: 1024
+d_decff: 2048
+pos_type: "relative"
+max_relative_len: 2500
+kernel_size: 31
 
 n_features: 80
 vocab_size: 4990

@@ -54,12 +54,21 @@ class Encoder(nn.Module):
         layer = SelfAttLayer(size, self_attn, feed_forward, dropout)
         self.layers = clones(layer, N)
         self.norm = LayerNorm(layer.size)
+        self.num_layers = N
         
-    def forward(self, x, mask):
+    def forward(self, x, mask, interctc_alpha=0):
         "Pass the input (and mask) through each layer in turn."
+        n_layer = 0
         for layer in self.layers:
-            x = layer(x, mask)
-        return self.norm(x)
+            x = layer(x, mask, pos_embed)
+            if interctc_alpha > 0 and n_layer == int(self.num_layers / 2) - 1:
+                inter_out = x
+            n_layer += 1
+
+        if interctc_alpha > 0:
+            return (self.norm(x), inter_out)
+        else:
+            return self.norm(x)
 
 class AcEmbedExtractor(nn.Module):
     "Extractor sub-unit level acoustic embedding with CTC segments"
@@ -93,10 +102,19 @@ class Decoder(nn.Module):
         layer = MixAttLayer(size, self_attn, src_attn, feed_forward, dropout)
         self.layers = clones(layer, N)
         self.norm = LayerNorm(layer.size)
+        self.num_layers = N
         
-    def forward(self, x, memory, src_mask, tgt_mask):
+    def forward(self, x, memory, src_mask, tgt_mask, interce_alpha=0):
+        n_layer = 0
         for layer in self.layers:
             x = layer(x, memory, src_mask, tgt_mask)
-        return self.norm(x)
+            if interce_alpha > 0 and n_layer == int(self.num_layers / 2) - 1:
+                interce_out = x
+            n_layer += 1
+
+        if interce_alpha > 0:
+            return (self.norm(x), interce_out)
+        else:
+            return self.norm(x)
 
 
