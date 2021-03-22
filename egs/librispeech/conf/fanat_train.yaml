@@ -17,7 +17,7 @@ d_decff: 1024 #2048
 pos_type: "relative"
 enc_max_relative_len: 20
 enc_kernel_size: 31
-use_conv_dec: True #False
+use_conv_dec: True
 dec_max_relative_len: 8
 dec_kernel_size: 3
 

@@ -6,8 +6,8 @@
 data=/data/nas1/user/ruchao/Database/LibriSpeech/
 lm_data=/data/nas1/user/ruchao/Database/LibriSpeech/libri_lm
 
-stage=6
-end_stage=6
+stage=7
+end_stage=8
 featdir=data/fbank
 
 unit=wp         #word piece
@@ -153,7 +153,7 @@ fi
 
 out_name='averaged.mdl'
 if [ $stage -le 7 ] && [ $end_stage -ge 7 ]; then
-  last_epoch=61  # Need to be modified according to the convergence
+  last_epoch=101  # Need to be modified according to the convergence
   
   average_checkpoints.py \
     --exp_dir $asr_exp \
@@ -180,18 +180,19 @@ if [ $stage -le 8 ] && [ $end_stage -ge 8 ]; then
   #rnnlm_model=$lm_exp/$out_name
   rnnlm_model=exp_cassnat/newlm/averaged.mdl
   global_cmvn=data/fbank/cmvn.ark
-  decode_type='att_only'
-  beam1=1 # set in conf/decode.yaml, att beam
-  beam2=0 # set in conf/decode.yaml, ctc beam
+  decode_type='ctc_att'
+  beam1=20 # set in conf/decode.yaml, att beam
+  beam2=30 # set in conf/decode.yaml, ctc beam
   lp=0 #set in conf/decode.yaml, length penalty
   ctcwt=0.4
-  lmwt=0.6
-  nj=4
-  batch_size=4
+  lmwt=0
+  nj=1
+  batch_size=1
+  test_set="test_clean"
   
   for tset in $test_set; do
     echo "Decoding $tset..."
-    desdir=$exp/${decode_type}_decode_average_ctc${ctcwt}_bm1_${beam1}_bm2_${beam2}_lmwt${lmwt}_lp${lp}/$tset/
+    desdir=$exp/${decode_type}_decode_average_ctc${ctcwt}_bm1_${beam1}_bm2_${beam2}_lmwt${lmwt}_lp${lp}_bth1_rtf/$tset/
 
     if [ ! -d $desdir ]; then
       mkdir -p $desdir

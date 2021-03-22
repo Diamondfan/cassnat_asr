@@ -4,7 +4,7 @@
 #exp=exp/fanat_d512_multistep_specaug_notrig_src_uni_embed05_ce
 #exp=exp/fanat_d512_multistep_specaug_notrig_src_uni_noebdloss
 #exp=exp/fanat_d512_multistep_notrig_nosrc_nouni_ctc1_specaug_start5
-exp=exp/fanat_large_specaug_multistep_trig_src_initenc
+#exp=exp/fanat_large_specaug_multistep_trig_src_initenc
 
 for testset in dev test; do
   for x in $exp/*att*average*/$testset; do

@@ -48,6 +48,7 @@ def main():
     parser.add_argument("--interctc_alpha", default=0, type=float, help="Task ratio of Intermediate CTC")
     parser.add_argument("--att_alpha", default=1, type=float, help="Task ratio of decoder ce loss")
     parser.add_argument("--interce_alpha", default=0, type=float, help="Task ratio of Intermediate CE loss")
+    parser.add_argument("--interce_location", default=None, type=str, help="where to add interce loss")
     parser.add_argument("--embed_alpha", default=0, type=float, help="Task ratio of embedding prediction loss")
     parser.add_argument("--embed_loss_type", default='l2', type=str, help="Type of embedding prediction loss")
     parser.add_argument("--resume_model", default='', type=str, help="The model path to resume")
@@ -95,7 +96,7 @@ def main():
 def main_worker(rank, world_size, args, backend='nccl'):
     args.rank, args.world_size = rank, world_size
     if args.distributed:
-        dist.init_process_group(backend=backend, init_method='tcp://localhost:12345',
+        dist.init_process_group(backend=backend, init_method='tcp://localhost:12456',
                                     world_size=world_size, rank=rank)
     
     ## 2. Define model and optimizer
@@ -121,8 +122,12 @@ def main_worker(rank, world_size, args, backend='nccl'):
             print("Loading model from {}".format(args.resume_model))
         checkpoint = torch.load(args.resume_model, map_location='cpu')['state_dict']
         for name, param in model.named_parameters():
-            if name.split('.')[0] in ['src_embed', 'encoder', 'ctc_generator']:
-                param.data.copy_(checkpoint['module.'+name])
+            if name.split('.')[0] in ['src_embed', 'encoder', 'ctc_generator', 'interctc_generator']:
+                try:
+                    param.data.copy_(checkpoint['module.'+name])
+                except:
+                    if rank == 0:
+                        print("No param of {} in resume model".format(name))
        
         #model.load_state_dict(checkpoint["state_dict"])
         #optimizer.load_state_dict(checkpoint['optimizer'])
@@ -349,7 +354,7 @@ def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_trai
             embed_loss = torch.Tensor([0])
 
         if args.interctc_alpha > 0:
-            interctc_loss = criterion[3](inter_out.transpose(0,1), tgt_label, feat_sizes, label_sizes)
+            interctc_loss = criterion[3](interctc_out.transpose(0,1), tgt_label, feat_sizes, label_sizes)
             loss += args.interctc_alpha * interctc_loss
         if args.interce_alpha > 0:
             interce_loss = criterion[4](interce_out.view(-1, interce_out.size(-1)), tgt_label.view(-1))

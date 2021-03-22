@@ -6,7 +6,7 @@
 data=/NAS5/speech/user/ruchao/Database/Aishell1/
 lm_data=/data/nas1/user/ruchao/Database/LibriSpeech/libri_lm
 
-stage=8
+stage=7
 end_stage=8
 featdir=data/fbank
 
@@ -107,14 +107,16 @@ if [ $stage -le 5 ] && [ $end_stage -ge 5 ]; then
   echo "[Stage 5] External LM Training Finished."
 fi
 
+exp=exp/ar_convenc_best_interctc05_ctc05/
+
 if [ $stage -le 6 ] && [ $end_stage -ge 6 ]; then
-  exp=exp/1kh_d512_multistep_ctc1_accum1_bth32_specaug/
+  #exp=exp/ar_convenc_e6d6_d512_multistep30k_150k_ctc1_specaugt4m005_warp/
 
   if [ ! -d $exp ]; then
     mkdir -p $exp
   fi
 
-  CUDA_VISIBLE_DEVICES="0,1,2,3" asr_train.py \
+  CUDA_VISIBLE_DEVICES="4,5,6,7" asr_train.py \
     --exp_dir $exp \
     --train_config conf/transformer.yaml \
     --data_config conf/data.yaml \
@@ -124,13 +126,14 @@ if [ $stage -le 6 ] && [ $end_stage -ge 6 ]; then
     --anneal_lr_ratio 0.5 \
     --learning_rate 0.001 \
     --min_lr 0.00001 \
-    --patience 1 \
     --end_patience 10 \
     --opt_type "multistep" \
     --weight_decay 0 \
     --label_smooth 0.1 \
-    --ctc_alpha 1 \
+    --ctc_alpha 0.5 \
+    --interctc_alpha 0.5 \
     --use_cmvn \
+    --seed 1234 \
     --print_freq 50 > $exp/train.log 2>&1 &
     
   echo "[Stage 6] ASR Training Finished."
@@ -138,14 +141,14 @@ fi
 
 out_name='averaged.mdl'
 if [ $stage -le 7 ] && [ $end_stage -ge 7 ]; then
-  exp=exp/1kh_d512_multistep_ctc1_accum1_bth32_specaug
-  last_epoch=70
+  #exp=exp/1kh_d512_multistep_ctc1_accum1_bth32_specaug
+  last_epoch=69
   
   average_checkpoints.py \
     --exp_dir $exp \
     --out_name $out_name \
     --last_epoch $last_epoch \
-    --num 11 
+    --num 12
   
   #lm_exp=exp/libri_tflm_unigram_4card_cosineanneal_ep10/
   #last_epoch=9  
@@ -161,20 +164,21 @@ if [ $stage -le 7 ] && [ $end_stage -ge 7 ]; then
 fi
 
 if [ $stage -le 8 ] && [ $end_stage -ge 8 ]; then
-  exp=exp/1kh_d512_multistep_ctc1_accum1_bth32_specaug
+  #exp=exp/1kh_d512_multistep_ctc1_accum1_bth32_specaug
 
   test_model=$exp/$out_name
   rnnlm_model=exp/averaged_lm.mdl
   global_cmvn=data/fbank/cmvn.ark
   decode_type='att_only'
-  beam1=5 # check beam1 and beam2 in conf/decode.yaml, att beam
-  beam2=0 #20 # ctc beam
-  ctcwt=0 #0.5
+  beam1=10 # check beam1 and beam2 in conf/decode.yaml, att beam
+  beam2=10 #20 # ctc beam
   lp=0
+  ctcwt=0.4
   lmwt=0 #0.7
   ctclm=0 #0.7
   ctclp=0 #2
   nj=4
+  batch_size=8
   test_set="dev test"
 
   for tset in $test_set; do
@@ -191,19 +195,18 @@ if [ $stage -le 8 ] && [ $end_stage -ge 8 ]; then
     utils/split_scp.pl data/$tset/feats.scp $split_scps || exit 1;
     
     $cmd JOB=1:$nj $desdir/log/decode.JOB.log \
-      CUDA_VISIBLE_DEVICES="1" asr_decode.py \
+      CUDA_VISIBLE_DEVICES=JOB asr_decode.py \
         --test_config conf/decode.yaml \
         --lm_config conf/lm.yaml \
         --data_path $desdir/feats.JOB.scp \
         --resume_model $test_model \
         --result_file $desdir/token_results.JOB.txt \
-        --batch_size 8 \
+        --batch_size $batch_size \
         --decode_type $decode_type \
         --ctc_weight $ctcwt \
         --rnnlm $rnnlm_model \
         --lm_weight $lmwt \
         --max_decode_ratio 0 \
-        --max_decode_step 60 \
         --use_cmvn \
         --global_cmvn $global_cmvn \
         --print_freq 20 

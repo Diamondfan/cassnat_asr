@@ -130,6 +130,8 @@ class FaNat(nn.Module):
         pe = self.pe.type_as(src).unsqueeze(0).repeat(bs, 1, 1)[:,:ymax,:]
         ac_embed = self.acembed_extractor(pe, enc_h, trigger_mask)
         pred_embed = self.embed_mapper(ac_embed, tgt_mask_bidi)
+        if args.interce_alpha > 0 and args.interce_location == 'after_mapping':
+            interce_out = self.interce_generator(pred_embed[0])
 
         # 4. decoder, output units generation
         if args.use_unimask:
@@ -142,11 +144,11 @@ class FaNat(nn.Module):
         if args.use_src:
             if args.src_trigger:
                 x_mask = trigger_mask
-            dec_h = self.decoder(pred_embed, enc_h, x_mask, tgt_mask, args.interce_alpha)
-            if args.interce_alpha > 0:
+            dec_h = self.decoder(pred_embed, enc_h, x_mask, tgt_mask, args.interce_alpha, args.interce_location)
+            if args.interce_alpha > 0 and args.interce_location != 'after_mapping':
                 dec_h, interce_h = dec_h[0], dec_h[1]
                 interce_out = self.interce_generator(interce_h)
-            else:
+            elif args.interce_alpha == 0:
                 interce_out = 0
         else:
             dec_h = self.decoder(pred_embed, tgt_mask)
@@ -412,17 +414,18 @@ class FaNat(nn.Module):
         att_out = self.att_generator(dec_h)
         
         if args.sample_num > 1:
-            _, seql, dim = att_out.size()
+            _, seql, dim = att_out.size() 
             att_pred = att_out.argmax(-1)
             lm_input = torch.cat([att_out.new_zeros(att_out.size(0), 1).fill_(sos).long(), att_pred[:,:-1]], 1)
             lm_tgt_mask = tgt_mask1 & self.subsequent_mask(ymax).type_as(tgt_mask1)
-            lm_out = lm_model(lm_input, lm_tgt_mask)
+            # this part used for lm rescore
+            #lm_out = lm_model(lm_input, lm_tgt_mask)
             # this part use ast baseline to do the score part
-            #x, src_mask = lm_model.src_embed(src, x_mask)
-            #enc_h = lm_model.encoder(x, src_mask)
-            #enc_h = enc_h.unsqueeze(1).repeat(1, args.sample_num, 1, 1).reshape(-1, enc_h.size(1), enc_h.size(2))
-            #src_mask = src_mask.unsqueeze(1).repeat(1, args.sample_num, 1, 1).reshape(-1, src_mask.size(1), src_mask.size(2))
-            #lm_out = lm_model.forward_att(enc_h, lm_input, src_mask, lm_tgt_mask)
+            x, src_mask = lm_model.src_embed(src, x_mask)
+            enc_h = lm_model.encoder(x, src_mask)
+            enc_h = enc_h.unsqueeze(1).repeat(1, args.sample_num, 1, 1).reshape(-1, enc_h.size(1), enc_h.size(2))
+            src_mask = src_mask.unsqueeze(1).repeat(1, args.sample_num, 1, 1).reshape(-1, src_mask.size(1), src_mask.size(2))
+            lm_out = lm_model.forward_att(enc_h, lm_input, src_mask, lm_tgt_mask)
             
             lm_score = torch.gather(lm_out, -1, att_pred.unsqueeze(-1)).squeeze(-1)
             lm_score = lm_score.reshape(-1, args.sample_num, seql).masked_fill(tgt_mask.reshape(-1, args.sample_num, tgt_mask.size(-1))==0, 0)
@@ -430,6 +433,11 @@ class FaNat(nn.Module):
             prob_sum = lm_score.sum(-1) / (lm_score != 0).sum(-1).float()
             max_indices = prob_sum.max(-1, keepdim=True)[1]
             att_out = torch.gather(att_out, 1, max_indices.unsqueeze(2).unsqueeze(3).repeat(1,1,seql,dim)).squeeze(1)
+            if args.save_embedding:
+                ac_embed = ac_embed.reshape(-1, args.sample_num, ac_embed.size(-2), ac_embed.size(-1))
+                ac_embed = torch.gather(ac_embed, 1, max_indices.unsqueeze(2).unsqueeze(3).repeat(1,1,ac_embed,size(-2),ac_embed.size(-1))).squeeze(1)
+                pred_embed = pred_embed.reshape(-1, args.sample_num, pred_embed.size(-2), pred_embed.size(-1))
+                pred_embed = torch.gather(pred_embed, 1, max_indices.unsqueeze(2).unsqueeze(3).repeat(1,1,pred_embed,size(-2),pred_embed.size(-1))).squeeze(1)
             bs = att_out.size(0)
             ylen = ylen.reshape(bs, args.sample_num).gather(1, max_indices)
             ymax = torch.max(ylen).item()

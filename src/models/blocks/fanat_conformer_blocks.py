@@ -164,7 +164,7 @@ class Decoder(nn.Module):
         self.norm = LayerNorm(layer.size)
         self.num_layers = N
         
-    def forward(self, x, memory, src_mask, tgt_mask, interce_alpha=0):
+    def forward(self, x, memory, src_mask, tgt_mask, interce_alpha=0, interce_location=None):
         if self.pos_type == "relative":
             x, pos_embed = x[0], x[1]
         elif self.pos_type == "absolute":
@@ -173,11 +173,12 @@ class Decoder(nn.Module):
         n_layer = 0
         for layer in self.layers:
             x = layer(x, memory, src_mask, tgt_mask, pos_embed)
-            if interce_alpha > 0 and n_layer == int(self.num_layers / 2) - 1:
+            if interce_alpha > 0 and interce_location !='after_mapping' and n_layer == int(self.num_layers / 2) - 1:
                 interce_out = x
             n_layer += 1
 
-        if interce_alpha > 0:
+        if interce_alpha > 0 and interce_location != 'after_mapping':
             return (self.norm(x), interce_out)
         else:
             return self.norm(x)
+

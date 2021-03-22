@@ -36,12 +36,9 @@ def main():
     parser.add_argument("--resume_model", default='', type=str, help="Model to do evaluation")
     parser.add_argument("--result_file", default='', type=str, help="File to save the results")
     parser.add_argument("--print_freq", default=100, type=int, help="Number of iter to print")
-    parser.add_argument("--decode_type", default='att', type=str, help="CTC, ATT or ctc-att hybrid decoding")
-    parser.add_argument("--ctc_weight", type=float, default=0.0, help="CTC weight in joint decoding")
     parser.add_argument("--rnnlm", type=str, default=None, help="RNNLM model file to read")
     parser.add_argument("--lm_weight", type=float, default=0.1, help="RNNLM weight")
     parser.add_argument("--word_embed", default='', type=str, help='Ground truth of word embedding')
-    parser.add_argument("--save_embedding", default=False, action='store_true', help="save embedding for analysis")
     parser.add_argument("--max_decode_ratio", type=float, default=0, help='Decoding step to length ratio')
     parser.add_argument("--seed", default=1, type=int, help="random number seed")
 
@@ -98,14 +95,10 @@ def main():
             setattr(lm_args, key, val)
         
         lm_args.vocab_size = vocab.n_words
-        #from models.lm import make_model as make_lm_model
-        #lm_model = make_lm_model(lm_args)
-        if lm_args.model_type == 'transformer':
-            from models.transformer import make_model as make_lm_model
-        if lm_args.model_type == 'conformer':
-            from models.conformer import make_model as make_lm_model
-        lm_args.interctc_alpha = 0
-        lm_model = make_lm_model(args.input_size, lm_args)
+        from models.lm import make_model as make_lm_model
+        lm_model = make_lm_model(lm_args)
+        #from models.transformer import make_model as make_lm_model
+        #lm_model = make_lm_model(args.input_size, lm_args)
         print("Loading language model from {}".format(args.rnnlm))
         checkpoint_lm = torch.load(args.rnnlm, map_location='cpu')
         model_state = checkpoint_lm["state_dict"]
@@ -150,6 +143,7 @@ def main():
     progress = util.ProgressMeter(len(test_loader), batch_time)
     end = time.time()
     
+    args.decode_type = "att_only"
     out_file = open(args.result_file, 'w')
     args.num_correct, args.total = 0, 0
     args.length_correct, args.length_total = 0, 0
@@ -166,16 +160,10 @@ def main():
                 src, src_mask = src.cuda(), src_mask.cuda()
                 feat_sizes = feat_sizes.cuda()
                 labels, label_sizes = labels.cuda(), label_sizes.cuda()
-
-            if args.decode_type == 'ctc_only':
-                recog_results = ctc_beam_decode(model, src, src_mask, feat_sizes, vocab, args, lm_model)
-            elif args.decode_type == 'ctc_att':
-                batch_top_seqs = ctc_beam_decode(model, src, src_mask, feat_sizes, vocab, args, lm_model)
-                recog_results, args = model.beam_decode(src, src_mask, feat_sizes, vocab, args, lm_model, batch_top_seqs, labels=labels, label_sizes=label_sizes)
-            elif args.decode_type == 'adapt_sample':
-                recog_results = model.beam_decode_adapt_num(src, src_mask, feat_sizes, vocab, args, lm_model, labels=labels, label_sizes=label_sizes)
-            else:
-                recog_results, args = model.beam_decode(src, src_mask, feat_sizes, vocab, args, lm_model, labels=labels, label_sizes=label_sizes)
+            import pdb
+            pdb.set_trace()
+            
+            recog_results, args = model.beam_decode(src, src_mask, feat_sizes, vocab, args, lm_model, labels=labels, label_sizes=label_sizes)
             
             for j in range(len(utt_list)):
                 hyp = []

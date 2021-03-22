@@ -42,7 +42,7 @@ def main():
     parser.add_argument("--max_decode_ratio", type=float, default=0, help='Decoding step to length ratio')
     parser.add_argument("--seed", default=1, type=int, help="random number seed")
 
-    os.environ['CUDA_VISIBLE_DEVICES'] = str(int(os.environ['CUDA_VISIBLE_DEVICES']) % 4)
+    os.environ['CUDA_VISIBLE_DEVICES'] = str(int(os.environ['CUDA_VISIBLE_DEVICES']) % 4 + 4)
     args = parser.parse_args()
     with open(args.test_config) as f:
         config = yaml.safe_load(f)
@@ -71,6 +71,8 @@ def main():
     vocab = Vocab(args.vocab_file)
     args.vocab_size = vocab.n_words
     args.rank = 0
+    args.interctc_alpha = 0
+
     assert args.input_size == (args.left_ctx + args.right_ctx + 1) // args.skip_frame * args.n_features
     if args.model_type == "transformer":
         model = make_transformer(args.input_size, args)

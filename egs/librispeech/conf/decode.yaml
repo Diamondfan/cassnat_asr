@@ -16,7 +16,7 @@ share_ff: False
 d_encff: 1024
 d_decff: 2048
 pos_type: "relative"
-max_relative_len: 2500
+max_relative_len: 20
 kernel_size: 31
 
 n_features: 80

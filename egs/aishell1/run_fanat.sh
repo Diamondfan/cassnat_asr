@@ -2,51 +2,51 @@
 . cmd.sh
 . path.sh
 
-stage=3
-end_stage=3
+stage=1
+end_stage=1
+
+encoder_initial_model=exp/ar_convenc_best_interctc05_ctc05/averaged.mdl
+asr_exp=exp/conv_fanat_convdec_maxlen4_interctc05_interce01_ce09_aftermapping/
 
 if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
-  #exp=exp/fanat_multistep_notrig_nosrc_nouni_ctc1/
-  exp=exp/fanat_large_specaug_multistep_trig_src_initenc
 
-  if [ ! -d $exp ]; then
-    mkdir -p $exp
+  if [ ! -d $asr_exp ]; then
+    mkdir -p $asr_exp
   fi
 
-  CUDA_VISIBLE_DEVICES="4,5,6,7" fanat_train.py \
-    --exp_dir $exp \
+  CUDA_VISIBLE_DEVICES="0,1,2,3" fanat_train.py \
+    --exp_dir $asr_exp \
     --train_config conf/fanat_train.yaml \
     --data_config conf/data.yaml \
     --batch_size 32 \
     --epochs 100 \
     --save_epoch 30 \
-    --anneal_lr_ratio 0.5 \
-    --patience 1 \
     --end_patience 10 \
     --learning_rate 0.001 \
     --min_lr 0.00001 \
     --opt_type "multistep" \
     --weight_decay 0 \
     --label_smooth 0.1 \
-    --ctc_alpha 1 \
-    --init_encoder \
-    --resume_model exp/1kh_d512_multistep_ctc1_accum1_bth32_specaug/averaged.mdl \
+    --ctc_alpha 0.5 \
+    --interctc_alpha 0.5 \
+    --att_alpha 0.9 \
+    --interce_alpha 0.1 \
+    --interce_location 'after_mapping' \
     --use_cmvn \
-    --print_freq 50 > $exp/train.log 2>&1 &
+    --init_encoder \
+    --resume_model $encoder_initial_model \
+    --seed 1234 \
+    --print_freq 50 > $asr_exp/train.log 2>&1 &
     
-    #--embed_loss_type 'l2' \
-    #--init_encoder \
-    #--knowlg_dist \
   echo "[Stage 1] ASR Training Finished."
 fi
 
 out_name='averaged.mdl'
 if [ $stage -le 2 ] && [ $end_stage -ge 2 ]; then
-  exp=exp/fanat_large_specaug_multistep_trig_src_initenc
-  last_epoch=93
+  last_epoch=69
   
   average_checkpoints.py \
-    --exp_dir $exp \
+    --exp_dir $asr_exp \
     --out_name $out_name \
     --last_epoch $last_epoch \
     --num 12
@@ -56,28 +56,29 @@ if [ $stage -le 2 ] && [ $end_stage -ge 2 ]; then
 fi
 
 if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
-  exp=exp/fanat_large_specaug_multistep_trig_src_initenc
+  exp=$asr_exp
 
-  rnnlm_model=exp/1kh_d512_multistep_ctc1_accum1_bth32_specaug/averaged.mdl
+  rnnlm_model=exp/ar_convenc_best_interctc05_ctc05/averaged.mdl
   global_cmvn=data/fbank/cmvn.ark
   test_model=$exp/$out_name
-  decode_type='oracle_att' #_only'
-  beam1=1 # check beam1 and beam2 in conf/decode.yaml, att beam
-  beam2=0 #10 # ctc beam
+  decode_type='att_only'
+  beam1=1
+  beam2=1 
   ctcwt=0
   lmwt=0
-  ctclm=0 #0.7
-  ctclp=0 #2
-  lp=0
+  ctclm=0
+  ctclp=0
+  s_num=50
   s_dist=0
-  s_num=0
+  lp=0
   nj=4
+  batch_size=4
   test_set="dev test"
 
   for tset in $test_set; do
     echo "Decoding $tset..."
-    desdir=$exp/${decode_type}_decode_average_ctc${ctcwt}_bm1_${beam1}_bm2_${beam2}_lmwt${lmwt}_ctclm${ctclm}_ctclp${ctclp}_lp${lp}/$tset/
-    #desdir=$exp/${decode_type}_decode_average_bm1_${beam1}_sampdist_${s_dist}_samplenum_${s_num}_newlm${lmwt}/$tset/
+    desdir=$exp/${decode_type}_decode_average_bm1_${beam1}_sampdist_${s_dist}_samplenum_${s_num}_newlm${lmwt}/$tset/
+
     if [ ! -d $desdir ]; then
       mkdir -p $desdir
     fi
@@ -96,14 +97,13 @@ if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
         --text_label data/$tset/token.scp \
         --resume_model $test_model \
         --result_file $desdir/token_results.JOB.txt \
-        --batch_size 8 \
+        --batch_size $batch_size \
         --decode_type $decode_type \
         --ctc_weight $ctcwt \
         --rnnlm $rnnlm_model \
         --lm_weight $lmwt \
         --max_decode_ratio 0 \
         --use_cmvn \
-        --word_embed exp/1kh_d512_multistep_ctc1_accum1_bth32_specaug/averaged.mdl \
         --global_cmvn $global_cmvn \
         --print_freq 20 
 

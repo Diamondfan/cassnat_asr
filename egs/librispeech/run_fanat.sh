@@ -10,11 +10,13 @@
 
 stage=1
 end_stage=1
-lm_model=exp/newlm/averaged.mdl
-encoder_initial_model=exp_confomer_baseline/1kh_conformer_rel_maxlen20_e10d5_accum2_specaug_tmax10_multistep2k_40k_160k_ln/averaged.mdl
+lm_model=exp_cassnat/newlm/averaged.mdl
+encoder_initial_model=exp/1kh_conformer_rel_maxlen20_e10d5_accum2_specaug_tmax10_multistep2k_40k_160k_ln/averaged.mdl
+#encoder_initial_model=exp/1kh_conformer_baseline_interctc05/averaged.mdl
 
-#asr_exp=exp/conv_fanat_e10m2d4_max_specaug_multistep_initenc_convdec_maxlen8_kernel3_ctxtrig1/
-asr_exp=exp/conv_fanat_best_interce05_att05/
+#asr_exp=exp/conv_fanat_e10m2d4_max_specaug_multistep_initenc_convdec_maxlen8_kernel3_ctxtrig1/ #_topk4/
+#asr_exp=exp/conv_fanat_best_interctc05_ctc05_interce01_ce09/
+asr_exp=exp/conv_fanat_best_interce01_ce09_aftermapping/
 
 if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
 
@@ -22,13 +24,13 @@ if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
     mkdir -p $asr_exp
   fi
 
-  CUDA_VISIBLE_DEVICES="0,1,2,3" fanat_train.py \
+  CUDA_VISIBLE_DEVICES="4,5,6,7" fanat_train.py \
     --exp_dir $asr_exp \
     --train_config conf/fanat_train.yaml \
     --data_config conf/data.yaml \
     --batch_size 16 \
     --epochs 100 \
-    --save_epoch 30 \
+    --save_epoch 40 \
     --end_patience 10 \
     --learning_rate 0.001 \
     --min_lr 0.00001 \
@@ -37,8 +39,9 @@ if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
     --label_smooth 0.1 \
     --ctc_alpha 1 \
     --interctc_alpha 0 \
-    --att_alpha 0.5 \
-    --interce_alpha 0.5 \
+    --att_alpha 0.9 \
+    --interce_alpha 0.1 \
+    --interce_location 'after_mapping' \
     --use_cmvn \
     --init_encoder \
     --resume_model $encoder_initial_model \
@@ -50,7 +53,7 @@ fi
 
 out_name='averaged.mdl'
 if [ $stage -le 2 ] && [ $end_stage -ge 2 ]; then
-  last_epoch=75  # need to be modified
+  last_epoch=80  # need to be modified
   
   average_checkpoints.py \
     --exp_dir $asr_exp \
@@ -66,12 +69,13 @@ if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
   exp=$asr_exp
 
   bpemodel=data/dict/bpemodel_unigram_5000
-  rnnlm_model=exp_cassnat/tf_unilm/averaged.mdl
+  #rnnlm_model=$lm_model
+  rnnlm_model=exp_cassnat/newlm/averaged.mdl
   global_cmvn=data/fbank/cmvn.ark
   test_model=$asr_exp/$out_name
   decode_type='att_only'
   beam1=1
-  beam2=1
+  beam2=1 
   ctcwt=0
   lmwt=0
   ctclm=0
@@ -85,7 +89,7 @@ if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
 
   for tset in $test_set; do
     echo "Decoding $tset..."
-    desdir=$exp/${decode_type}_decode_average_bm1_${beam1}_sampdist_${s_dist}_samplenum_${s_num}_newlm${lmwt}_errdist/$tset/
+    desdir=$exp/${decode_type}_decode_average_bm1_${beam1}_sampdist_${s_dist}_samplenum_${s_num}_newlm${lmwt}/$tset/
 
     if [ ! -d $desdir ]; then
       mkdir -p $desdir
@@ -126,3 +130,4 @@ if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
     sclite -r $desdir/ref.wrd.trn -h $desdir/hyp.wrd.trn -i rm -o all stdout > $desdir/result.wrd.txt
   done
 fi
+
