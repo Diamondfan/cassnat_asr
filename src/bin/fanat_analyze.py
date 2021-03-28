@@ -37,12 +37,14 @@ def main():
     parser.add_argument("--result_file", default='', type=str, help="File to save the results")
     parser.add_argument("--print_freq", default=100, type=int, help="Number of iter to print")
     parser.add_argument("--rnnlm", type=str, default=None, help="RNNLM model file to read")
+    parser.add_argument("--rank_model", type=str, default='lm', help="model type to Rank ESA")
     parser.add_argument("--lm_weight", type=float, default=0.1, help="RNNLM weight")
     parser.add_argument("--word_embed", default='', type=str, help='Ground truth of word embedding')
+    parser.add_argument("--save_embedding", default=False, action='store_true', help="save embedding for analysis")
     parser.add_argument("--max_decode_ratio", type=float, default=0, help='Decoding step to length ratio')
     parser.add_argument("--seed", default=1, type=int, help="random number seed")
 
-    os.environ['CUDA_VISIBLE_DEVICES'] = str(int(os.environ['CUDA_VISIBLE_DEVICES']) % 4 + 4)
+    os.environ['CUDA_VISIBLE_DEVICES'] = str(int(os.environ['CUDA_VISIBLE_DEVICES']) % 4)
 
     args = parser.parse_args()
     with open(args.test_config) as f:
@@ -70,6 +72,8 @@ def main():
     args.vocab_size = vocab.n_words
     args.interctc_alpha = 0
     args.interce_alpha = 0
+    args.ctc_alpha = 1
+    args.interce_location='other'
 
     args.rank = 0
     assert args.input_size == (args.left_ctx + args.right_ctx + 1) // args.skip_frame * args.n_features
@@ -95,10 +99,18 @@ def main():
             setattr(lm_args, key, val)
         
         lm_args.vocab_size = vocab.n_words
-        from models.lm import make_model as make_lm_model
-        lm_model = make_lm_model(lm_args)
-        #from models.transformer import make_model as make_lm_model
-        #lm_model = make_lm_model(args.input_size, lm_args)
+        if args.rank_model == 'lm':
+            from models.lm import make_model as make_lm_model
+            lm_model = make_lm_model(lm_args)
+        
+        if args.rank_model == 'at_baseline':
+            if lm_args.model_type == 'transformer':
+                from models.transformer import make_model as make_lm_model
+            if lm_args.model_type == 'conformer':
+                from models.conformer import make_model as make_lm_model
+            lm_args.interctc_alpha = 0
+            lm_model = make_lm_model(args.input_size, lm_args)
+
         print("Loading language model from {}".format(args.rnnlm))
         checkpoint_lm = torch.load(args.rnnlm, map_location='cpu')
         model_state = checkpoint_lm["state_dict"]
@@ -147,6 +159,9 @@ def main():
     out_file = open(args.result_file, 'w')
     args.num_correct, args.total = 0, 0
     args.length_correct, args.length_total = 0, 0
+    if args.save_embedding:
+        ac_embeds, pred_embeds = [], []
+
     with torch.no_grad():
         model.eval()
         if lm_model is not None:
@@ -155,36 +170,51 @@ def main():
         for i, data in enumerate(test_loader):
             utt_list, feats, labels, feat_sizes, label_sizes = data
             src, src_mask = feats, (feats[:,:,0] != args.padding_idx).unsqueeze(1)
-        
+            tgt_label = labels[:,1:]
+            tgt = labels[:,:-1]
+            
             if args.use_gpu:
                 src, src_mask = src.cuda(), src_mask.cuda()
+                tgt_label = tgt_label.cuda()
+                tgt = tgt.cuda()
                 feat_sizes = feat_sizes.cuda()
                 labels, label_sizes = labels.cuda(), label_sizes.cuda()
-            import pdb
-            pdb.set_trace()
             
-            recog_results, args = model.beam_decode(src, src_mask, feat_sizes, vocab, args, lm_model, labels=labels, label_sizes=label_sizes)
+            #recog_results, args = model.beam_decode(src, src_mask, feat_sizes, vocab, args, lm_model, labels=labels, label_sizes=label_sizes)
+
+            ctc_out, att_out, pred_embed, tgt_mask_pred, interctc_out, interce_out = model(src, src_mask, feat_sizes, tgt_label, label_sizes, args)
+
+            if args.save_embedding:
+                ac_embeds.append((args.ac_embed[0], tgt_label.cpu()[0]))
+                pred_embeds.append((args.pred_embed[0], tgt_label.cpu()[0]))
             
-            for j in range(len(utt_list)):
-                hyp = []
-                for idx in recog_results[j][0]['hyp']:
-                    if idx == vocab.word2index['sos'] or idx == args.padding_idx:
-                        continue
-                    if idx == vocab.word2index['eos']:
-                        break
-                    hyp.append(vocab.index2word[idx])
-                #print(utt_list[j]+' '+' '.join(hyp))
-                #print(recog_results[j][0]['score_ctc'], recog_results[j][0]['score_lm'])
-                print(utt_list[j]+' '+' '.join(hyp), flush=True, file=out_file)
+            #for j in range(len(utt_list)):
+            #    hyp = []
+            #    for idx in recog_results[j][0]['hyp']:
+            #        if idx == vocab.word2index['sos'] or idx == args.padding_idx:
+            #            continue
+            #        if idx == vocab.word2index['eos']:
+            #            break
+            #        hyp.append(vocab.index2word[idx])
+            #    #print(utt_list[j]+' '+' '.join(hyp))
+            #    #print(recog_results[j][0]['score_ctc'], recog_results[j][0]['score_lm'])
+            #    print(utt_list[j]+' '+' '.join(hyp), flush=True, file=out_file)
             
             batch_time.update(time.time() - end)
             if i % args.print_freq == 0:
                 progress.print(i)
+            if i == 3000:
+                break
 
         progress.print(i)
         if args.test_hitrate:
             print(args.num_correct, args.total, args.num_correct / args.total)
             print(args.length_correct, args.length_total, args.length_correct / args.length_total)
+        if args.save_embedding:
+            import pickle
+            pickle.dump(ac_embeds, open('ac_embeddings', 'wb'))
+            pickle.dump(pred_embeds, open('pred_embeddings', 'wb'))
+
 
 if __name__ == '__main__':
     main()

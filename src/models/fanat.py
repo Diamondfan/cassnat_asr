@@ -133,6 +133,9 @@ class FaNat(nn.Module):
         if args.interce_alpha > 0 and args.interce_location == 'after_mapping':
             interce_out = self.interce_generator(pred_embed[0])
 
+        if args.save_embedding:
+            args.ac_embed, args.pred_embed = ac_embed[0].cpu(), pred_embed[0].cpu()
+        
         # 4. decoder, output units generation
         if args.use_unimask:
             pred_embed = torch.cat([args.sos_embed, pred_embed[:,:-1,:]], dim=1)
@@ -418,14 +421,17 @@ class FaNat(nn.Module):
             att_pred = att_out.argmax(-1)
             lm_input = torch.cat([att_out.new_zeros(att_out.size(0), 1).fill_(sos).long(), att_pred[:,:-1]], 1)
             lm_tgt_mask = tgt_mask1 & self.subsequent_mask(ymax).type_as(tgt_mask1)
-            # this part used for lm rescore
-            #lm_out = lm_model(lm_input, lm_tgt_mask)
-            # this part use ast baseline to do the score part
-            x, src_mask = lm_model.src_embed(src, x_mask)
-            enc_h = lm_model.encoder(x, src_mask)
-            enc_h = enc_h.unsqueeze(1).repeat(1, args.sample_num, 1, 1).reshape(-1, enc_h.size(1), enc_h.size(2))
-            src_mask = src_mask.unsqueeze(1).repeat(1, args.sample_num, 1, 1).reshape(-1, src_mask.size(1), src_mask.size(2))
-            lm_out = lm_model.forward_att(enc_h, lm_input, src_mask, lm_tgt_mask)
+            
+            if args.rank_model == 'lm':
+                # this part used for lm rescore
+                lm_out = lm_model(lm_input, lm_tgt_mask)
+            if args.rank_model == 'at_baseline':
+                # this part use ast baseline to do the score part
+                x, src_mask = lm_model.src_embed(src, x_mask)
+                enc_h = lm_model.encoder(x, src_mask)
+                enc_h = enc_h.unsqueeze(1).repeat(1, args.sample_num, 1, 1).reshape(-1, enc_h.size(1), enc_h.size(2))
+                src_mask = src_mask.unsqueeze(1).repeat(1, args.sample_num, 1, 1).reshape(-1, src_mask.size(1), src_mask.size(2))
+                lm_out = lm_model.forward_att(enc_h, lm_input, src_mask, lm_tgt_mask)
             
             lm_score = torch.gather(lm_out, -1, att_pred.unsqueeze(-1)).squeeze(-1)
             lm_score = lm_score.reshape(-1, args.sample_num, seql).masked_fill(tgt_mask.reshape(-1, args.sample_num, tgt_mask.size(-1))==0, 0)
@@ -434,10 +440,26 @@ class FaNat(nn.Module):
             max_indices = prob_sum.max(-1, keepdim=True)[1]
             att_out = torch.gather(att_out, 1, max_indices.unsqueeze(2).unsqueeze(3).repeat(1,1,seql,dim)).squeeze(1)
             if args.save_embedding:
-                ac_embed = ac_embed.reshape(-1, args.sample_num, ac_embed.size(-2), ac_embed.size(-1))
-                ac_embed = torch.gather(ac_embed, 1, max_indices.unsqueeze(2).unsqueeze(3).repeat(1,1,ac_embed,size(-2),ac_embed.size(-1))).squeeze(1)
-                pred_embed = pred_embed.reshape(-1, args.sample_num, pred_embed.size(-2), pred_embed.size(-1))
-                pred_embed = torch.gather(pred_embed, 1, max_indices.unsqueeze(2).unsqueeze(3).repeat(1,1,pred_embed,size(-2),pred_embed.size(-1))).squeeze(1)
+                ac_embed = ac_embed[0].reshape(-1, args.sample_num, ac_embed[0].size(-2), ac_embed[0].size(-1))
+                ac_embed = torch.gather(ac_embed, 1, max_indices.unsqueeze(2).unsqueeze(3).repeat(1,1,ac_embed.size(-2),ac_embed.size(-1))).squeeze(1)
+                pred_embed = pred_embed[0].reshape(-1, args.sample_num, pred_embed[0].size(-2), pred_embed[0].size(-1))
+                pred_embed = torch.gather(pred_embed, 1, max_indices.unsqueeze(2).unsqueeze(3).repeat(1,1,pred_embed.size(-2),pred_embed.size(-1))).squeeze(1)
+                args.ac_embed, args.pred_embed = ac_embed.cpu(), pred_embed.cpu()
+                #emap_attn = self.embed_mapper.layers[-1].self_attn.attn
+                #emap_attn = emap_attn.reshape(-1, args.sample_num, emap_attn.size(1), emap_attn.size(2), emap_attn.size(3))
+                #emap_attn = torch.gather(emap_attn, 1, max_indices.unsqueeze(2).unsqueeze(3).unsqueeze(4).repeat(1,1,emap_attn.size(-3),emap_attn.size(-2),emap_attn.size(-1))).squeeze(1)
+                #decoder_src_attn = self.decoder.layers[-1].src_attn.attn
+                #decoder_src_attn = decoder_src_attn.reshape(-1, args.sample_num, decoder_src_attn.size(1), decoder_src_attn.size(2), decoder_src_attn.size(3))
+                #decoder_src_attn = torch.gather(decoder_src_attn, 1, max_indices.unsqueeze(2).unsqueeze(3).unsqueeze(4).repeat(1,1,decoder_src_attn.size(-3),decoder_src_attn.size(-2),decoder_src_attn.size(-1))).squeeze(1)
+
+                #decoder_self_attn = self.decoder.layers[-1].self_attn.attn
+                #decoder_self_attn = decoder_self_attn.reshape(-1, args.sample_num, decoder_self_attn.size(1), decoder_self_attn.size(2), decoder_self_attn.size(3))
+                #decoder_self_attn = torch.gather(decoder_self_attn, 1, max_indices.unsqueeze(2).unsqueeze(3).unsqueeze(4).repeat(1,1,decoder_self_attn.size(-3),decoder_self_attn.size(-2),decoder_self_attn.size(-1))).squeeze(1)
+                #import pickle
+                #pickle.dump(emap_attn.cpu(), open('emap_attn', 'wb')) 
+                #pickle.dump(decoder_self_attn.cpu(), open('decoder_self_attn', 'wb')) 
+                #pickle.dump(decoder_src_attn.cpu(), open('decoder_src_attn', 'wb'))    
+                
             bs = att_out.size(0)
             ylen = ylen.reshape(bs, args.sample_num).gather(1, max_indices)
             ymax = torch.max(ylen).item()

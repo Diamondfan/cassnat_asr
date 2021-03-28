@@ -39,13 +39,14 @@ def main():
     parser.add_argument("--decode_type", default='att', type=str, help="CTC, ATT or ctc-att hybrid decoding")
     parser.add_argument("--ctc_weight", type=float, default=0.0, help="CTC weight in joint decoding")
     parser.add_argument("--rnnlm", type=str, default=None, help="RNNLM model file to read")
+    parser.add_argument("--rank_model", type=str, default='lm', help="model type to Rank ESA")
     parser.add_argument("--lm_weight", type=float, default=0.1, help="RNNLM weight")
     parser.add_argument("--word_embed", default='', type=str, help='Ground truth of word embedding')
     parser.add_argument("--save_embedding", default=False, action='store_true', help="save embedding for analysis")
     parser.add_argument("--max_decode_ratio", type=float, default=0, help='Decoding step to length ratio')
     parser.add_argument("--seed", default=1, type=int, help="random number seed")
 
-    os.environ['CUDA_VISIBLE_DEVICES'] = str(int(os.environ['CUDA_VISIBLE_DEVICES']) % 4 + 4)
+    os.environ['CUDA_VISIBLE_DEVICES'] = str(int(os.environ['CUDA_VISIBLE_DEVICES']) % 4)
 
     args = parser.parse_args()
     with open(args.test_config) as f:
@@ -73,8 +74,8 @@ def main():
     args.vocab_size = vocab.n_words
     args.interctc_alpha = 0
     args.interce_alpha = 0
-
     args.rank = 0
+
     assert args.input_size == (args.left_ctx + args.right_ctx + 1) // args.skip_frame * args.n_features
     if args.model_type == "transformer":
         model = make_fanat(args.input_size, args)
@@ -98,14 +99,18 @@ def main():
             setattr(lm_args, key, val)
         
         lm_args.vocab_size = vocab.n_words
-        #from models.lm import make_model as make_lm_model
-        #lm_model = make_lm_model(lm_args)
-        if lm_args.model_type == 'transformer':
-            from models.transformer import make_model as make_lm_model
-        if lm_args.model_type == 'conformer':
-            from models.conformer import make_model as make_lm_model
-        lm_args.interctc_alpha = 0
-        lm_model = make_lm_model(args.input_size, lm_args)
+        if args.rank_model == 'lm':
+            from models.lm import make_model as make_lm_model
+            lm_model = make_lm_model(lm_args)
+        
+        if args.rank_model == 'at_baseline':
+            if lm_args.model_type == 'transformer':
+                from models.transformer import make_model as make_lm_model
+            if lm_args.model_type == 'conformer':
+                from models.conformer import make_model as make_lm_model
+            lm_args.interctc_alpha = 0
+            lm_model = make_lm_model(args.input_size, lm_args)
+        
         print("Loading language model from {}".format(args.rnnlm))
         checkpoint_lm = torch.load(args.rnnlm, map_location='cpu')
         model_state = checkpoint_lm["state_dict"]

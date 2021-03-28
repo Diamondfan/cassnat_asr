@@ -8,15 +8,14 @@
 . cmd.sh
 . path.sh
 
-stage=1
-end_stage=1
-lm_model=exp_cassnat/newlm/averaged.mdl
-encoder_initial_model=exp/1kh_conformer_rel_maxlen20_e10d5_accum2_specaug_tmax10_multistep2k_40k_160k_ln/averaged.mdl
-#encoder_initial_model=exp/1kh_conformer_baseline_interctc05/averaged.mdl
+stage=3
+end_stage=3
+lm_model=exp/newlm/averaged.mdl
+encoder_initial_model=exp_confomer_baseline/1kh_conformer_rel_maxlen20_e10d5_accum2_specaug_tmax10_multistep2k_40k_160k_ln/averaged.mdl
 
-#asr_exp=exp/conv_fanat_e10m2d4_max_specaug_multistep_initenc_convdec_maxlen8_kernel3_ctxtrig1/ #_topk4/
-#asr_exp=exp/conv_fanat_best_interctc05_ctc05_interce01_ce09/
-asr_exp=exp/conv_fanat_best_interce01_ce09_aftermapping/
+#asr_exp=exp/conv_fanat_e10m2d4_max_specaug_multistep_initenc_convdec_maxlen8_kernel3_ctxtrig1/
+#asr_exp=exp/conv_fanat_best_interce02_att1/
+asr_exp=exp/conv_fanat_best_interce05_att05/
 
 if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
 
@@ -53,7 +52,7 @@ fi
 
 out_name='averaged.mdl'
 if [ $stage -le 2 ] && [ $end_stage -ge 2 ]; then
-  last_epoch=80  # need to be modified
+  last_epoch=66  # need to be modified
   
   average_checkpoints.py \
     --exp_dir $asr_exp \
@@ -65,12 +64,17 @@ if [ $stage -le 2 ] && [ $end_stage -ge 2 ]; then
 
 fi
 
+#asr_exp=exp/conv_fanat_best_interctc05_ctc05_interce01_ce09_aftermapping/
+#asr_exp=exp/conv_fanat_e10m2d4_max_specaug_multistep_initenc_convdec_maxlen8_kernel3_ctxtrig1
+asr_exp=exp_cassnat/fanat_large_specaug_multistep_trig_src_initenc_SchD_shift_path0
+#asr_exp=exp/conv_fanat_best_interctc05_ctc05_interce01_ce09
+
 if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
   exp=$asr_exp
 
   bpemodel=data/dict/bpemodel_unigram_5000
   #rnnlm_model=$lm_model
-  rnnlm_model=exp_cassnat/newlm/averaged.mdl
+  rnnlm_model=exp_cassnat/tf_unilm/averaged.mdl
   global_cmvn=data/fbank/cmvn.ark
   test_model=$asr_exp/$out_name
   decode_type='att_only'
@@ -83,13 +87,13 @@ if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
   s_num=50
   s_dist=0
   lp=0
-  nj=4
-  batch_size=4
-  test_set="test_clean test_other dev_clean dev_other"
+  nj=1
+  batch_size=1
+  test_set="test_clean test_other" #dev_clean dev_other"
 
   for tset in $test_set; do
     echo "Decoding $tset..."
-    desdir=$exp/${decode_type}_decode_average_bm1_${beam1}_sampdist_${s_dist}_samplenum_${s_num}_newlm${lmwt}/$tset/
+    desdir=$exp/${decode_type}_decode_average_bm1_${beam1}_sampdist_${s_dist}_samplenum_${s_num}_newlm${lmwt}_speech218_rtf_batch1_nj1/$tset/
 
     if [ ! -d $desdir ]; then
       mkdir -p $desdir
@@ -105,6 +109,7 @@ if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
       CUDA_VISIBLE_DEVICES=JOB fanat_decode.py \
         --test_config conf/fanat_decode.yaml \
         --lm_config conf/lm.yaml \
+        --rank_model 'lm' \
         --data_path $desdir/feats.JOB.scp \
         --text_label data/$tset/token.scp \
         --resume_model $test_model \
