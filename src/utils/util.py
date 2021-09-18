@@ -36,8 +36,8 @@ class ProgressMeter(object):
         self.meters = meters
         self.prefix = prefix
 
-    def print(self, batch):
-        entries = [self.prefix + self.batch_fmtstr.format(batch)]
+    def print(self, step):
+        entries = [self.prefix + self.batch_fmtstr.format(step)]
         entries += [str(meter) for meter in self.meters]
         print('\t'.join(entries), flush=True)
 

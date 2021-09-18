@@ -38,10 +38,12 @@ class BaseOpt(object):
 
 class NoamOpt(BaseOpt):
     "Optim wrapper that implements rate."
-    def __init__(self, model_size, factor, warmup, optimizer):
+    def __init__(self, optimizer, model_size=512, factor=5.0, warmup_steps=25000, total_steps=40000, warmup_type="noam_warmup"):
         self.factor = factor
         self.model_size = model_size
-        self.warmup = warmup
+        self.warmup_steps = warmup_steps
+        self.total_steps = total_steps
+        self.warmup_type = warmup_type
         for p in optimizer.param_groups:
             p['lr'] = factor
         super(NoamOpt, self).__init__(optimizer)
@@ -50,40 +52,29 @@ class NoamOpt(BaseOpt):
         "Implement `lrate` above"
         if step is None:
             step = self._step
-        return (self.model_size ** (-0.5) *
-                 min(step ** (-0.5), step * self.warmup ** (-1.5)))
+        if self.warmup_type == "noam_warmup":
+            return (self.warmup_steps ** 0.5 * min(step ** (-0.5), step * self.warmup_steps ** (-1.5)))
+        else:   
+            c = self.model_size ** (-0.5)
+            if step <= self.warmup_steps:
+                return c * step * self.warmup_steps ** (-1.5)
+            if self.warmup_type == "custom_exp":
+                return c * step ** (-0.5)
+            elif self.warmup_type == "custom_linear":
+                base_rate = c * self.warmup_steps ** (-0.5)
+                decay_num = 1 - (step - self.warmup_steps) / (self.total_steps - self.warmup_steps)
+                return base_rate * max(decay_num, 0)
 
     def state_dict(self):
         """Return state_dict."""
         return {
             "_step": self._step,
-            "warmup": self.warmup,
+            "warmup_steps": self.warmup_steps,
+            "warmup_type": self.warmup_type,
             "factor": self.factor,
             "model_size": self.model_size,
             "_rate": self._rate,
             "optimizer": self.optimizer.state_dict()}
-
-class NoamWarmOpt(BaseOpt):
-    "Optim wrapper that implements rate."
-    def __init__(self, warmup, optimizer):
-        self.warmup = warmup
-        super(NoamWarmOpt, self).__init__(optimizer)
-        
-    def rate(self, step = None):
-        "Implement `lrate` above"
-        if step is None:
-            step = self._step
-        return (self.warmup ** 0.5 *
-                 min(step ** (-0.5), step * self.warmup ** (-1.5)))
-
-    def state_dict(self):
-        """Return state_dict."""
-        return {
-            "_step": self._step,
-            "warmup": self.warmup,
-            "_rate": self._rate,
-            "optimizer": self.optimizer.state_dict()}
-
 
 class CosineOpt(BaseOpt):
     "Optim wrapper that implements rate."
@@ -142,7 +133,11 @@ class LRMulStepScheduler(BaseOpt):
 def get_opt(opt_type, model, args):
     opt = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.learning_rate, betas=(0.9, 0.98), eps=1e-9, weight_decay=args.weight_decay)
     if opt_type == "noam":
-        return NoamOpt(args.d_model, args.noam_factor, args.noam_warmup, opt)
+        factor = args.noam_factor
+        warmup_steps = args.warmup_steps
+        total_steps = args.total_steps
+        warmup_type = args.warmup_type
+        return NoamOpt(opt, args.d_model, factor, warmup_steps, total_steps, warmup_type)
     elif opt_type == "normal":
         return opt
     elif opt_type == "cosine":
@@ -153,6 +148,4 @@ def get_opt(opt_type, model, args):
         return LRMulStepScheduler(args.decay_rate, args.s_warm, args.s_decay, args.s_keep, opt)
     else:
         raise NotImplementedError
-                
-
 
