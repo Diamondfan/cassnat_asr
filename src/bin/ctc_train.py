@@ -19,7 +19,9 @@ from utils.wer import ctc_greedy_wer
 from data.vocab import Vocab
 from utils.optimizer import get_opt
 from models import make_ctc_transformer, make_conformer
-from data.speech_loader import IterSpeechDataset, IterSpeechDataLoader
+#from data.speech_loader import IterSpeechDataset, IterSpeechDataLoader
+from data.speech_loader import SpeechDataset, SpeechDataLoader
+
 
 class Config():
     name = 'config'
@@ -88,7 +90,7 @@ def main():
 def main_worker(rank, world_size, args, backend='nccl'):
     args.rank, args.world_size = rank, world_size
     if args.distributed:
-        dist.init_process_group(backend=backend, init_method='tcp://localhost:21789',
+        dist.init_process_group(backend=backend, init_method='tcp://localhost:12345',
                                     world_size=world_size, rank=rank)
 
     ## 2. Define model and optimizer
@@ -141,27 +143,27 @@ def main_worker(rank, world_size, args, backend='nccl'):
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.rank])
     
     ## 3. Define vocabulary and data loader
-    trainset = IterSpeechDataset(vocab, args.train_paths, args)
+    trainset = SpeechDataset(vocab, args.train_paths, args)
     if args.use_cmvn:
         trainset._load_cmvn(args.global_cmvn)
-    train_loader = IterSpeechDataLoader(trainset, args.batch_size, args.padding_idx, num_workers=args.load_data_workers, 
+    train_loader = SpeechDataLoader(trainset, args.batch_size, args.padding_idx, num_workers=args.load_data_workers, 
                                        distributed=args.distributed, shuffle=True)
     if args.rank == 0:
-        print("Finish Loading training files. Number of utterances: {}".format(train_loader.get_num_utterance()))
+        print("Finish Loading training files. Number of utterances: {}".format(len(train_loader))) #.get_num_utterance()))
 
     args.use_specaug = False  # specaug cannot be applied to valid
-    validset = IterSpeechDataset(vocab, args.dev_paths, args)
+    validset = SpeechDataset(vocab, args.dev_paths, args)
     if args.use_cmvn:
         validset._load_cmvn(args.global_cmvn)
-    valid_loader = IterSpeechDataLoader(validset, args.batch_size, args.padding_idx, num_workers=args.load_data_workers, 
+    valid_loader = SpeechDataLoader(validset, args.batch_size, args.padding_idx, num_workers=args.load_data_workers, 
                                         distributed=False, shuffle=False)
     if args.rank == 0:
-        print("Finish Loading dev files. Number of utterances: {}".format(valid_loader.get_num_utterance()))
+        print("Finish Loading dev files. Number of utterances: {}".format(len(valid_loader))) #.get_num_utterance()))
     
-    criterion_ctc = torch.nn.CTCLoss(reduction='sum', zero_infinity=True)
+    criterion_ctc = torch.nn.CTCLoss(reduction='mean', zero_infinity=True)
     criterion = [criterion_ctc]
     if args.interctc_alpha > 0:
-        criterion_interctc = torch.nn.CTCLoss(reduction='sum', zero_infinity=True)
+        criterion_interctc = torch.nn.CTCLoss(reduction='mean', zero_infinity=True)
         criterion.append(criterion_interctc)
     
     ## 4. Start training iteratively
@@ -252,12 +254,12 @@ def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_trai
         feat_sizes = (feat_sizes * max_feat_size).long()
 
         with torch.backends.cudnn.flags(deterministic=True):
-            ctc_loss = criterion[0](ctc_out.transpose(0,1), tgt_label, feat_sizes, label_sizes) / bs
+            ctc_loss = criterion[0](ctc_out.transpose(0,1), tgt_label, feat_sizes, label_sizes)
         loss = args.ctc_alpha * ctc_loss
             
         if args.interctc_alpha > 0:
             with torch.backends.cudnn.flags(deterministic=True):
-                interctc_loss = criterion[1](inter_out.transpose(0,1), tgt_label, feat_sizes, label_sizes) / bs
+                interctc_loss = criterion[1](inter_out.transpose(0,1), tgt_label, feat_sizes, label_sizes)
             loss += args.interctc_alpha * interctc_loss
         else:
             interctc_loss = torch.Tensor([0])

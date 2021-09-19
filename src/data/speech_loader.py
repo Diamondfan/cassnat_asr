@@ -119,6 +119,7 @@ class SpeechDataset(Dataset):
         
         utt, ark_path, text, _ = self.data_streams[stream_idx].items[internal_idx]
         feat = kaldiio.load_mat(ark_path)
+
         if self.use_cmvn:
             assert feat.shape[1] == self.mean.shape[0]
             feat = (feat - self.mean) / self.std
@@ -273,8 +274,8 @@ class MyDataLoader(DataLoader):
         text_max_length = max(len(x[2]) for x in batch)
         batch_size = len(batch)
         
-        feats = torch.full([batch_size, feats_max_length, feat_size], self.padding_idx)
-        texts = torch.full([batch_size, text_max_length], self.padding_idx)
+        feats = torch.full([batch_size, feats_max_length, feat_size], float(self.padding_idx))
+        texts = torch.full([batch_size, text_max_length], int(self.padding_idx))
         utt_list = []
         feat_sizes = torch.zeros(batch_size)
         text_sizes = torch.zeros(batch_size)
@@ -307,7 +308,10 @@ class SpeechDataLoader(MyDataLoader):
         super(SpeechDataLoader, self).__init__(dataset, **kwargs)
 
     def set_epoch(self, epoch):
-        self.base_sampler.set_epoch(epoch)
+        try:
+            self.base_sampler.set_epoch(epoch)
+        except:
+            pass
 
 class IterSpeechDataLoader(MyDataLoader):
     def __init__(self, dataset, batch_size, padding_idx=-1, distributed=False, shuffle=False, num_workers=0, timeout=1000):

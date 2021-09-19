@@ -33,6 +33,20 @@ class LabelSmoothing(nn.Module):
             self.true_dist = true_dist
         return self.criterion(x, true_dist).masked_fill(mask.unsqueeze(1)==0, 0).sum() / tokens
 
+    def MWER(self, att_out, ctc_target, wer_weight):
+        """
+        att_out: bs x U x vocab, ctc_target: bs x U, wer_weight: bs, norm_prob: b x sample_num
+        """
+        tgt_mask = ctc_target != 0
+        #batch_size, sample_num = norm_prob.size()
+        tokens = torch.sum(tgt_mask, 1).reshape(wer_weight.size())
+        att_prob = att_out.gather(-1, ctc_target.unsqueeze(-1)).squeeze(-1).masked_fill(tgt_mask==0, 0).sum(1).reshape(wer_weight.size()) / tokens.float()
+        wer_weight = wer_weight.float()
+        wer_weight = wer_weight - wer_weight.max(1, keepdim=True)[0]
+        wer_loss = (att_prob * wer_weight) #* norm_prob
+        wer_loss = torch.mean(wer_loss, 1).mean()
+        return wer_loss
+
     def forward_best_path(self, x, target, tgt_mask_pred):
         "x: b x U x class"
         assert x.size(2) == self.size

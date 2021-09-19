@@ -71,7 +71,7 @@ def main():
     for var in vars(args):
         config[var] = getattr(args, var)
     print("Experiment starts with config {}".format(json.dumps(config, sort_keys=True, indent=4)))
-    json.dumps(config, os.path.join(args.exp_dir, "config.yaml"))
+    json.dump(config, open(os.path.join(args.exp_dir, "config.yaml"), 'w'), sort_keys=True, indent=4)
 
     if args.use_specaug:
         specaug_conf = Config()
@@ -92,7 +92,7 @@ def main():
 def main_worker(rank, world_size, args, backend='nccl'):
     args.rank, args.world_size = rank, world_size
     if args.distributed:
-        dist.init_process_group(backend=backend, init_method='tcp://localhost:21789',
+        dist.init_process_group(backend=backend, init_method='tcp://localhost:12345',
                                     world_size=world_size, rank=rank)
 
     ## 2. Define model and optimizer
@@ -162,11 +162,11 @@ def main_worker(rank, world_size, args, backend='nccl'):
     if args.rank == 0:
         print("Finish Loading dev files. Number batches: {}".format(len(valid_loader)))
     
-    criterion_ctc = torch.nn.CTCLoss(reduction='mean')
+    criterion_ctc = torch.nn.CTCLoss(reduction='mean', zero_infinity=True)
     criterion_att = LabelSmoothing(args.vocab_size, args.padding_idx, args.label_smooth)
     criterion = [criterion_ctc, criterion_att]
     if args.interctc_alpha > 0:
-        criterion_interctc = torch.nn.CTCLoss(reduction='mean')
+        criterion_interctc = torch.nn.CTCLoss(reduction='mean', zero_infinity=True)
         criterion.append(criterion_interctc)
     
     ## 4. Start training iteratively

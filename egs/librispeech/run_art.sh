@@ -6,8 +6,8 @@
 data=/data/nas1/user/ruchao/Database/LibriSpeech/
 lm_data=/data/nas1/user/ruchao/Database/LibriSpeech/libri_lm
 
-stage=7
-end_stage=8
+stage=6
+end_stage=6
 featdir=data/fbank
 
 unit=wp         #word piece
@@ -121,7 +121,7 @@ if [ $stage -le 5 ] && [ $end_stage -ge 5 ]; then
 fi
 
 #asr_exp=exp/1kh_conformer_rel_maxlen40_e10d5_accum2_specaug_f30t40_multistep2k_40k_160k_ln/ #_disls/ f30t40
-asr_exp=exp/1kh_conformer_baseline_interctc02_ctc1/ #_shareff/
+asr_exp=exp/1kh_transformer_baseline_wotime_warp/
 
 if [ $stage -le 6 ] && [ $end_stage -ge 6 ]; then
 
@@ -134,7 +134,7 @@ if [ $stage -le 6 ] && [ $end_stage -ge 6 ]; then
     --train_config conf/transformer.yaml \
     --data_config conf/data.yaml \
     --batch_size 16 \
-    --epochs 100 \
+    --epochs 120 \
     --save_epoch 40 \
     --learning_rate 0.001 \
     --min_lr 0.00001 \
@@ -143,7 +143,7 @@ if [ $stage -le 6 ] && [ $end_stage -ge 6 ]; then
     --weight_decay 0 \
     --label_smooth 0.1 \
     --ctc_alpha 1 \
-    --interctc_alpha 0.2 \
+    --interctc_alpha 0 \
     --use_cmvn \
     --seed 1234 \
     --print_freq 50 > $asr_exp/train.log 2>&1 &
