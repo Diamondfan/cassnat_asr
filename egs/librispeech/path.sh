@@ -1,4 +1,4 @@
-export KALDI_ROOT=../../../kaldi/
+export KALDI_ROOT=/home/ruchao/workdir/kaldi/
 export E2EASR=`pwd`/../..
 export PATH=$E2EASR/src/bin/:$E2EASR/utils/:$PATH
 

@@ -42,6 +42,7 @@ ctc_lm_weight: 0.1 #used to load lm for ranking ESA
 length_penalty: 0
 T: 1.0
  
+use_best_path: False
 use_trigger: True
 use_src: True
 src_trigger: False

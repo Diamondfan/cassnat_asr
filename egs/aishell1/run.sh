@@ -3,10 +3,10 @@
 # 2020 (Ruchao Fan)
 
 # The data are already downloaded in the corresponding dir
-data=/NAS5/speech/user/ruchao/Database/Aishell1/
-lm_data=/data/nas1/user/ruchao/Database/LibriSpeech/libri_lm
+data=/home/ruchao/Database/aishell/
+lm_data=/home/ruchao/Database/LibriSpeech/libri_lm
 
-stage=7
+stage=8
 end_stage=8
 featdir=data/fbank
 
@@ -164,7 +164,7 @@ if [ $stage -le 7 ] && [ $end_stage -ge 7 ]; then
 fi
 
 if [ $stage -le 8 ] && [ $end_stage -ge 8 ]; then
-  #exp=exp/1kh_d512_multistep_ctc1_accum1_bth32_specaug
+  exp=exp/ar_convenc_e12d6_d256_multistep40k_160k_ctc1_accum1_bth32_specaugt2m40_warp/
 
   test_model=$exp/$out_name
   rnnlm_model=exp/averaged_lm.mdl
@@ -177,13 +177,13 @@ if [ $stage -le 8 ] && [ $end_stage -ge 8 ]; then
   lmwt=0 #0.7
   ctclm=0 #0.7
   ctclp=0 #2
-  nj=4
-  batch_size=8
-  test_set="dev test"
+  nj=1
+  batch_size=1
+  test_set="test" #dev test"
 
   for tset in $test_set; do
     echo "Decoding $tset..."
-    desdir=$exp/${decode_type}_decode_average_ctc${ctcwt}_bm1_${beam1}_bm2_${beam2}_lmwt${lmwt}_ctclm${ctclm}_lp${lp}_ctclp${ctclp}/$tset/
+    desdir=$exp/${decode_type}_decode_average_ctc${ctcwt}_bm1_${beam1}_bm2_${beam2}_lmwt${lmwt}_ctclm${ctclm}_lp${lp}_ctclp${ctclp}_speech218_bth1_nj1/$tset/
     if [ ! -d $desdir ]; then
       mkdir -p $desdir
     fi

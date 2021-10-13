@@ -29,17 +29,14 @@ def main():
     parser.add_argument("--lm_config")
     parser.add_argument("--data_path")
     parser.add_argument("--use_cmvn", default=False, action='store_true', help="Use global cmvn or not")
-    parser.add_argument("--global_cmvn", type=str, help="Cmvn file to load")
     parser.add_argument("--batch_size", default=32, type=int, help="Training minibatch size")
     parser.add_argument("--load_data_workers", default=1, type=int, help="Number of parallel data loaders")
     parser.add_argument("--resume_model", default='', type=str, help="Model to do evaluation")
     parser.add_argument("--result_file", default='', type=str, help="File to save the results")
     parser.add_argument("--print_freq", default=100, type=int, help="Number of iter to print")
-    parser.add_argument("--decode_type", default='att', type=str, help="CTC, ATT or ctc-att hybrid decoding")
-    parser.add_argument("--ctc_weight", type=float, default=0.0, help="CTC weight in joint decoding")
+    parser.add_argument("--decode_type", default='greedy', type=str, help="greedy, beam")
     parser.add_argument("--rnnlm", type=str, default=None, help="RNNLM model file to read")
     parser.add_argument("--lm_weight", type=float, default=0.1, help="RNNLM weight")
-    parser.add_argument("--max_decode_ratio", type=float, default=0, help='Decoding step to length ratio')
     parser.add_argument("--seed", default=1, type=int, help="random number seed")
 
     os.environ['CUDA_VISIBLE_DEVICES'] = str(int(os.environ['CUDA_VISIBLE_DEVICES']) % 4)
@@ -53,7 +50,7 @@ def main():
     for var in vars(args):
         config[var] = getattr(args, var)
 
-    if args.lm_weight > 0 or args.ctc_lm_weight > 0:
+    if args.lm_weight > 0:
         with open(args.lm_config) as f:
             lm_config = yaml.safe_load(f)
         lm_args = Config()
@@ -90,7 +87,7 @@ def main():
                 name = "module." + name
             param.data.copy_(model_state[name])
 
-    if args.lm_weight > 0 or args.ctc_lm_weight > 0:
+    if args.lm_weight > 0:
         from models.lm import make_model as make_lm_model
         lm_args.vocab_size = vocab.n_words
         lm_model = make_lm_model(lm_args)
@@ -140,15 +137,18 @@ def main():
                 src, src_mask = src.cuda(), src_mask.cuda()
                 feat_sizes = feat_sizes.cuda()
 
-            recog_results = model.beam_decode(src, src_mask, vocab, args, lm_model)
-            
+            if args.decode_type == "greedy":
+                recog_results = model.greedy_decode(src, src_mask, feat_sizes, vocab, args)
+            elif args.decode_type == "beam":
+                recog_results = model.beam_decode(src, src_mask, feat_sizes, vocab, args, lm_model)
+
             for j in range(len(utt_list)):
                 hyp = []
                 for idx in recog_results[j][0]['hyp']:
                     if idx == vocab.word2index['sos'] or idx == args.padding_idx:
                         continue
                     if idx == vocab.word2index['eos']:
-                        break
+                        continue
                     hyp.append(vocab.index2word[idx])
                 #print(utt_list[j]+' '+' '.join(hyp))
                 print(utt_list[j]+' '+' '.join(hyp), flush=True, file=out_file)

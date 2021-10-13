@@ -174,6 +174,7 @@ if [ $stage -le 7 ] && [ $end_stage -ge 7 ]; then
 fi
 
 if [ $stage -le 8 ] && [ $end_stage -ge 8 ]; then
+  asr_exp=exp/1kh_conformer_rel_maxlen20_e10d5_accum2_specaug_tmax10_multistep2k_40k_160k_ln/
   exp=$asr_exp
   lm_exp=exp/libri_tfunilm16x512_4card_cosineanneal_ep20_maxlen120/
 

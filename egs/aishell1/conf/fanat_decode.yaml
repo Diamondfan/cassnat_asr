@@ -21,7 +21,7 @@ pos_type: "relative"
 enc_max_relative_len: 20
 enc_kernel_size: 15
 use_conv_dec: True #False
-dec_max_relative_len: 8
+dec_max_relative_len: 4
 dec_kernel_size: 3
 
 n_features: 80

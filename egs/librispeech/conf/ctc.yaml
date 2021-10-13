@@ -6,6 +6,8 @@ d_model: 512 #256
 d_ff: 2048    
 n_head: 8 #4
 dropout: 0.1 
+causal: False
+forward: True
 
 #conformer related conf
 share_ff: False
@@ -23,9 +25,9 @@ skip_frame: 1
 
 #noam warm up
 warmup_type: 'noam_warmup'   # noam_warmup, custom_exp, custom_linear
-noam_factor: 0.002           # learning rate for noam_warmup, factor for custom_exp
+noam_factor: 0.0002          # learning rate for noam_warmup, factor for custom_exp
 warmup_steps: 10000 
-total_steps: 100000           # for custom_linear
+total_steps: 100000          # for custom_linear
 
 #cosine learning schedule
 cosine_total: 100000

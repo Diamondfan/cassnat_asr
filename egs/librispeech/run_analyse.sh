@@ -13,7 +13,6 @@ end_stage=1
 
 #asr_exp=exp/conv_fanat_e10m2d4_max_specaug_multistep_initenc_convdec_maxlen8_kernel3_ctxtrig1/
 asr_exp=exp/conv_fanat_best_interctc05_ctc05_interce01_ce09/
-#asr_exp=exp/conv_fanat_best_interce01_ce09_aftermapping/
 
 if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
   exp=$asr_exp
@@ -21,7 +20,7 @@ if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
 
   bpemodel=data/dict/bpemodel_unigram_5000
   #rnnlm_model=$lm_model
-  rnnlm_model=exp_cassnat/newlm/averaged.mdl
+  rnnlm_model=exp_cassnat/tf_unilm/averaged.mdl
   global_cmvn=data/fbank/cmvn.ark
   test_model=$asr_exp/$out_name
   beam1=1
@@ -32,8 +31,8 @@ if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
   s_num=50
   s_dist=0
   lp=0
-  batch_size=4
-  test_set="test_other" #test_other dev_clean dev_other"
+  batch_size=1
+  test_set="train_clean_100" #test_other dev_clean dev_other"
 
   for tset in $test_set; do
     echo "Decoding $tset..."
@@ -43,9 +42,10 @@ if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
       mkdir -p $desdir
     fi
     
-    CUDA_VISIBLE_DEVICES='3' fanat_analyze.py \
+    CUDA_VISIBLE_DEVICES='1' fanat_analyze.py \
       --test_config conf/fanat_decode.yaml \
       --lm_config conf/lm.yaml \
+      --rank_model "lm" \
       --data_path data/$tset/feats.scp \
       --text_label data/$tset/token.scp \
       --resume_model $test_model \
@@ -55,6 +55,7 @@ if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
       --lm_weight $lmwt \
       --max_decode_ratio 0 \
       --use_cmvn \
+      --save_embedding \
       --global_cmvn $global_cmvn \
       --print_freq 20
 

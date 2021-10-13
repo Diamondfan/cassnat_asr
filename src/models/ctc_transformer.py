@@ -4,6 +4,7 @@
 # https://nlp.seas.harvard.edu/2018/04/03/attention.html
 
 import copy
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -13,7 +14,8 @@ from models.modules.attention import MultiHeadedAttention
 from models.modules.positionff import PositionwiseFeedForward
 from models.modules.embedding import PositionalEncoding, ConvEmbedding
 from models.blocks.transformer_blocks import Encoder
-from utils.ctc_prefix import CTCPrefixScore
+from utils.ctc_prefix import CTCPrefixScore, logzero, logone
+
 
 def make_model(input_size, args):
     c = copy.deepcopy
@@ -24,7 +26,7 @@ def make_model(input_size, args):
     
     interctc_gen = Generator(args.d_model, args.vocab_size, add_norm=True) if args.interctc_alpha > 0 else None
     model = CTCTransformer(
-        ConvEmbedding(input_size, args.d_model, args.dropout, c(position)),
+        ConvEmbedding(input_size, args.d_model, args.dropout, c(position), causal=args.causal),
         Encoder(args.d_model, c(attn), c(ff), args.dropout, args.N_enc),
         generator, interctc_gen)
         
@@ -57,7 +59,10 @@ class CTCTransformer(nn.Module):
         if interctc_gen is not None:
             self.interctc_generator = interctc_gen
 
-    def forward(self, src, src_mask, ctc_alpha, interctc_alpha=0):
+    def forward(self, src, src_mask, ctc_alpha, interctc_alpha, args):
+        if args.causal:
+            src, src_mask = self.get_causal_mask(src, src_mask, args.forward)
+
         x, x_mask = self.src_embed(src, src_mask)
         enc_h = self.encoder(x, x_mask, interctc_alpha)
         #CTC Loss needs log probability as input
@@ -76,242 +81,131 @@ class CTCTransformer(nn.Module):
         ret = torch.ones(size, size, dtype=torch.uint8)
         return torch.tril(ret, out=ret).unsqueeze(0)
 
-    def greedy_decode(self, src, src_mask, vocab, args):
+    def get_causal_mask(self, src, src_mask, forward=True):
+        size = src.size(1)
+        ret = torch.ones(size, size, dtype=torch.uint8)
+        pad = torch.zeros((src.size(0), 2, src.size(2))).type_as(src)
+
+        if forward:       
+            src_mask = src_mask & torch.tril(ret, out=ret).unsqueeze(0).type_as(src_mask)
+            src = torch.cat([pad, src], dim=1)
+        else:
+            src_mask = src_mask & torch.triu(ret, out=ret).unsqueeze(0).type_as(src_mask)
+            src = torch.cat([src, pad], dim=1)
+        return src, src_mask
+
+    def greedy_decode(self, src, src_mask, src_size, vocab, args):
         bs = src.size(0)
+        if args.causal:
+            src, src_mask = self.get_causal_mask(src, src_mask, args.forward)
+
         x, x_mask = self.src_embed(src, src_mask)
         enc_h = self.encoder(x, x_mask)
         ctc_out = self.ctc_generator(enc_h)
-        ctc_out = ctc_out.argmax(-1)
+        pred = ctc_out.argmax(-1).cpu().numpy()
         
         batch_top_seqs = [[{"hyp": []}] for b in range(bs)]
-        #for b in range(bs):
-        #    result = []
-        #    for j in range(feat_size[i]):
-        #        if pred[i][j] != 0:
-        #        if j != 0 and pred[i][j] == pred[i][j-1]:
-        #            continue
-        #        else:
-        #           p_seq.append(pred[i][j]
-    
-    def beam_decode(self, src, src_mask, vocab, args, lm_model=None):
-        """att decoding with rnnlm and ctc out probability
-
-        args.rnnlm: path of rnnlm model
-        args.ctc_weight: use ctc out probability for joint decoding when >0.
-        """
-        bs = src.size(0)
-        sos = vocab.word2index['sos']
-        eos = vocab.word2index['eos']
-        blank = vocab.word2index['blank']
-
-        x, src_mask = self.src_embed(src, src_mask)
-        enc_h = self.encoder(x, src_mask)
-        if args.ctc_weight > 0:
-            ctc_out = self.ctc_generator(enc_h)
-            ctc_length = ctc_out.size(1)
-            Scorer = CTCPrefixScore(ctc_length, blank, eos)
-            ctc_out.masked_fill_(src_mask.transpose(1,2)==0, Scorer.logzero)
-            ctc_out[:,:,blank].masked_fill_(src_mask.squeeze(1)==0, 0)
-            init_r = Scorer.initial_state(ctc_out)
-        else:
-            ctc_out = None
-
-        ys = torch.ones(1, 1).fill_(sos).long()
-        if args.use_gpu:
-            ys = ys.cuda()
-        
-        batch_top_seqs = [ [{'ys': ys, 'score': 0.0, 'hyp': [sos] } ] for b in range(bs) ]
+        feat_size = (src_size * enc_h.size(1)).long()
         
         for b in range(bs):
-            if ctc_out is not None:
-                batch_top_seqs[b][0]['ctc_prob_prev'] = init_r[b:b+1]
-                init_score = torch.Tensor([[0.0]])
-                batch_top_seqs[b][0]['ctc_score_prev'] = init_score.cuda() if args.use_gpu else init_score
-
-        max_decode_step = int(args.max_decode_ratio * enc_h.size(1)) if args.max_decode_ratio > 0 else enc_h.size(1)
-        for i in range(max_decode_step):
-            # batchify the batch and beam
-            all_seqs, ys, ench_use, src_mask_use = [], [], [], []
-            
-            if ctc_out is not None:
-                ctc_out_use, ctc_prev_prob, ctc_prev_score = [], [], []
-            
-            for b in range(bs):
-                all_seqs.append([])
-                for seq in batch_top_seqs[b]:
-                    if seq['hyp'][-1] == eos:
-                        all_seqs[b].append(seq)
+            result = []
+            for j in range(feat_size[b].item()):
+                if pred[b][j] != 0:
+                    if j != 0 and pred[b][j] == pred[b][j-1]:
                         continue
-                    ys.append(seq['ys'])
-                    ench_use.append(enc_h[b:b+1])
-                    src_mask_use.append(src_mask[b:b+1])
-                    
-                    if ctc_out is not None:
-                        ctc_out_use.append(ctc_out[b:b+1])
-                        ctc_prev_prob.append(seq['ctc_prob_prev'])
-                        ctc_prev_score.append(seq['ctc_score_prev'])
-            
-            if len(ys) == 0: #if no beam active, end decoding
-                break
-            # concat and get decoder out probability
-            ys = torch.cat(ys, dim=0)
-            src_mask_use = torch.cat(src_mask_use, dim=0)
-            ench_use = torch.cat(ench_use, dim=0)
-            tgt_mask = (ys != args.padding_idx).unsqueeze(1)
-            tgt_mask = tgt_mask & self.subsequent_mask(ys.size(-1)).type_as(src_mask_use.data)
-            dec_h = self.decoder(self.tgt_embed(ys), ench_use, src_mask_use, tgt_mask)
-            att_prob = self.att_generator(dec_h[:, -1, :], T=args.T)
-            if args.lm_weight > 0:
-                lm_prob = lm_model(ys, tgt_mask)[:,-1,:]
-                local_prob = att_prob + args.lm_weight * lm_prob
-                local_prob[:,eos] = (1 + args.lm_weight) * att_prob[:,eos]
-            else:
-                local_prob = att_prob
-            
-            if ctc_out is not None:
-                att_scores, indices = torch.topk(att_prob, args.ctc_beam, dim=-1)
-                ctc_out_use = torch.cat(ctc_out_use, dim=0)
-                ctc_prev_prob = torch.cat(ctc_prev_prob, dim=0)
-                ctc_prev_scores = torch.cat(ctc_prev_score, dim=0).repeat(1, args.ctc_beam)
-                
-                ctc_scores, ctc_probs = Scorer(ys, indices, ctc_out_use, ctc_prev_prob)
-                local_scores = args.ctc_weight * (ctc_scores - ctc_prev_scores) \
-                                + (1 - args.ctc_weight) * att_scores
-               
-                if args.lm_weight > 0:
-                    local_scores += args.lm_weight * lm_prob.gather(1, indices)
-
-                local_scores, local_indices = torch.topk(local_scores, args.beam_width, dim=-1)
-                indices = torch.gather(indices, 1, local_indices)
-            else:
-                local_scores, indices = torch.topk(local_prob, args.beam_width, dim=-1)
-            
-            # distribute scores to corresponding sample and beam
-            s_idx = -1
-            for b in range(bs):
-                for seq in batch_top_seqs[b]:
-                    if seq['hyp'][-1] == eos:
-                       continue
-                    s_idx += 1
-
-                    for j in range(args.beam_width):
-                        next_token = indices[s_idx][j]
-                        token_score = local_scores[s_idx][j].item()
-                        score = seq['score'] + token_score
-
-                        ys = torch.cat([seq['ys'],next_token.view(-1,1)],dim=-1)
-                        rs_seq = {'ys':ys, 'score': score, 'hyp': seq['hyp']+ [next_token.item()] } 
-                        
-                        if ctc_out is not None:
-                            true_idx = local_indices[s_idx, j]
-                            rs_seq['ctc_prob_prev'] = ctc_probs[s_idx:s_idx+1, true_idx,:,:]
-                            rs_seq['ctc_score_prev'] = ctc_scores[s_idx:s_idx+1, true_idx:true_idx+1]
-                        all_seqs[b].append(rs_seq)
-
-                sort_f = lambda x:x['score'] + (len(x['hyp'])-1) * args.length_penalty \
-                            if args.length_penalty is not None else lambda x:x['score']                
-                batch_top_seqs[b] = sorted(all_seqs[b], key=sort_f, reverse=True)[:args.beam_width]
+                    else:
+                        result.append(pred[b][j])
+            batch_top_seqs[b][0]["hyp"] = result
         return batch_top_seqs
+    
+    def beam_decode(self, src, src_mask, src_size, vocab, args, lm_model=None):
+        """ctc beam decoding
 
-    def fast_decode_with_ctc(self, src, src_mask, vocab, args, lm_model=None):
-        """
-        Take CTC output as the decoder input for decoder. Regard the decoder as 
-        a correction model.
+        args.rnnlm: path of rnnlm model
+        args.lm_weight: use lm out probability for joint decoding when >0.
         """
         bs = src.size(0)
         sos = vocab.word2index['sos']
-        eos = vocab.word2index['eos']
         blank = vocab.word2index['blank']
+        beam_width = args.ctc_beam
+        pruning_size = args.ctc_pruning
+        length_penalty = args.ctc_lp 
+        lm_weight = args.lm_weight
+        
+        if args.causal:
+            src, src_mask = self.get_causal_mask(src, src_mask, args.forward)
 
         x, src_mask = self.src_embed(src, src_mask)
         enc_h = self.encoder(x, src_mask)
         ctc_out = self.ctc_generator(enc_h)
-        bs, xmax, _ = ctc_out.size()
-        best_paths = ctc_out.argmax(-1)
-        best_paths = best_paths.masked_fill(src_mask.squeeze(1)==0, 0)
+        top_probs, top_indices = torch.topk(ctc_out, pruning_size, dim=-1)
+        src_size = (src_size * enc_h.size(1)).long()
 
-        aligned_seq_shift = best_paths.new_zeros(best_paths.size())
-        aligned_seq_shift[:, 1:] = best_paths[:,:-1]
-        dup = best_paths == aligned_seq_shift
-        best_paths.masked_fill_(dup, 0)
-        ctc_greedy, length = [], []
-        for b in range(bs):
-            ctc_greedy.append(best_paths[b][best_paths[b].nonzero()])
-            length.append(ctc_greedy[-1].size(0))
-        max_length = max(length)
-        tgt_input = best_paths.new_zeros(bs, max_length+1).fill_(args.padding_idx)
-        tgt_input[:,0] = sos
-        for b in range(bs):
-            tgt_input[b].narrow(0, 1, length[b]).copy_(ctc_greedy[b][:,0])
-        tgt_mask = (tgt_input != args.padding_idx).unsqueeze(1)
-        tgt_mask = tgt_mask & self.subsequent_mask(tgt_input.size(-1)).type_as(tgt_mask)
-        dec_h = self.decoder(self.tgt_embed(tgt_input), enc_h, src_mask, tgt_mask)
-        att_out = self.att_generator(dec_h)
-
-        ys = torch.ones(1, 1).fill_(sos).long()
-        if args.use_gpu:
-            ys = ys.cuda()
+        ys = torch.ones(1,1).fill_(sos).type_as(src_mask).long() 
+        batch_top_seqs = [ [{'ys': ys, 'p_blk': logone, 'p_nblk': logzero, 'score_ctc': 0.0, 'score_lm': 0.0, 'hyp': []}] for b in range(bs) ]
         
-        batch_top_seqs = [ [{'ys': ys, 'score': 0.0, 'hyp': [sos] } ] for b in range(bs) ]
-        
-        for i in range(max_length+1):
-            # batchify the batch and beam
-            all_seqs, ys, att_prob = [], [], []
-            
-            for b in range(bs):
-                all_seqs.append([])
-                for seq in batch_top_seqs[b]:
-                    if i > length[b]:
-                        all_seqs[b].append(seq)
+        max_ys = 1
+        for t in range(ctc_out.size(1)):
+            if lm_model is not None:
+                ys, ys_size = [], []
+                for b in range(bs):
+                    if t > src_size[b].item() or torch.exp(ctc_out[b, t, blank]).item() > 0.95:
                         continue
-            
-                    att_prob.append(att_out[b,i:i+1,:])
-                    if args.lm_weight > 0:
-                        ys.append(seq['ys'])
 
-            if len(att_prob) == 0: #if no beam active, end decoding
-                break
-            # concat and get decoder out probability
-            att_prob = torch.cat(att_prob, dim=0)
-       
-            if args.lm_weight > 0:
+                    for seq in batch_top_seqs[b]:
+                        ys_fill = torch.zeros(1, max_ys).type_as(src_size).long()
+                        ys_size.append(seq['ys'].size(1))
+                        ys_fill.narrow(1, 0, ys_size[-1]).copy_(seq['ys'])
+                        ys.append(ys_fill)
+
+                if len(ys) == 0:
+                    continue
+                else:
+                    max_ys += 1
+
                 ys = torch.cat(ys, dim=0)
+                ys_size = torch.Tensor(ys_size).type_as(src_size).long().unsqueeze(1).unsqueeze(2)
 
-            if args.lm_weight > 0:
                 tgt_mask = (ys != args.padding_idx).unsqueeze(1)
-                tgt_mask = tgt_mask & self.subsequent_mask(ys.size(-1)).type_as(src_mask)
-                lm_prob = lm_model(ys, tgt_mask)[:,-1,:]
-                local_prob = att_prob + args.lm_weight * lm_prob
-            else:
-                local_prob = att_prob
-            
-            local_scores, indices = torch.topk(local_prob, args.beam_width, dim=-1)
-            
-            # distribute scores to corresponding sample and beam
+                tgt_mask = tgt_mask & model.subsequent_mask(ys.size(-1)).type_as(src_mask)
+                lm_prob = lm_model(ys, tgt_mask)
+                lm_prob = torch.gather(lm_prob, 1, (ys_size-1).repeat(1,1,lm_prob.size(-1)))[:,-1,:]
+
             s_idx = -1
             for b in range(bs):
+                if t > src_size[b].item(): # or torch.exp(ctc_out[b, t, blank]).item() > 0.95:
+                    continue
+
+                new_beam = []
                 for seq in batch_top_seqs[b]:
-                    if i > length[b]:
-                       continue
                     s_idx += 1
+                    ys, hyp, p_b, p_nb, score_lm = seq['ys'], seq['hyp'], seq['p_blk'], seq['p_nblk'], seq['score_lm']
 
-                    for j in range(args.beam_width):
-                        next_token = indices[s_idx][j]
-                        token_score = local_scores[s_idx][j].item()
-                        score = seq['score'] + token_score
+                    # blank or repetition
+                    new_p_nb = p_nb + ctc_out[b, t, hyp[-1]].item() if len(hyp) > 0 else logzero
+                    p_temp = ctc_out[b, t, blank].item()
+                    new_p_b = np.logaddexp(p_b + p_temp, p_nb + p_temp)
+                    p_total = np.logaddexp(new_p_b, new_p_nb)
+                    new_beam.append({'ys':ys, 'p_blk': new_p_b, 'p_nblk': new_p_nb, 'score_ctc': p_total, 'score_lm': score_lm, 'hyp': hyp})
 
-                        if args.lm_weight > 0:
-                            ys = torch.cat([seq['ys'],next_token.view(-1,1)],dim=-1)
-                        else:
-                            ys = seq['ys']
+                    # add one extra token
+                    new_p_b = logzero
+                    for c in top_indices[b, t]:
+                        if c.item() == blank:
+                            continue
 
-                        hyp = seq['hyp'] + [next_token.item()] if next_token.item() != eos else seq['hyp']
-                        rs_seq = {'ys':ys, 'score': score, 'hyp': hyp } 
-                        all_seqs[b].append(rs_seq)
+                        c_prev = hyp[-1] if len(hyp) > 0 else None
+                        p_temp = ctc_out[b, t, c].item() 
+                        new_p_nb = np.logaddexp(p_b + p_temp, p_nb + p_temp) if c.item() != c_prev else p_b + p_temp
+                        p_total = np.logaddexp(new_p_b, new_p_nb)
+                        if lm_model is not None:
+                            score_lm += lm_prob[s_idx, c].item() * lm_weight
+                            ys = torch.cat([seq['ys'], c.view(-1,1)], dim=1)
+                        
+                        new_beam.append({'ys':ys, 'p_blk': new_p_b, 'p_nblk': new_p_nb, 'score_ctc': p_total, 'score_lm': score_lm, 'hyp': hyp+[c.item()]})
 
-                sort_f = lambda x:x['score'] + (len(x['hyp'])-1) * args.length_penalty \
-                            if args.length_penalty is not None else lambda x:x['score']                
-                batch_top_seqs[b] = sorted(all_seqs[b], key=sort_f, reverse=True)[:args.beam_width]
+                sort_f = lambda x: x['score_ctc'] + x['score_lm'] + length_penalty * len(x['hyp']) \
+                            if length_penalty is not None else lambda x: x['score_ctc'] + x['score_lm']
+                batch_top_seqs[b] = sorted(new_beam, key=sort_f, reverse=True)[:beam_width]
         return batch_top_seqs
-
 

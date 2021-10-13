@@ -70,14 +70,17 @@ class ConvEmbedding(nn.Module):
     """
     Mapping input features to embeddings and downsample with 4.
     """
-    def __init__(self, input_size, d_model, dropout, pos_enc):
+    def __init__(self, input_size, d_model, dropout, pos_enc, causal=False):
         super(ConvEmbedding, self).__init__()
 
-        self.conv = nn.Sequential(
-                    nn.Conv2d(1, 64, 3, 2, 1),
-                    nn.ReLU(),
-                    nn.Conv2d(64, 128, 3, 2, 1),
-                    nn.ReLU(), )
+        if causal:
+            conv1 = nn.Conv2d(1, 64, (2,3), (2,2), (0,1))
+            conv2 = nn.Conv2d(64, 128, (2,3), (2,2), (0,1))
+        else:
+            conv1 = nn.Conv2d(1, 64, 3, 2, 1)
+            conv2 = nn.Conv2d(64, 128, 3, 2, 1)
+        
+        self.conv = nn.Sequential(conv1, nn.ReLU(), conv2, nn.ReLU())
 
         self.d_model = d_model 
         
@@ -92,7 +95,10 @@ class ConvEmbedding(nn.Module):
         x = self.linear_out(x.transpose(1,2).contiguous().view(b, t, c*d))
         
         x = self.pos_enc(x * math.sqrt(self.d_model))
-        mask = mask[:, :, ::2][:, :, ::2]
+        if mask.size(1) == 1:
+            mask = mask[:, :, ::2][:, :, ::2]
+        else:
+            mask = mask[:,::2,::2][:, ::2,::2]
         return x, mask
 
 

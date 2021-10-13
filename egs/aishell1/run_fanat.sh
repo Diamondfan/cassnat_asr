@@ -2,8 +2,8 @@
 . cmd.sh
 . path.sh
 
-stage=1
-end_stage=1
+stage=3
+end_stage=3
 
 encoder_initial_model=exp/ar_convenc_best_interctc05_ctc05/averaged.mdl
 asr_exp=exp/conv_fanat_convdec_maxlen4_interctc05_interce01_ce09_aftermapping/
@@ -56,8 +56,11 @@ if [ $stage -le 2 ] && [ $end_stage -ge 2 ]; then
 fi
 
 if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
-  exp=$asr_exp
+  #exp=$asr_exp
+  #exp=exp_cassnat/fanat_large_specaug_multistep_trig_src_initenc
+  exp=exp/conv_fanat_convdec_maxlen4_interctc05_interce01_ce09_aftermapping
 
+  #rnnlm_model=exp_cassnat/1kh_d512_multistep_ctc1_accum1_bth32_specaug/averaged.mdl
   rnnlm_model=exp/ar_convenc_best_interctc05_ctc05/averaged.mdl
   global_cmvn=data/fbank/cmvn.ark
   test_model=$exp/$out_name
@@ -71,13 +74,13 @@ if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
   s_num=50
   s_dist=0
   lp=0
-  nj=4
-  batch_size=4
-  test_set="dev test"
+  nj=1
+  batch_size=1
+  test_set="test"
 
   for tset in $test_set; do
     echo "Decoding $tset..."
-    desdir=$exp/${decode_type}_decode_average_bm1_${beam1}_sampdist_${s_dist}_samplenum_${s_num}_newlm${lmwt}/$tset/
+    desdir=$exp/${decode_type}_decode_average_bm1_${beam1}_sampdist_${s_dist}_samplenum_${s_num}_newlm${lmwt}_speech218_bth1_nj1/$tset/
 
     if [ ! -d $desdir ]; then
       mkdir -p $desdir
@@ -93,6 +96,7 @@ if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
       CUDA_VISIBLE_DEVICES=JOB fanat_decode.py \
         --test_config conf/fanat_decode.yaml \
         --lm_config conf/decode.yaml \
+        --rank_model 'at_baseline' \
         --data_path $desdir/feats.JOB.scp \
         --text_label data/$tset/token.scp \
         --resume_model $test_model \

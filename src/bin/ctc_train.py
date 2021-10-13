@@ -189,7 +189,7 @@ def main_worker(rank, world_size, args, backend='nccl'):
         if args.distributed:
             average_number = torch.Tensor([train_loss, train_ctc_wer, train_interctc_wer, valid_loss, valid_ctc_wer, valid_interctc_wer]).float().cuda(args.rank)
             torch.distributed.all_reduce(average_number, op=ReduceOp.SUM)
-        train_loss, train_ctc_wer, train_interctc_wer, valid_loss, valid_ctc_wer, valid_interctc_wer = (average_number / args.world_size).cpu().numpy()
+            train_loss, train_ctc_wer, train_interctc_wer, valid_loss, valid_ctc_wer, valid_interctc_wer = (average_number / args.world_size).cpu().numpy()
         if args.rank == 0:
             print("Epoch {} done, Train: Loss={:.4f}, ctc WER={:.4f} interctc WER={:.4f} Valid: Loss={:.4f} ctc WER={:.4f} interctc WER={:.4f} Current LR: {:4e}".format(
                         epoch, train_loss, train_ctc_wer, train_interctc_wer, valid_loss, valid_ctc_wer, valid_interctc_wer, temp_lr), flush=True)
@@ -217,10 +217,6 @@ def main_worker(rank, world_size, args, backend='nccl'):
                 print("Early stop since valid_wer doesn't decrease")
             break
 
-def subsequent_mask(size):
-    ret = torch.ones(size, size, dtype=torch.uint8)
-    return torch.tril(ret, out=ret).unsqueeze(0)
-
 def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_train=True):
     batch_time = util.AverageMeter('Time', ':6.3f')
     losses = util.AverageMeter('Loss', ':.4e')
@@ -237,6 +233,7 @@ def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_trai
         start = time.time()
         utt_list, feats, labels, feat_sizes, label_sizes = data
         src, src_mask = feats, (feats[:,:,0] != args.padding_idx).unsqueeze(1)
+            
         tgt_label = labels[:,1:-1]
         tokens = (tgt_label != args.padding_idx).sum().item()
         
@@ -246,20 +243,18 @@ def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_trai
             feat_sizes = feat_sizes.cuda()
             label_sizes = label_sizes.cuda()
         
-        ctc_out, inter_out, enc_h = model(src, src_mask, args.ctc_alpha, args.interctc_alpha)
+        ctc_out, inter_out, enc_h = model(src, src_mask, args.ctc_alpha, args.interctc_alpha, args)
         bs, max_feat_size, _ = enc_h.size()
 
         # loss computation
         assert args.ctc_alpha > 0
         feat_sizes = (feat_sizes * max_feat_size).long()
 
-        with torch.backends.cudnn.flags(deterministic=True):
-            ctc_loss = criterion[0](ctc_out.transpose(0,1), tgt_label, feat_sizes, label_sizes)
+        ctc_loss = criterion[0](ctc_out.transpose(0,1), tgt_label, feat_sizes, label_sizes)
         loss = args.ctc_alpha * ctc_loss
             
         if args.interctc_alpha > 0:
-            with torch.backends.cudnn.flags(deterministic=True):
-                interctc_loss = criterion[1](inter_out.transpose(0,1), tgt_label, feat_sizes, label_sizes)
+            interctc_loss = criterion[1](inter_out.transpose(0,1), tgt_label, feat_sizes, label_sizes)
             loss += args.interctc_alpha * interctc_loss
         else:
             interctc_loss = torch.Tensor([0])
