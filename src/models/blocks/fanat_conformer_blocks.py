@@ -135,10 +135,10 @@ class AcEmbedExtractor(nn.Module):
             x = layer(x, memory, trigger_mask)
         return x
 
-class EmbedMapper(nn.Module):
+class SelfAttDecoder(nn.Module):
     "Map the acoustic embedding to word embedding, similar with Encoder structure"
     def __init__(self, size, feed_forward1, self_attn, conv_module, feed_forward2, dropout, N, pos_type, share_ff=False, ff_scale=0.5):
-        super(EmbedMapper, self).__init__()
+        super(SelfAttDecoder, self).__init__()
         layer = SelfAttLayer(size, feed_forward1, self_attn, conv_module, feed_forward2, dropout, pos_type, share_ff, ff_scale)
         self.layers = clones(layer, N)
         self.pos_type = pos_type
@@ -154,17 +154,17 @@ class EmbedMapper(nn.Module):
             x = layer(x, mask, pos_embed)
         return (x, pos_embed)
 
-class Decoder(nn.Module):
+class MixAttDecoder(nn.Module):
     "Generic N layer decoder with masking."
     def __init__(self, size, feed_forward1, self_attn, conv_module, src_attn, feed_forward2, dropout, N, pos_type, share_ff=False, ff_scale=0.5):
-        super(Decoder, self).__init__()
+        super(MixAttDecoder, self).__init__()
         layer = MixAttLayer(size, feed_forward1, self_attn, conv_module, src_attn, feed_forward2, dropout, pos_type, share_ff, ff_scale)
         self.layers = clones(layer, N)
         self.pos_type = pos_type
         self.norm = LayerNorm(layer.size)
         self.num_layers = N
         
-    def forward(self, x, memory, src_mask, tgt_mask, interce_alpha=0, interce_location=None):
+    def forward(self, x, memory, src_mask, tgt_mask, interce_alpha=0, interce_layer=2):
         if self.pos_type == "relative":
             x, pos_embed = x[0], x[1]
         elif self.pos_type == "absolute":
@@ -173,11 +173,11 @@ class Decoder(nn.Module):
         n_layer = 0
         for layer in self.layers:
             x = layer(x, memory, src_mask, tgt_mask, pos_embed)
-            if interce_alpha > 0 and interce_location !='after_mapping' and n_layer == int(self.num_layers / 2) - 1:
+            if interce_alpha > 0 and n_layer == interce_layer - 1:
                 interce_out = x
             n_layer += 1
 
-        if interce_alpha > 0 and interce_location != 'after_mapping':
+        if interce_alpha > 0 and interce_layer > 0:
             return (self.norm(x), interce_out)
         else:
             return self.norm(x)

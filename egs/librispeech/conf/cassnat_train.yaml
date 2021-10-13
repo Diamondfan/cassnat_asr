@@ -1,10 +1,10 @@
 #model configuration
-model_type: "conformer"
+model_type: "transformer"
 input_size: 240
-N_enc: 10
+N_enc: 12
 N_extra: 1
-N_map: 2
-N_dec: 4
+N_self_dec: 5 # 3
+N_mix_dec: 2 # 4
 d_model: 512 #256
 d_ff: 2048          
 n_head: 8 #4
@@ -24,13 +24,15 @@ dec_kernel_size: 3
 #nat related conf
 use_trigger: True
 use_src: True
-src_trigger: False
+src_trigger: True
 use_unimask: False
-left_trigger: 1
-right_trigger: 1
+left_trigger: 0
+right_trigger: 0
 use_best_path: False
 sample_dist: 0
-sample_topk: 0
+sample_topk: 0 #4
+MWER_training: False
+sample_num: 0
 
 n_features: 80
 vocab_size: 4999
@@ -39,10 +41,10 @@ right_ctx: 2
 skip_frame: 1
 
 noam_factor: 10.0
-noam_warmup: 12500
+noam_warmup: 40000 #12500
 
 decay_rate: 0.01
-s_warm: 2000
+s_warm: 1000
 s_decay: 40000
 s_keep: 160000
 
@@ -57,6 +59,7 @@ use_gpu: True
 use_specaug: True
 specaug_start_epoch: 0
 spec_aug:
+  use_time_warp: False
   resize_mode: "PIL"
   max_time_warp: 5
   max_freq_width: 27

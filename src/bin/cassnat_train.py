@@ -18,8 +18,8 @@ import utils.util as util
 from utils.wer import ctc_greedy_wer, att_greedy_wer
 from data.vocab import Vocab
 from utils.optimizer import get_opt
-from models import make_fanat, make_fanat_conformer
-from utils.loss import LabelSmoothing, KLDivLoss, EmbedLoss
+from models import make_cassnat, make_cassnat_conformer
+from utils.loss import LabelSmoothing, KLDivLoss
 from data.speech_loader import SpeechDataset, SpeechDataLoader
 
 class Config():
@@ -46,13 +46,14 @@ def main():
     parser.add_argument("--load_data_workers", default=2, type=int, help="Number of parallel data loaders")
     parser.add_argument("--ctc_alpha", default=0, type=float, help="Task ratio of CTC")
     parser.add_argument("--interctc_alpha", default=0, type=float, help="Task ratio of Intermediate CTC")
+    parser.add_argument("--interctc_layer", default=6, type=int, help="Layer to add Intermediate CTC")
     parser.add_argument("--att_alpha", default=1, type=float, help="Task ratio of decoder ce loss")
     parser.add_argument("--interce_alpha", default=0, type=float, help="Task ratio of Intermediate CE loss")
-    parser.add_argument("--interce_location", default=None, type=str, help="where to add interce loss")
-    parser.add_argument("--embed_alpha", default=0, type=float, help="Task ratio of embedding prediction loss")
-    parser.add_argument("--embed_loss_type", default='l2', type=str, help="Type of embedding prediction loss")
+    parser.add_argument("--interce_layer", default=2, type=int, help="Layer to add Intermediate CE")
+    parser.add_argument("--save_embedding", default=False, action='store_true', help="save embedding for analysis")
     parser.add_argument("--resume_model", default='', type=str, help="The model path to resume")
     parser.add_argument("--init_encoder", default=False, action='store_true', help="decide whether use encoder initialization")
+    parser.add_argument("--fix_encoder", default=False, action='store_true', help="fix encoder, optimize decoder only")
     parser.add_argument("--knowlg_dist", default=False, action='store_true', help='AT model for knowledge distillation')
     parser.add_argument("--print_freq", default=100, type=int, help="Number of iter to print")
     parser.add_argument("--seed", default=1, type=int, help="Random number seed")
@@ -96,7 +97,7 @@ def main():
 def main_worker(rank, world_size, args, backend='nccl'):
     args.rank, args.world_size = rank, world_size
     if args.distributed:
-        dist.init_process_group(backend=backend, init_method='tcp://localhost:12456',
+        dist.init_process_group(backend=backend, init_method='tcp://localhost:35627',
                                     world_size=world_size, rank=rank)
     
     ## 2. Define model and optimizer
@@ -111,11 +112,9 @@ def main_worker(rank, world_size, args, backend='nccl'):
     args.vocab_size = vocab.n_words
     assert args.input_size == (args.left_ctx + args.right_ctx + 1) // args.skip_frame * args.n_features
     if args.model_type == "transformer":
-        model = make_fanat(args.input_size, args)
+        model = make_cassnat(args.input_size, args)
     elif args.model_type == "conformer":
-        model = make_fanat_conformer(args.input_size, args)
-
-    optimizer = get_opt(args.opt_type, model, args) 
+        model = make_cassnat_conformer(args.input_size, args)
     
     if args.init_encoder and args.resume_model:
         if rank == 0:
@@ -124,10 +123,16 @@ def main_worker(rank, world_size, args, backend='nccl'):
         for name, param in model.named_parameters():
             if name.split('.')[0] in ['src_embed', 'encoder', 'ctc_generator', 'interctc_generator']:
                 try:
-                    param.data.copy_(checkpoint['module.'+name])
+                    if name in checkpoint:
+                        param.data.copy_(checkpoint[name])
+                    else:
+                        param.data.copy_(checkpoint['module.'+name])
                 except:
                     if rank == 0:
                         print("No param of {} in resume model".format(name))
+
+                if args.fix_encoder:
+                    param.requires_grad = False
        
         #model.load_state_dict(checkpoint["state_dict"])
         #optimizer.load_state_dict(checkpoint['optimizer'])
@@ -142,6 +147,8 @@ def main_worker(rank, world_size, args, backend='nccl'):
         checkpoint = None
         start_epoch = 0
 
+    optimizer = get_opt(args.opt_type, model, args)
+    
     if args.knowlg_dist:
         if rank == 0:
             print("Loading model from {} for knowledge distillation".format(args.resume_model))
@@ -186,7 +193,7 @@ def main_worker(rank, world_size, args, backend='nccl'):
         torch.cuda.set_device(args.rank)
         model = model.cuda()
     if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.rank], find_unused_parameters=True)
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.rank]) #, find_unused_parameters=True)
 
     ## 3. Define vocabulary and data loader
     trainset = SpeechDataset(vocab, args.train_paths, args)
@@ -206,19 +213,15 @@ def main_worker(rank, world_size, args, backend='nccl'):
     if rank == 0:
         print("Finish Loading dev files. Number batches: {}".format(len(valid_loader)))
     
-    criterion_ctc = torch.nn.CTCLoss(reduction='mean')
+    criterion_ctc = torch.nn.CTCLoss(reduction='mean', zero_infinity=True)
     if args.knowlg_dist:
         criterion_att = KLDivLoss(args.padding_idx)
     else:
         criterion_att = LabelSmoothing(args.vocab_size, args.padding_idx, args.label_smooth)
     criterion = [criterion_ctc, criterion_att]
-    if args.embed_alpha > 0:
-        criterion_embed = EmbedLoss(args.padding_idx, args.embed_loss_type)
-        criterion.append(criterion_embed)
-    else:
-        criterion.append(None)
+
     if args.interctc_alpha > 0:
-        criterion_interctc = torch.nn.CTCLoss(reduction='mean')
+        criterion_interctc = torch.nn.CTCLoss(reduction='mean', zero_infinity=True)
         criterion.append(criterion_interctc)
     else:
         criterion.append(None)
@@ -298,11 +301,10 @@ def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_trai
     losses = util.AverageMeter('Loss', ':.4e')
     ctc_losses = util.AverageMeter('CtcLoss', ":.4e")
     att_losses = util.AverageMeter('AttLoss', ":.4e")
-    embed_losses = util.AverageMeter('EmbedLoss', ":.4e")
     ctc_wers = util.AverageMeter('CtcWer', ':.4f')
     att_wers = util.AverageMeter('AttWer', ':.4f')
     token_speed = util.AverageMeter('TokenSpeed', ":.2f")
-    progress = util.ProgressMeter(len(dataloader), batch_time, losses, embed_losses, ctc_losses, att_losses, ctc_wers, \
+    progress = util.ProgressMeter(len(dataloader), batch_time, losses, ctc_losses, att_losses, ctc_wers, \
                                     att_wers, token_speed, prefix="Epoch: [{}]".format(epoch))
     
     end = time.time()
@@ -325,7 +327,10 @@ def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_trai
         if args.use_unimask:
             args.sos_embed = args.word_embed(tgt)[:,0:1,:]
 
-        ctc_out, att_out, pred_embed, tgt_mask_pred, interctc_out, interce_out = model(src, src_mask, feat_sizes, tgt_label, label_sizes, args)
+        if args.MWER_training:
+            ctc_out, att_out, pred_embed, tgt_mask_pred, interctc_out, interce_out, wer_weight, ctc_target = model(src, src_mask, feat_sizes, tgt_label, label_sizes, args)
+        else:
+            ctc_out, att_out, pred_embed, tgt_mask_pred, interctc_out, interce_out = model(src, src_mask, feat_sizes, tgt_label, label_sizes, args)
         bs, max_feat_size, _ = ctc_out.size()
         feat_sizes = (feat_sizes * max_feat_size).long()
         
@@ -337,33 +342,34 @@ def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_trai
             att_loss = criterion[1](att_out.view(-1, att_out.size(-1)), at_prob.view(-1, at_prob.size(-1)), tgt_label.view(-1))
         elif args.use_best_path:
             att_loss = criterion[1].forward_best_path(att_out, tgt_label, tgt_mask_pred)
+        elif args.MWER_training:
+            att_loss = criterion[1].MWER(att_out, ctc_target, wer_weight)
         else:
             att_loss = criterion[1](att_out.view(-1, att_out.size(-1)), tgt_label.view(-1))
 
-        loss = att_loss
+        loss = args.att_alpha * att_loss
         if args.ctc_alpha > 0:
             ctc_loss = criterion[0](ctc_out.transpose(0,1), tgt_label, feat_sizes, label_sizes)
             loss += args.ctc_alpha * ctc_loss
         else:
             ctc_loss = torch.Tensor([0])
 
-        if args.embed_alpha > 0:
-            embed_loss = criterion[2](pred_embed, args.word_embed, tgt, tgt_mask_pred)
-            loss += args.embed_alpha * embed_loss
-        else:
-            embed_loss = torch.Tensor([0])
-
         if args.interctc_alpha > 0:
-            interctc_loss = criterion[3](interctc_out.transpose(0,1), tgt_label, feat_sizes, label_sizes)
+            interctc_loss = criterion[2](interctc_out.transpose(0,1), tgt_label, feat_sizes, label_sizes)
             loss += args.interctc_alpha * interctc_loss
+
         if args.interce_alpha > 0:
-            interce_loss = criterion[4](interce_out.view(-1, interce_out.size(-1)), tgt_label.view(-1))
+            interce_loss = criterion[3](interce_out.view(-1, interce_out.size(-1)), tgt_label.view(-1))
             loss += args.interce_alpha * interce_loss
 
         # unit error rate computation
         ctc_errs, all_tokens = ctc_greedy_wer(ctc_out, tgt_label.cpu().numpy(), feat_sizes.cpu().numpy(), args.padding_idx)
-        att_errs, all_tokens = att_greedy_wer(att_out, tgt_label.cpu().numpy(), args.padding_idx)
         ctc_wers.update(ctc_errs/all_tokens, all_tokens)
+        if args.MWER_training:
+            att_errs, all_tokens = att_greedy_wer(att_out, ctc_target.cpu().numpy(), args.padding_idx)
+        else:
+            att_errs, all_tokens = att_greedy_wer(att_out, tgt_label.cpu().numpy(), args.padding_idx)
+
         att_wers.update(att_errs/all_tokens, all_tokens)
         
         if is_train:
@@ -375,7 +381,6 @@ def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_trai
                 optimizer.zero_grad()
 
         losses.update(loss.item(), tokens)
-        embed_losses.update(embed_loss.item(), tokens)
         ctc_losses.update(ctc_loss.item(), tokens)
         att_losses.update(att_loss.item(), tokens)
         batch_time.update(time.time() - end)

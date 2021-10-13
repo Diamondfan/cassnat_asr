@@ -13,8 +13,8 @@ from models.modules.positionff import PositionwiseFeedForward
 from models.modules.embedding import PositionalEncoding, RelativePositionalEncoding, ConvEmbedding, TextEmbedding
 from models.modules.conformer_related import Swish, ConvModule
 from models.blocks.fanat_conformer_blocks import Encoder
-from models.blocks import ConEmbedMapper, ConDecoder, TrfEmbedMapper, TrfDecoder, ConAcExtra, TrfAcExtra
-from models.fanat import FaNat
+from models.blocks import ConSAD, ConMAD, TrfSAD, TrfMAD, ConAcExtra, TrfAcExtra
+from models.cassnat import CassNAT
 from utils.ctc_prefix import CTCPrefixScore
 
 def make_model(input_size, args):
@@ -37,21 +37,21 @@ def make_model(input_size, args):
         dec_src_attn = MultiHeadedAttention(args.n_head, args.d_model, args.dropout)
         dec_conv_module = ConvModule(args.d_model, args.dec_kernel_size, activation=Swish())
         dec_position = RelativePositionalEncoding(args.d_model, args.dropout, args.dec_max_relative_len)
-        model = ConFaNat(
+        model = ConCassNAT(
                     ConvEmbedding(input_size, args.d_model, args.dropout, enc_position),
                     Encoder(args.d_model, c(enc_ff), enc_attn, enc_conv_module, c(enc_ff), args.dropout, args.N_enc, args.pos_type, args.share_ff),
                     ConAcExtra(args.d_model, c(dec_src_attn), c(dec_ff), dec_position, args.pos_type, args.dropout, args.N_extra),
-                    ConEmbedMapper(args.d_model, c(dec_ff), c(dec_self_attn), c(dec_conv_module), c(dec_ff), args.dropout, args.N_map, args.pos_type, args.share_ff),
-                    ConDecoder(args.d_model, c(dec_ff), c(dec_self_attn), c(dec_conv_module), c(dec_src_attn), c(dec_ff), args.dropout, args.N_dec, args.pos_type, args.share_ff), 
+                    ConSAD(args.d_model, c(dec_ff), c(dec_self_attn), c(dec_conv_module), c(dec_ff), args.dropout, args.N_map, args.pos_type, args.share_ff),
+                    ConMAD(args.d_model, c(dec_ff), c(dec_self_attn), c(dec_conv_module), c(dec_src_attn), c(dec_ff), args.dropout, args.N_dec, args.pos_type, args.share_ff), 
                     c(generator), c(generator), pe, interctc_gen, interce_gen)
     else:
         dec_attn = MultiHeadedAttention(args.n_head, args.d_model, args.dropout)
-        model = ConFaNat(
+        model = ConCassNAT(
                     ConvEmbedding(input_size, args.d_model, args.dropout, enc_position),
                     Encoder(args.d_model, c(enc_ff), enc_attn, enc_conv_module, c(enc_ff), args.dropout, args.N_enc, args.pos_type, args.share_ff),
                     TrfAcExtra(args.d_model, c(dec_attn), c(dec_ff), args.dropout, args.N_extra),
-                    TrfEmbedMapper(args.d_model, c(dec_attn), c(dec_ff), args.dropout, args.N_map),
-                    TrfDecoder(args.d_model, c(dec_attn), c(dec_attn), c(dec_ff), args.dropout, args.N_dec), 
+                    TrfSAD(args.d_model, c(dec_attn), c(dec_ff), args.dropout, args.N_map),
+                    TrfMAD(args.d_model, c(dec_attn), c(dec_attn), c(dec_ff), args.dropout, args.N_dec), 
                     c(generator), c(generator), pe, interctc_gen, interce_gen)
     
     for p in model.parameters():
@@ -82,7 +82,7 @@ class Generator(nn.Module):
             x = self.norm(x)
         return F.log_softmax(self.proj(x)/T, dim=-1)
 
-class ConFaNat(FaNat):
+class ConCassNAT(CassNAT):
     def __init__(self, *args):
-        super(ConFaNat, self).__init__(*args)
+        super(ConCassNAT, self).__init__(*args)
 

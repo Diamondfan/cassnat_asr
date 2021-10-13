@@ -3,6 +3,7 @@
 
 import copy
 import math
+import editdistance as ed
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -11,7 +12,7 @@ from models.modules.norm import LayerNorm
 from models.modules.attention import MultiHeadedAttention
 from models.modules.positionff import PositionwiseFeedForward
 from models.modules.embedding import PositionalEncoding, ConvEmbedding, TextEmbedding
-from models.blocks.fanat_blocks import Encoder, Decoder, AcEmbedExtractor, EmbedMapper
+from models.blocks.fanat_blocks import Encoder, AcEmbedExtractor, SelfAttDecoder, MixAttDecoder
 from utils.ctc_prefix import logzero, logone, CTCPrefixScore
 
 def make_model(input_size, args):
@@ -25,15 +26,15 @@ def make_model(input_size, args):
     interctc_gen = Generator(args.d_model, args.vocab_size, add_norm=True) if args.interctc_alpha > 0 else None
     interce_gen = Generator(args.d_model, args.vocab_size, add_norm=True) if args.interce_alpha > 0 else None
     if args.use_src:
-        decoder_use = Decoder(args.d_model, c(attn), c(attn), c(ff), args.dropout, args.N_dec)
+        decoder_use = MixAttDecoder(args.d_model, c(attn), c(attn), c(ff), args.dropout, args.N_mix_dec)
     else:
-        decoder_use = Encoder(args.d_model, c(attn), c(ff), args.dropout, args.N_dec)
+        decoder_use = SelfAttDecoder(args.d_model, c(attn), c(ff), args.dropout, args.N_mix_dec)
 
-    model = FaNat(
+    model = CassNAT(
         ConvEmbedding(input_size, args.d_model, args.dropout, c(position)),
         Encoder(args.d_model, c(attn), c(ff), args.dropout, args.N_enc),
         AcEmbedExtractor(args.d_model, c(attn), c(ff), args.dropout, args.N_extra),
-        EmbedMapper(args.d_model, c(attn), c(ff), args.dropout, args.N_map),
+        SelfAttDecoder(args.d_model, c(attn), c(ff), args.dropout, args.N_self_dec),
         decoder_use,
         c(generator), c(generator), pe, interctc_gen, interce_gen)
         
@@ -65,9 +66,9 @@ class Generator(nn.Module):
             x = self.norm(x)
         return F.log_softmax(self.proj(x)/T, dim=-1)
 
-class FaNat(nn.Module):
+class CassNAT(nn.Module):
     def __init__(self, src_embed, encoder, acembed_extractor, embed_mapper, decoder, ctc_gen, att_gen, pe, interctc_gen=None, interce_gen=None):
-        super(FaNat, self).__init__()
+        super(CassNAT, self).__init__()
         self.src_embed = src_embed
         self.encoder = encoder
         self.acembed_extractor = acembed_extractor
@@ -82,9 +83,12 @@ class FaNat(nn.Module):
             self.interce_generator = interce_gen
 
     def forward(self, src, src_mask, src_size, tgt_label, ylen, args):
+        if args.MWER_training:
+            return self.forward_MWER(src, src_mask, src_size, tgt_label, ylen, args)
         # 1. compute ctc output
         x, x_mask = self.src_embed(src, src_mask)
-        enc_h = self.encoder(x, x_mask, args.interctc_alpha)
+        enc_h = self.encoder(x, x_mask, args.interctc_alpha, args.interctc_layer)
+
         if args.ctc_alpha > 0 and args.interctc_alpha == 0:
             ctc_out = self.ctc_generator(enc_h)
             interctc_out = 0
@@ -107,14 +111,7 @@ class FaNat(nn.Module):
                 aligned_seq_shift, ylen, ymax = self.viterbi_align(ctc_out, x_mask, src_size, tgt_label[:,:-1], ylen, blank, args.sample_dist, args.sample_topk)
                 trigger_mask, ylen, ymax = self.align_to_mask(aligned_seq_shift, ylen, ymax, x_mask, src_size, blank)
 
-            if args.right_trigger > 0:
-                trigger_shift_right = trigger_mask.new_zeros(trigger_mask.size())
-                trigger_shift_right[:, :, 1:] = trigger_mask[:,:, :-1]
-                trigger_mask = trigger_mask | trigger_shift_right
-            if args.left_trigger > 0:
-                trigger_shift_left = trigger_mask.new_zeros(trigger_mask.size())
-                trigger_shift_left[:,:,:-1] = trigger_mask[:,:,1:]
-                trigger_mask = trigger_mask | trigger_shift_left
+            trigger_mask = self.expand_trigger_mask(trigger_mask, args.left_trigger, args.right_trigger)
             trigger_mask = trigger_mask & x_mask
         else:
             trigger_mask = x_mask
@@ -127,6 +124,78 @@ class FaNat(nn.Module):
         tgt_mask_bidi = tgt_mask_bidi.scatter(1, ylen.unsqueeze(1)-1, 1).unsqueeze(1)
         
         # 3. Extract Acoustic embedding and Map it to Word embedding
+        pe = self.pe.type_as(src).unsqueeze(0).repeat(bs, 1, 1)[:,:ymax,:]
+        ac_embed = self.acembed_extractor(pe, enc_h, trigger_mask)
+        pred_embed = self.embed_mapper(ac_embed, tgt_mask_bidi)
+        if args.interce_alpha > 0 and args.interce_layer == 0:
+            interce_out = self.interce_generator(pred_embed[0])
+
+        if args.save_embedding:
+            args.ac_embed, args.pred_embed = ac_embed[0].cpu(), pred_embed[0].cpu()
+        
+        # 4. decoder, output units generation
+        if args.use_unimask:
+            pred_embed = torch.cat([args.sos_embed, pred_embed[:,:-1,:]], dim=1)
+            tgt_mask = tgt_mask_bidi & self.subsequent_mask(ymax).type_as(tgt_mask_bidi) # uni-direc
+        else:
+            tgt_mask = tgt_mask_bidi
+            true_embed = None
+
+        if args.use_src:
+            if args.src_trigger:
+                x_mask = trigger_mask
+            dec_h = self.decoder(pred_embed, enc_h, x_mask, tgt_mask, args.interce_alpha, args.interce_layer)
+        else:
+            dec_h = self.decoder(pred_embed, tgt_mask)
+        
+        if args.interce_alpha > 0 and args.interce_layer > 0:
+            dec_h, interce_h = dec_h[0], dec_h[1]
+            interce_out = self.interce_generator(interce_h)
+        elif args.interce_alpha == 0:
+            interce_out = 0
+        
+        att_out = self.att_generator(dec_h)
+        return ctc_out, att_out, pred_embed, tgt_mask_bidi, interctc_out, interce_out
+
+    def forward_MWER(self, src, src_mask, src_size, tgt_label, tgtlen, args):
+        # 1. compute ctc output
+        x, x_mask = self.src_embed(src, src_mask)
+        enc_h = self.encoder(x, x_mask, args.interctc_alpha)
+        if args.ctc_alpha > 0 and args.interctc_alpha == 0:
+            ctc_out = self.ctc_generator(enc_h)
+            interctc_out = 0
+        elif args.ctc_alpha > 0 and args.interctc_alpha > 0:
+            enc_h, inter_h = enc_h[0], enc_h[1]
+            ctc_out = self.ctc_generator(enc_h)
+            interctc_out = self.interctc_generator(inter_h)
+        else:
+            ctc_out = enc_h.new_zeros(enc_h.size())
+            interctc_out = 0
+        
+        # 2. Expand enc_h and ctc_out to be sample_num*bs, 
+        assert args.ctc_alpha > 0
+        src_size = (src_size * ctc_out.size(1)).long()
+        blank = args.padding_idx
+        sample_num = args.sample_num
+        ctc_out_expand = ctc_out.unsqueeze(1).repeat(1, sample_num, 1, 1).reshape(-1, ctc_out.size(1), ctc_out.size(2))
+        enc_h = enc_h.unsqueeze(1).repeat(1, sample_num, 1, 1).reshape(-1, enc_h.size(1), enc_h.size(2))
+        x_mask = x_mask.unsqueeze(1).repeat(1, sample_num, 1, 1).reshape(-1, x_mask.size(1), x_mask.size(2))
+        src_size = src_size.unsqueeze(1).repeat(1, sample_num).reshape(-1)
+        
+        # 3. Obtain trigger mask (sample topk from best_path align, using ESA)
+        aligned_seq_shift, ylen, ymax = self.best_path_align(ctc_out_expand, x_mask, src_size, blank, 0, sample_num, threshold=0.9, include_best=True)
+        trigger_mask, ylen, ymax = self.align_to_mask(aligned_seq_shift, ylen, ymax, x_mask, src_size, blank)
+        wer_weight, ctc_target = self.MWER_preprocess(aligned_seq_shift, ylen, tgt_label, tgtlen, sample_num)
+
+        trigger_mask = self.expand_trigger_mask(trigger_mask, args.left_trigger, args.right_trigger)
+        trigger_mask = trigger_mask & x_mask
+
+        bs, _, d_model = enc_h.size()
+        tgt_mask_bidi = torch.full((bs, ymax), 1).type_as(src_mask)
+        tgt_mask_bidi = tgt_mask_bidi.scatter(1, ylen.unsqueeze(1)-1, 0).cumprod(1)
+        tgt_mask_bidi = tgt_mask_bidi.scatter(1, ylen.unsqueeze(1)-1, 1).unsqueeze(1)
+        
+        # 3. Extract Acoustic embedding
         pe = self.pe.type_as(src).unsqueeze(0).repeat(bs, 1, 1)[:,:ymax,:]
         ac_embed = self.acembed_extractor(pe, enc_h, trigger_mask)
         pred_embed = self.embed_mapper(ac_embed, tgt_mask_bidi)
@@ -156,7 +225,40 @@ class FaNat(nn.Module):
         else:
             dec_h = self.decoder(pred_embed, tgt_mask)
         att_out = self.att_generator(dec_h)
-        return ctc_out, att_out, pred_embed, tgt_mask_bidi, interctc_out, interce_out
+        return ctc_out, att_out, pred_embed, tgt_mask_bidi, interctc_out, interce_out, wer_weight, ctc_target
+
+    def MWER_preprocess(self, ctc_seq, ylen, tgt_label, tgtlen, sample_num):
+        # ctc_seq: bsxsample_num, T         tgt_label: bs, T
+        # wer_errors: errors for each sampled path
+        # ctc_target: predicted path, for caculating probability of decoder output
+        bs, T = tgt_label.size()
+        ymax = torch.max(ylen).item()
+        wer_errors = torch.zeros(ctc_seq.size(0)).type_as(ctc_seq)
+        ctc_target = torch.zeros(ctc_seq.size(0), ymax).type_as(ctc_seq)
+        for b in range(bs):
+            tgt_seq = tgt_label[b,:tgtlen[b]].cpu().numpy().tolist()
+            for i in range(sample_num):
+                idx = b * sample_num + i
+                ctc_out = []
+                for token in ctc_seq[idx]:
+                    if token != 0:
+                        ctc_out.append(token.item())
+                
+                wer_errors[idx] = ed.eval(tgt_seq, ctc_out)
+                ctc_out.append(2)
+                ctc_target[idx,:ylen[idx]] = torch.tensor(ctc_out).type_as(ctc_seq)
+        return wer_errors.reshape(-1, sample_num), ctc_target
+
+    def expand_trigger_mask(self, trigger_mask, left_trigger, right_trigger):
+        if right_trigger > 0:
+            trigger_shift_right = trigger_mask.new_zeros(trigger_mask.size())
+            trigger_shift_right[:, :, 1:] = trigger_mask[:,:, :-1]
+            trigger_mask = trigger_mask | trigger_shift_right
+        if left_trigger > 0:
+            trigger_shift_left = trigger_mask.new_zeros(trigger_mask.size())
+            trigger_shift_left[:,:,:-1] = trigger_mask[:,:,1:]
+            trigger_mask = trigger_mask | trigger_shift_left
+        return trigger_mask
 
     def viterbi_align(self, ctc_out, src_mask, src_size, ys, ylens, blank, sample_dist, sample_topk):
         """
@@ -232,21 +334,17 @@ class FaNat(nn.Module):
 
         if sample_dist > 0:
             for b in range(bs):
-                i = 0
-                while i < 3:
-                    i += 1
-                    orig_pos = torch.nonzero(aligned_seq_shift[b])
-                    sample_shift = torch.randint(-sample_dist, sample_dist+1, orig_pos.size()).type_as(aligned_seq_shift)
-                    new_pos = orig_pos + sample_shift
-                    if new_pos.size(0) > 1:
-                        new_pos[-2] = min(new_pos[-2], xmax-1)  # useful when sample_dist = 2
-                    new_pos[-1] = min(new_pos[-1], xmax-1)
-                    new_aligned_seq = aligned_seq_shift[b].clone()
-                    new_aligned_seq[orig_pos] = blank
-                    new_aligned_seq[new_pos] = 1
-                    if torch.sum(new_aligned_seq) == ylens[b]:
-                        aligned_seq_shift[b] = new_aligned_seq
-                        break
+                orig_pos = torch.nonzero(aligned_seq_shift[b])
+                sample_shift = torch.randint(-sample_dist, sample_dist+1, orig_pos.size()).type_as(aligned_seq_shift)
+                new_pos = orig_pos + sample_shift
+                if new_pos.size(0) > 1:
+                    new_pos[-2] = min(new_pos[-2], xmax-1)  # useful when sample_dist = 2
+                new_pos[-1] = min(new_pos[-1], xmax-1)
+                new_aligned_seq = aligned_seq_shift[b].clone()
+                new_aligned_seq[orig_pos] = blank
+                new_aligned_seq[new_pos] = 1
+                if torch.sum(new_aligned_seq) == ylens[b]:
+                    aligned_seq_shift[b] = new_aligned_seq
         return aligned_seq_shift, ylens, ymax
 
     def align_to_mask(self, aligned_seq_shift, ylens, ymax, src_mask, src_size, blank):
@@ -260,14 +358,15 @@ class FaNat(nn.Module):
         ymax += 1
         return trigger_mask, ylen, ymax
 
-    def best_path_align(self, ctc_out, src_mask, src_size, blank, sample_dist=0, sample_num=0):
+    def best_path_align(self, ctc_out, src_mask, src_size, blank, sample_dist=0, sample_num=0, threshold=0.9, include_best=True):
         "This is used for decoding, forced alignment is needed for training"
         bs, xmax, _ = ctc_out.size()
-        if sample_dist == 0 and sample_num > 1:
-            mask = (ctc_out.max(-1)[0].exp() < 0.9).unsqueeze(-1)
+        if sample_num > 1:
+            mask = (ctc_out.max(-1)[0].exp() < threshold).unsqueeze(-1)
             topk = ctc_out.topk(2, -1)[1]
             select = torch.randint(0, 2, (topk.size(0), topk.size(1), 1)).type_as(topk).masked_fill(mask==0, 0)
-            select.index_fill_(0, torch.arange(0, bs, sample_num).type_as(select), 0)
+            if include_best:
+                select.index_fill_(0, torch.arange(0, bs, sample_num).type_as(select), 0)
             best_paths = topk.gather(-1, select).squeeze(-1)
         else:
             best_paths = ctc_out.argmax(-1)
@@ -282,20 +381,16 @@ class FaNat(nn.Module):
         ymax = torch.max(ylen).item()
 
         if sample_dist > 0:
-            for b in range(bs // sample_num):
-                i = 1
-                while i < sample_num:
-                    idx = b * sample_num + i
-                    orig_pos = torch.nonzero(aligned_seq_shift[idx,:])
-                    sample_shift = torch.randint(-sample_dist, sample_dist+1, orig_pos.size()).type_as(aligned_seq_shift)
-                    new_pos = orig_pos + sample_shift
-                    new_pos[-1] = min(new_pos[-1], xmax-1)
-                    new_aligned_seq = aligned_seq_shift[idx,:].clone()
-                    new_aligned_seq[orig_pos] = blank
-                    new_aligned_seq[new_pos] = 1
-                    if torch.sum(new_aligned_seq) == ylen[idx]:
-                        aligned_seq_shift[idx,:] = new_aligned_seq
-                        i += 1
+            for b in range(bs):
+                orig_pos = torch.nonzero(aligned_seq_shift[b,:])
+                sample_shift = torch.randint(-sample_dist, sample_dist+1, orig_pos.size()).type_as(aligned_seq_shift)
+                new_pos = orig_pos + sample_shift
+                new_pos[-1] = min(new_pos[-1], xmax-1)
+                new_aligned_seq = aligned_seq_shift[b].clone()
+                new_aligned_seq[orig_pos] = blank
+                new_aligned_seq[new_pos] = 1
+                if torch.sum(new_aligned_seq) == ylen[b]:
+                    aligned_seq_shift[b] = new_aligned_seq
         return aligned_seq_shift, ylen, ymax
 
     def beam_path_align(self, ctc_out, src_mask, src_size, blank, ctc_top_seqs, sample_num):
@@ -359,7 +454,7 @@ class FaNat(nn.Module):
             elif args.decode_type == 'oracle_att':
                 aligned_seq_shift, ylen, ymax = self.viterbi_align(ctc_out, src_mask, src_size, labels[:,1:-1], label_sizes, blank, args.sample_dist, 0)
             else:             
-                aligned_seq_shift, ylen, ymax = self.best_path_align(ctc_out, src_mask, src_size, blank, args.sample_dist, args.sample_num)
+                aligned_seq_shift, ylen, ymax = self.best_path_align(ctc_out, src_mask, src_size, blank, args.sample_dist, args.sample_num, args.threshold)
             
             if args.test_hitrate and args.sample_num < 2:
                 args.total += (aligned_seq_shift1 != 0).sum().item()
@@ -373,15 +468,8 @@ class FaNat(nn.Module):
                 #args.err = (aligned_seq_shift != 0).sum().item() - (aligned_seq_shift1 != 0).sum().item()
 
             trigger_mask, ylen, ymax = self.align_to_mask(aligned_seq_shift, ylen, ymax, src_mask, src_size, blank)
-                 
-            if args.right_trigger > 0:
-                trigger_shift_right = trigger_mask.new_zeros(trigger_mask.size())
-                trigger_shift_right[:, :, 1:] = trigger_mask[:,:, :-1]
-                trigger_mask = trigger_mask | trigger_shift_right
-            if args.left_trigger > 0:
-                trigger_shift_left = trigger_mask.new_zeros(trigger_mask.size())
-                trigger_shift_left[:,:,:-1] = trigger_mask[:,:,1:]
-                trigger_mask = trigger_mask | trigger_shift_left
+            
+            trigger_mask = self.expand_trigger_mask(trigger_mask, args.left_trigger, args.right_trigger)
             trigger_mask = trigger_mask & src_mask
         else:
             trigger_mask = src_mask

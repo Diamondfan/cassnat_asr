@@ -29,7 +29,6 @@ def main():
     parser.add_argument("--lm_config")
     parser.add_argument("--data_path")
     parser.add_argument("--use_cmvn", default=False, action='store_true', help="Use global cmvn or not")
-    parser.add_argument("--global_cmvn", type=str, help="Cmvn file to load")
     parser.add_argument("--batch_size", default=32, type=int, help="Training minibatch size")
     parser.add_argument("--load_data_workers", default=1, type=int, help="Number of parallel data loaders")
     parser.add_argument("--resume_model", default='', type=str, help="Model to do evaluation")
@@ -142,11 +141,13 @@ def main():
 
             if args.decode_type == 'ctc_only':
                 recog_results = ctc_beam_decode(model, src, src_mask, feat_sizes, vocab, args, lm_model)
-            elif args.decode_type == 'att_ctc':
+            elif args.decode_type == 'ctc_correct':
                 recog_results = model.fast_decode_with_ctc(src, src_mask, vocab, args, lm_model)
-            else:
+            elif args.decode_type == "ctc_att":
                 recog_results = model.beam_decode(src, src_mask, vocab, args, lm_model)
-            
+            else:
+                raise NotImplementedError
+
             for j in range(len(utt_list)):
                 hyp = []
                 for idx in recog_results[j][0]['hyp']:

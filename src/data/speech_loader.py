@@ -189,7 +189,8 @@ class IterSpeechDataset(IterableDataset):
 
         batches = []
         num, batch = 0, []
-        for idx in range(len(indices)):
+        idx = 0
+        while idx < len(indices):
             num_frames = self.get_data(indices[idx], return_nframe=True)
             if self.batch_type == "utterance":
                 num += 1

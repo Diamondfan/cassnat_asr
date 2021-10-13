@@ -2,12 +2,12 @@ vocab_file: data/dict/vocab_wp.txt
 global_cmvn: data/fbank/cmvn.ark
 
 #model configuration
-model_type: "conformer"
+model_type: "transformer"
 input_size: 240
-N_enc: 10
+N_enc: 12
 N_extra: 1
-N_map: 2
-N_dec: 4
+N_self_dec: 1 #5 #3
+N_mix_dec: 6 #2 #4
 d_model: 512 #256
 d_ff: 2048
 n_head: 8 #4
@@ -35,7 +35,7 @@ use_gpu: True
 
 #beam_decode
 beam_width: 1
-ctc_beam: 1 #0 #20
+ctc_beam: 1 #20
 ctc_pruning: 0 #30
 ctc_lp: 0 #2
 ctc_lm_weight: 0.1 #used to load lm for ranking ESA
@@ -46,9 +46,10 @@ use_trigger: True
 use_src: True
 src_trigger: False
 use_unimask: False
-left_trigger: 1
-right_trigger: 1
+left_trigger: 0
+right_trigger: 0
 sample_dist: 0
 sample_num: 50
+threshold: 0.9
 
 test_hitrate: False

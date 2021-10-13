@@ -1,21 +1,19 @@
 #!/usr/bin/env bash
 
 # 2020 Ruchao Fan
-# This script is to run our proposed NAST, The name is FA-NAT
-# (Fully-acoustic Non-autoregressive transformer), we don't use
-# it in our paper.
+# This script is to run our proposed CASS-NAT, The name is CASS-NAT
+# (CTC alignement-based Signgle Step Non-autoregressive Transformer).
 
 . cmd.sh
 . path.sh
 
 stage=3
 end_stage=3
-lm_model=exp/newlm/averaged.mdl
-encoder_initial_model=exp_confomer_baseline/1kh_conformer_rel_maxlen20_e10d5_accum2_specaug_tmax10_multistep2k_40k_160k_ln/averaged.mdl
-
-#asr_exp=exp/conv_fanat_e10m2d4_max_specaug_multistep_initenc_convdec_maxlen8_kernel3_ctxtrig1/
-#asr_exp=exp/conv_fanat_best_interce02_att1/
-asr_exp=exp/conv_fanat_best_interce05_att05/
+lm_model=exp/libri_tfunilm16x512_4card_cosineanneal_ep20_maxlen120/averaged.mdl
+encoder_initial_model=exp/1kh_transformer_baseline_wotime_warp_f27t005/averaged.mdl
+#asr_exp=exp/cassnat_multistep_initart_wosrc_wosrctrig_bimask/
+#asr_exp=exp/cassnat_multistep_initart_wsrc_2blk_wsrctrig_bimask/
+asr_exp=exp/cassnat_multistep_initart_wsrc_6blk_wosrctrig_bimask/
 
 if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
 
@@ -23,9 +21,9 @@ if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
     mkdir -p $asr_exp
   fi
 
-  CUDA_VISIBLE_DEVICES="4,5,6,7" fanat_train.py \
+  CUDA_VISIBLE_DEVICES="0,1,2,3" cassnat_train.py \
     --exp_dir $asr_exp \
-    --train_config conf/fanat_train.yaml \
+    --train_config conf/cassnat_train.yaml \
     --data_config conf/data.yaml \
     --batch_size 16 \
     --epochs 100 \
@@ -38,9 +36,10 @@ if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
     --label_smooth 0.1 \
     --ctc_alpha 1 \
     --interctc_alpha 0 \
-    --att_alpha 0.9 \
-    --interce_alpha 0.1 \
-    --interce_location 'after_mapping' \
+    --interctc_layer 0 \
+    --att_alpha 1 \
+    --interce_alpha 0 \
+    --interce_layer 0 \
     --use_cmvn \
     --init_encoder \
     --resume_model $encoder_initial_model \
@@ -52,7 +51,7 @@ fi
 
 out_name='averaged.mdl'
 if [ $stage -le 2 ] && [ $end_stage -ge 2 ]; then
-  last_epoch=66  # need to be modified
+  last_epoch=81  # need to be modified
   
   average_checkpoints.py \
     --exp_dir $asr_exp \
@@ -66,34 +65,35 @@ fi
 
 #asr_exp=exp/conv_fanat_best_interctc05_ctc05_interce01_ce09_aftermapping/
 #asr_exp=exp/conv_fanat_e10m2d4_max_specaug_multistep_initenc_convdec_maxlen8_kernel3_ctxtrig1
-asr_exp=exp_cassnat/fanat_large_specaug_multistep_trig_src_initenc_SchD_shift_path0
+#asr_exp=exp_cassnat/fanat_large_specaug_multistep_trig_src_initenc_SchD_shift_path0
 #asr_exp=exp/conv_fanat_best_interctc05_ctc05_interce01_ce09
 
 if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
   exp=$asr_exp
 
   bpemodel=data/dict/bpemodel_unigram_5000
-  #rnnlm_model=$lm_model
-  rnnlm_model=exp_cassnat/tf_unilm/averaged.mdl
-  global_cmvn=data/fbank/cmvn.ark
+  rank_model="lm" #"at_baseline" #"lm", "at_baseline"
+  rnnlm_model=$lm_model
+  #rnnlm_model=exp/1kh_transformer_baseline_wotime_warp_f27t005/averaged.mdl
+  rank_yaml=conf/lm.yaml
   test_model=$asr_exp/$out_name
-  decode_type='att_only'
-  beam1=1
-  beam2=1 
-  ctcwt=0
-  lmwt=0
+  decode_type='esa_att'
+  attbm=1
+  ctcbm=1 
   ctclm=0
   ctclp=0
+  lmwt=0
   s_num=50
+  threshold=0.9
   s_dist=0
   lp=0
-  nj=1
+  nj=16
   batch_size=1
-  test_set="test_clean test_other" #dev_clean dev_other"
+  test_set="test_clean test_other dev_clean dev_other"
 
   for tset in $test_set; do
     echo "Decoding $tset..."
-    desdir=$exp/${decode_type}_decode_average_bm1_${beam1}_sampdist_${s_dist}_samplenum_${s_num}_newlm${lmwt}_speech218_rtf_batch1_nj1/$tset/
+    desdir=$exp/${decode_type}_decode_attbm_${attbm}_sampdist_${s_dist}_samplenum_${s_num}_lm${lmwt}_threshold${threshold}_rank${rank_model}/$tset/
 
     if [ ! -d $desdir ]; then
       mkdir -p $desdir
@@ -106,22 +106,20 @@ if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
     utils/split_scp.pl data/$tset/feats.scp $split_scps || exit 1;
     
     $cmd JOB=1:$nj $desdir/log/decode.JOB.log \
-      CUDA_VISIBLE_DEVICES=JOB fanat_decode.py \
-        --test_config conf/fanat_decode.yaml \
-        --lm_config conf/lm.yaml \
-        --rank_model 'lm' \
+      CUDA_VISIBLE_DEVICES=JOB cassnat_decode.py \
+        --test_config conf/cassnat_decode.yaml \
+        --lm_config $rank_yaml \
+        --rank_model $rank_model \
         --data_path $desdir/feats.JOB.scp \
         --text_label data/$tset/token.scp \
         --resume_model $test_model \
         --result_file $desdir/token_results.JOB.txt \
         --batch_size $batch_size \
         --decode_type $decode_type \
-        --ctc_weight $ctcwt \
         --rnnlm $rnnlm_model \
         --lm_weight $lmwt \
         --max_decode_ratio 0 \
         --use_cmvn \
-        --global_cmvn $global_cmvn \
         --print_freq 20
 
     cat $desdir/token_results.*.txt | sort -k1,1 > $desdir/token_results.txt

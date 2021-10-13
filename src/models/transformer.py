@@ -160,7 +160,8 @@ class Transformer(nn.Module):
             if args.lm_weight > 0:
                 lm_prob = lm_model(ys, tgt_mask)[:,-1,:]
                 local_prob = att_prob + args.lm_weight * lm_prob
-                local_prob[:,eos] = (1 + args.lm_weight) * att_prob[:,eos]
+                # need to be experimented for eos probability
+                #local_prob[:,eos] = (1 + args.lm_weight) * att_prob[:,eos]
             else:
                 local_prob = att_prob
             

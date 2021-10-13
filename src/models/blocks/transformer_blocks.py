@@ -56,12 +56,12 @@ class Encoder(nn.Module):
         self.norm = LayerNorm(layer.size)
         self.num_layers = N
         
-    def forward(self, x, mask, interctc_alpha=0):
+    def forward(self, x, mask, interctc_alpha=0, interctc_layer=6):
         "Pass the input (and mask) through each layer in turn."
         n_layer = 0
         for layer in self.layers:
             x = layer(x, mask)
-            if interctc_alpha > 0 and n_layer == int(self.num_layers / 2) - 1:
+            if interctc_alpha > 0 and n_layer == interctc_layer - 1:
                 inter_out = x
             n_layer += 1
         if interctc_alpha > 0:
