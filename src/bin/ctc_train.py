@@ -19,8 +19,7 @@ from utils.wer import ctc_greedy_wer
 from data.vocab import Vocab
 from utils.optimizer import get_opt
 from models import make_ctc_transformer, make_conformer
-#from data.speech_loader import IterSpeechDataset, IterSpeechDataLoader
-from data.speech_loader import SpeechDataset, SpeechDataLoader
+from data.speech_loader import SpeechDataset, DynamicDataset, SpeechDataLoader
 
 
 class Config():
@@ -143,19 +142,22 @@ def main_worker(rank, world_size, args, backend='nccl'):
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.rank])
     
     ## 3. Define vocabulary and data loader
-    trainset = SpeechDataset(vocab, args.train_paths, args)
+    dataset_types = {"SpeechDataset": (SpeechDataset, args.batch_size), "DynamicDataset": (DynamicDataset, 1)}
+    Dataset, actual_bs = dataset_types[args.dataset_type]
+
+    trainset = Dataset(vocab, args.train_paths, args)
     if args.use_cmvn:
         trainset._load_cmvn(args.global_cmvn)
-    train_loader = SpeechDataLoader(trainset, args.batch_size, args.padding_idx, num_workers=args.load_data_workers, 
+    train_loader = SpeechDataLoader(trainset, actual_bs, args.padding_idx, num_workers=args.load_data_workers, 
                                        distributed=args.distributed, shuffle=True)
     if args.rank == 0:
         print("Finish Loading training files. Number of utterances: {}".format(len(train_loader))) #.get_num_utterance()))
 
     args.use_specaug = False  # specaug cannot be applied to valid
-    validset = SpeechDataset(vocab, args.dev_paths, args)
+    validset = Dataset(vocab, args.dev_paths, args)
     if args.use_cmvn:
         validset._load_cmvn(args.global_cmvn)
-    valid_loader = SpeechDataLoader(validset, args.batch_size, args.padding_idx, num_workers=args.load_data_workers, 
+    valid_loader = SpeechDataLoader(validset, actual_bs, args.padding_idx, num_workers=args.load_data_workers, 
                                         distributed=False, shuffle=False)
     if args.rank == 0:
         print("Finish Loading dev files. Number of utterances: {}".format(len(valid_loader))) #.get_num_utterance()))

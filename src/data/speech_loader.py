@@ -6,7 +6,7 @@ import torch
 import kaldiio
 import numpy as np
 
-from torch.utils.data import Dataset, DataLoader, BatchSampler, IterableDataset
+from torch.utils.data import Dataset, DataLoader, BatchSampler
 from data.feat_op import skip_feat, context_feat
 from data.spec_augment import spec_aug
 
@@ -139,14 +139,16 @@ class SpeechDataset(Dataset):
     def __len__(self):
         return sum(self.data_stream_sizes)
 
-class IterSpeechDataset(IterableDataset):
+class DynamicDataset(Dataset):
     def __init__(self, vocab, data_paths, args):
         self.vocab = vocab
         self.seed = args.seed
         self.rank = args.rank
-        self.world_size = args.world_size
-        self.batch_type = args.batch_type
-        self.batch_num = args.batch_num
+        self.max_len = args.max_len
+        self.max_frmlen = args.max_frmlen
+        self.max_lablen = args.max_lablen
+        self.batch_size = args.batch_size
+
         self.left_context = args.left_ctx
         self.right_context = args.right_ctx
         self.skip_frame = args.skip_frame  
@@ -158,7 +160,13 @@ class IterSpeechDataset(IterableDataset):
         self.data_stream_cum_sizes = [self.data_stream_sizes[0]]
         for i in range(1, len(self.data_stream_sizes)):
             self.data_stream_cum_sizes.append(self.data_stream_cum_sizes[-1] + self.data_stream_sizes[i])
-        self.data_buffer = []
+        
+        if args.batch_type == "utterance":
+            self.batched_data = self.make_batch_data_by_utt()
+        elif args.batch_type == "frame":
+            self.batched_data = self.make_batch_data_by_frame()
+        else:
+            raise NotImplementedError
 
     def _load_cmvn(self, cmvn_file):
         self.use_cmvn = True
@@ -178,70 +186,72 @@ class IterSpeechDataset(IterableDataset):
     def set_epoch(self, epoch):
         self.epoch = epoch
 
-    def reset(self):
-        total_size = sum(self.data_stream_sizes)
-        if self.shuffle:
-            g = torch.Generator()
-            g.manual_seed(self.seed + self.epoch)
-            indices = torch.randperm(total_size, generator=g).tolist()  # type: ignore[arg-type]
-        else:
-            indices = list(range(total_size))  # type: ignore[arg-type]
-
+    def make_batch_data_by_utt(self):
+        all_data = []
+        for stream in self.data_streams:
+            all_data.extend(stream.items)
+        all_data = sorted(all_data, key=lambda x: x[-1], reverse=True)
+        
         batches = []
-        num, batch = 0, []
-        idx = 0
-        while idx < len(indices):
-            num_frames = self.get_data(indices[idx], return_nframe=True)
-            if self.batch_type == "utterance":
-                num += 1
-            elif self.batch_type == "frame":
-                num += num_frames
-            else:
-                raise ValueError("No batch type {}".format(self.batch_type))
-            if num <= self.batch_num:
-                batch.append(indices[idx])
-                idx += 1
-            else:
-                batches.append(batch)
-                num, batch = 0, []
-        if len(batch) > 0:
+        start = 0
+        while True:
+            frmlen = all_data[start][-1]
+            if frmlen > self.max_len:
+                start += 1 
+                continue
+            lablen = len(all_data[start][-2])
+            factor = max(int(frmlen / self.max_frmlen), int(lablen / self.max_lablen))
+            bs = max(1, int(self.batch_size / (1 + factor)))
+            end = min(len(all_data), start + bs)
+            batch = all_data[start:end]
+            batch.reverse()
             batches.append(batch)
 
-        num_batches = len(batches)
-        self.data_len = math.ceil(num_batches / self.world_size)
-        num_after_padding = self.data_len * self.world_size
-        padding_size = num_after_padding - num_batches
-        if padding_size > 0:
-            batches.extend(batches[-padding_size:])
-        assert len(batches) == num_after_padding
-        self.batches = batches[self.rank:num_after_padding:self.world_size]
-        assert len(self.batches) == self.data_len
-
-    def __iter__(self):
-        #self.reset()
-        for i in range(len(self.batches)):
-            batch_idx = self.batches[i]
-            batch = [self.get_data(idx) for idx in batch_idx]
-            yield batch
-
-    def get_data(self, idx, return_nframe=False):
-        stream_idx = -1
-        for i in range(len(self.data_stream_cum_sizes)):
-            if idx < self.data_stream_cum_sizes[i]:
-                stream_idx = i
+            if end == len(all_data):
                 break
-        if stream_idx == -1:
-            raise Exception('index exceed.')
-        if stream_idx == 0:
-            internal_idx = idx
-        else:
-            internal_idx = idx - self.data_stream_cum_sizes[stream_idx-1]
+            start = end
+        return batches
 
-        utt, ark_path, text, utt2num_frames = self.data_streams[stream_idx].items[internal_idx]
-        if return_nframe:
-            return utt2num_frames
-        else:
+    def make_batch_data_by_frame(self):
+        all_data = []
+        for stream in self.data_streams:
+            all_data.extend(stream.items)
+        all_data = sorted(all_data, key=lambda x: x[-1], reverse=True)
+        
+        batches = []
+        start = 0
+        while True:
+            bs = 0
+            frmlen_tot = 0
+            while start + bs < len(all_data):
+                frmlen = all_data[start+bs][-1]
+                if frmlen > self.batch_size:
+                    bs = 1
+                    break
+
+                frmlen_tot += frmlen
+                if frmlen_tot <= self.batch_size:
+                    bs += 1
+                else:
+                    break
+
+            end = min(len(all_data), start + bs)
+            batch = all_data[start:end]
+            batch.reverse()
+            batches.append(batch)
+        
+            if end == len(all_data):
+                break
+            start = end
+        return batches
+            
+    def __getitem__(self, idx):
+        batch = self.batched_data[idx]
+        torch_data = []
+        for i in range(len(batch)):
+            utt, ark_path, text, utt2num_frames = batch[i]
             feat = kaldiio.load_mat(ark_path)
+            
             if self.use_cmvn:
                 assert feat.shape[1] == self.mean.shape[0]
                 feat = (feat - self.mean) / self.std
@@ -254,14 +264,11 @@ class IterSpeechDataset(IterableDataset):
                 pad_len = self.skip_frame - seq_len % self.skip_frame
                 feat = np.vstack([feat,np.zeros((pad_len, dim))])
             feat = skip_feat(context_feat(feat, self.left_context, self.right_context), self.skip_frame)
-            return (utt, feat, text)
+            torch_data.append((utt, feat, text))
+        return torch_data
 
     def __len__(self):
-        self.reset()
-        return self.data_len
-
-    def get_num_utterance(self):
-        return sum(self.data_stream_sizes)
+        return len(self.batched_data)
 
 class MyDataLoader(DataLoader):
     def __init__(self, dataset, **kwargs):
@@ -270,6 +277,8 @@ class MyDataLoader(DataLoader):
         super(MyDataLoader, self).__init__(dataset, **kwargs)
 
     def collate_fn(self, batch):
+        if isinstance(batch[0], list):
+            batch = batch[0]
         feats_max_length = max(x[1].shape[0] for x in batch)
         feat_size = batch[0][1].shape[1]
         text_max_length = max(len(x[2]) for x in batch)
@@ -314,16 +323,16 @@ class SpeechDataLoader(MyDataLoader):
         except:
             pass
 
-class IterSpeechDataLoader(MyDataLoader):
-    def __init__(self, dataset, batch_size, padding_idx=-1, distributed=False, shuffle=False, num_workers=0, timeout=1000):
-        self.dataset = dataset
-        self.dataset.shuffle = shuffle
-        kwargs = {"batch_size": None, "padding_idx": padding_idx, "num_workers": num_workers}
-        super(IterSpeechDataLoader, self).__init__(dataset, **kwargs)
-
-    def set_epoch(self, epoch):
-        self.dataset.set_epoch(epoch)
-
-    def get_num_utterance(self):
-        return self.dataset.get_num_utterance()
+#class IterSpeechDataLoader(MyDataLoader):
+#    def __init__(self, dataset, batch_size, padding_idx=-1, distributed=False, shuffle=False, num_workers=0, timeout=1000):
+#        self.dataset = dataset
+#        self.dataset.shuffle = shuffle
+#        kwargs = {"batch_size": None, "padding_idx": padding_idx, "num_workers": num_workers}
+#        super(IterSpeechDataLoader, self).__init__(dataset, **kwargs)
+#
+#    def set_epoch(self, epoch):
+#        self.dataset.set_epoch(epoch)
+#
+#    def get_num_utterance(self):
+#        return self.dataset.get_num_utterance()
 

@@ -91,7 +91,7 @@ def time_mask(spec, T=40, n_mask=2, replace_with_zero=True, inplace=False):
         cloned = spec.copy()
     len_spectro = cloned.shape[0]
     if isinstance(T, float):
-        T = int(len_spectro * T)  
+        T = max(int(len_spectro * T), 1)  
     ts = numpy.random.randint(0, T, size=(n_mask, 2))
 
     for t, mask_end in ts:
