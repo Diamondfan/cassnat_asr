@@ -21,7 +21,7 @@ def make_model(input_size, args):
     c = copy.deepcopy
     attn = MultiHeadedAttention(args.n_head, args.d_model, args.dropout)
     ff = PositionwiseFeedForward(args.d_model, args.d_ff, args.dropout)
-    position = PositionalEncoding(args.d_model, args.dropout)
+    position = PositionalEncoding(args.d_model, args.dropout, max_len=args.max_len)
     generator = Generator(args.d_model, args.vocab_size)
     
     interctc_gen = Generator(args.d_model, args.vocab_size, add_norm=True) if args.interctc_alpha > 0 else None
@@ -62,7 +62,7 @@ class CTCTransformer(nn.Module):
     def forward(self, src, src_mask, ctc_alpha, interctc_alpha, args):
         if args.causal:
             src, src_mask = self.get_causal_mask(src, src_mask, args.forward)
-
+        
         x, x_mask = self.src_embed(src, src_mask)
         enc_h = self.encoder(x, x_mask, interctc_alpha)
         #CTC Loss needs log probability as input
@@ -84,14 +84,11 @@ class CTCTransformer(nn.Module):
     def get_causal_mask(self, src, src_mask, forward=True):
         size = src.size(1)
         ret = torch.ones(size, size, dtype=torch.uint8)
-        pad = torch.zeros((src.size(0), 2, src.size(2))).type_as(src)
 
         if forward:       
             src_mask = src_mask & torch.tril(ret, out=ret).unsqueeze(0).type_as(src_mask)
-            src = torch.cat([pad, src], dim=1)
         else:
             src_mask = src_mask & torch.triu(ret, out=ret).unsqueeze(0).type_as(src_mask)
-            src = torch.cat([src, pad], dim=1)
         return src, src_mask
 
     def greedy_decode(self, src, src_mask, src_size, vocab, args):

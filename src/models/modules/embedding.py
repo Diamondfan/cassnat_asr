@@ -4,6 +4,7 @@
 import math
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.autograd import Variable
 
 class PositionalEncoding(nn.Module):
@@ -66,6 +67,15 @@ class TextEmbedding(nn.Module):
     def forward(self, x):
         return self.lut(x) * math.sqrt(self.d_model)
 
+class Padding(nn.Module):
+    def __init__(self, pad=(1,1,1,1)):
+        super(Padding, self).__init__()
+        self.pad = pad
+
+    def forward(self, x):
+        pad_x = F.pad(x, self.pad, "constant", 0)
+        return pad_x
+
 class ConvEmbedding(nn.Module):
     """
     Mapping input features to embeddings and downsample with 4.
@@ -76,11 +86,12 @@ class ConvEmbedding(nn.Module):
         if causal:
             conv1 = nn.Conv2d(1, 64, (2,3), (2,2), (0,1))
             conv2 = nn.Conv2d(64, 128, (2,3), (2,2), (0,1))
+            self.conv = nn.Sequential(Padding(pad=(0, 0, 1, 0)), conv1, nn.ReLU(),
+                                      Padding(pad=(0, 0, 1, 0)), conv2, nn.ReLU())
         else:
             conv1 = nn.Conv2d(1, 64, 3, 2, 1)
             conv2 = nn.Conv2d(64, 128, 3, 2, 1)
-        
-        self.conv = nn.Sequential(conv1, nn.ReLU(), conv2, nn.ReLU())
+            self.conv = nn.Sequential(conv1, nn.ReLU(), conv2, nn.ReLU())
 
         self.d_model = d_model 
         

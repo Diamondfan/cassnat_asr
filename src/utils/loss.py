@@ -117,4 +117,43 @@ class EmbedLoss(nn.Module):
             loss = self.criterion(pred_embed.view(-1, pred_embed.size(-1)), true_embed.view(-1, true_embed.size(-1)))
             return loss.masked_fill(tgt_mask==0, 0).sum() / tokens / loss.size(1)
 
+class ContrastiveLoss():
+    def __init__():
+        pass
+
+class HubertLoss():
+    def __init__():
+        pass
+
+class PredictLoss(nn.Module):
+    def __init__(self, k_shift, n_generator, loss_type):
+        super(PredictLoss, self).__init__()
+        self.k_shift = k_shift
+        self.n_generator = n_generator
+        self.loss_type = loss_type
+        if self.loss_type == "l1":
+            self.criterion = nn.L1Loss(reduction="none")
+        elif self.loss_type == "l2":
+            self.criterion = nn.MSELoss(reduction="none")
+        else:
+            raise NotImplementedError
+
+    def forward(self, nn_out, tgt):
+        # nn_out: k, bs x seq_len x encoded_size
+        # tgt: bs x seq_len x encoded_size
+
+        seq_len = tgt.size(1) - 1
+        seq_len = seq_len if seq_len % 4 == 0 else seq_len - (seq_len % 4)
+        bs, _, encoded_size = nn_out[0].size()
+
+        loss = 0
+        for i in range(self.n_generator):
+            start = (self.k_shift + i - 1) * 4 + 1
+            tgt_i = tgt[:,start: seq_len+1,:].reshape(bs, -1, encoded_size)
+            used_seq_len = tgt_i.size(1)
+            pred = nn_out[i][:,:used_seq_len,:]
+            mask = (tgt_i != 0).reshape(-1, encoded_size)
+            loss += self.criterion(pred.reshape(-1, encoded_size), tgt_i.reshape(-1, encoded_size)).masked_fill(mask==0, 0).sum() / mask.sum()
+        return loss /  self.n_generator
+
 
