@@ -59,15 +59,15 @@ class CTCTransformer(nn.Module):
         if interctc_gen is not None:
             self.interctc_generator = interctc_gen
 
-    def forward(self, src, src_mask, ctc_alpha, interctc_alpha, args):
+    def forward(self, src, src_mask, ctc_alpha, args):
         if args.causal:
             src, src_mask = self.get_causal_mask(src, src_mask, args.forward)
         
         x, x_mask = self.src_embed(src, src_mask)
-        enc_h = self.encoder(x, x_mask, interctc_alpha)
+        enc_h = self.encoder(x, x_mask, args.interctc_alpha, args.interctc_layer)
         #CTC Loss needs log probability as input
         
-        if interctc_alpha > 0:
+        if args.interctc_alpha > 0:
             enc_h, inter_h = enc_h
             ctc_out = self.ctc_generator(enc_h)
             inter_out = self.interctc_generator(inter_h)
@@ -146,7 +146,7 @@ class CTCTransformer(nn.Module):
             if lm_model is not None:
                 ys, ys_size = [], []
                 for b in range(bs):
-                    if t > src_size[b].item() or torch.exp(ctc_out[b, t, blank]).item() > 0.95:
+                    if t > src_size[b].item(): #or torch.exp(ctc_out[b, t, blank]).item() > 0.95:
                         continue
 
                     for seq in batch_top_seqs[b]:

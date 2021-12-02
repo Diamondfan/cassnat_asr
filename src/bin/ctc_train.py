@@ -17,7 +17,7 @@ sys.path.append(os.environ['E2EASR']+'/src')
 import utils.util as util
 from utils.wer import ctc_greedy_wer
 from data.vocab import Vocab
-from utils.optimizer import get_opt
+from utils.optimizer import get_opt, get_ctc_mul_opt
 from models import make_ctc_transformer, make_conformer
 from data.speech_loader import SpeechDataset, DynamicDataset, SpeechDataLoader
 
@@ -44,12 +44,29 @@ def main():
     parser.add_argument("--load_data_workers", default=1, type=int, help="Number of parallel data loaders")
     parser.add_argument("--ctc_alpha", default=0, type=float, help="Task ratio of CTC")
     parser.add_argument("--interctc_alpha", default=0, type=float, help="Task ratio of intermediate CTC")
+    parser.add_argument("--interctc_layer", default=0, type=float, help="Layer to add intermediate CTC")
     parser.add_argument("--resume_model", default='', type=str, help="The model path to resume")
     parser.add_argument("--print_freq", default=100, type=int, help="Number of iter to print")
+    parser.add_argument("--use_slurm", action='store_true', help="use slurm")
     parser.add_argument("--seed", default=1, type=int, help="Random number seed")
 
     ## 1. Parse and print config Main process
     args = parser.parse_args()
+    if args.use_slurm:
+        world_size = int(os.environ["WORLD_SIZE"])
+        args.distributed = True if world_size > 1 else False
+        if args.distributed:
+            rank = int(os.environ['SLURM_PROCID'])
+        else:
+            rank = 0
+        args.master_addr = os.environ["MASTER_ADDR"]
+    else:
+        num_gpu = len(os.environ['CUDA_VISIBLE_DEVICES'].split(','))
+        args.distributed = True if num_gpu > 1 else False
+        rank = 0
+        args.master_addr = "localhost"
+    args.port = os.environ["MASTER_PORT"]
+                
     with open(args.train_config) as f:
         config = yaml.safe_load(f)
 
@@ -60,15 +77,17 @@ def main():
         config['global_cmvn'] = data['global_cmvn']
         config['vocab_file'] = data['vocab_file']
 
-    if not os.path.isdir(args.exp_dir):
+    if rank == 0 and not os.path.isdir(args.exp_dir):
         os.makedirs(args.exp_dir)
     
     for key, val in config.items():
         setattr(args, key, val)
     for var in vars(args):
         config[var] = getattr(args, var)
-    print("Experiment starts with config {}".format(json.dumps(config, sort_keys=True, indent=4)))
-    json.dump(config, open(os.path.join(args.exp_dir, "config.yaml"), 'w'), sort_keys=True, indent=4)
+    
+    if rank == 0:
+        print("Experiment starts with config {}".format(json.dumps(config, sort_keys=True, indent=4)))
+        json.dump(config, open(os.path.join(args.exp_dir, "config.yaml"), 'w'), sort_keys=True, indent=4)
 
     if args.use_specaug:
         specaug_conf = Config()
@@ -78,18 +97,19 @@ def main():
     else:
         args.specaug_conf = None
 
-    num_gpu = len(os.environ['CUDA_VISIBLE_DEVICES'].split(','))
-    args.distributed = True if num_gpu > 1 else False
-    if args.distributed:
-        import torch.multiprocessing as mp
-        mp.spawn(main_worker, nprocs=num_gpu, args=(num_gpu, args))
+    if args.use_slurm:
+        main_worker(rank, world_size, args)
     else:
-        main_worker(0, 1, args)
+        if args.distributed:
+            import torch.multiprocessing as mp
+            mp.spawn(main_worker, nprocs=num_gpu, args=(num_gpu, args))
+        else:
+            main_worker(0, 1, args)
         
 def main_worker(rank, world_size, args, backend='nccl'):
     args.rank, args.world_size = rank, world_size
     if args.distributed:
-        dist.init_process_group(backend=backend, init_method='tcp://localhost:12345',
+        dist.init_process_group(backend=backend, init_method='tcp://{}:{}'.format(args.master_addr, args.port),
                                     world_size=world_size, rank=rank)
 
     ## 2. Define model and optimizer
@@ -117,17 +137,27 @@ def main_worker(rank, world_size, args, backend='nccl'):
         checkpoint = torch.load(args.resume_model, map_location='cpu')
         model_state = checkpoint["state_dict"]
         for name, param in model.named_parameters():
+            if name.split('.')[0] in ["ctc_generator", "interctc_generator"]:
+                print("no need for init for {}, random init".format(name)) 
+                continue
             if name not in model_state:
                 name = "module." + name
-            param.data.copy_(model_state[name])
-        optimizer.load_state_dict(checkpoint['optimizer'])
-        if use_cuda:
-            for state in optimizer.state.values():
-                for k, v in state.items():
-                    if isinstance(v, torch.Tensor):
-                        state[k] = v.cuda()   
-        start_epoch = checkpoint['epoch'] + 1
+            if name not in model_state:
+                print("no param init for {}".format(name))
+                continue
+            else:
+                param.data.copy_(model_state[name])
+        optimizer = get_ctc_mul_opt(args.opt_type, model, args)
+        start_epoch = 0
+        #optimizer.load_state_dict(checkpoint['optimizer'])
+        #if use_cuda:
+        #    for state in optimizer.state.values():
+        #        for k, v in state.items():
+        #            if isinstance(v, torch.Tensor):
+        #                state[k] = v.cuda()   
+        #start_epoch = checkpoint['epoch'] + 1
     else:
+        optimizer = get_opt(args.opt_type, model, args)
         start_epoch = 0
     
     num_params = 0
@@ -135,11 +165,17 @@ def main_worker(rank, world_size, args, backend='nccl'):
         num_params += param.numel()
     if args.rank == 0:
         print("Number of parameters: {}".format(num_params))
+    
+    if args.use_slurm:
+        local_rank = args.rank % torch.cuda.device_count()
+    else:
+        local_rank = args.rank
     if use_cuda:
-        torch.cuda.set_device(args.rank)
-        model = model.cuda(args.rank)
-    if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.rank])
+        torch.cuda.set_device(local_rank)
+        model = model.cuda(local_rank)
+
+    if args.distributed:        
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank])
     
     ## 3. Define vocabulary and data loader
     dataset_types = {"SpeechDataset": (SpeechDataset, args.batch_size), "DynamicDataset": (DynamicDataset, 1)}
@@ -188,13 +224,15 @@ def main_worker(rank, world_size, args, backend='nccl'):
             valid_loss, valid_ctc_wer, valid_interctc_wer = run_epoch(epoch, valid_loader, model, criterion, args, is_train=False)
         
         temp_lr = optimizer.param_groups[0]['lr'] if args.opt_type == "normal" else optimizer.optimizer.param_groups[0]['lr']
+        lr_random = optimizer.optimizer.param_groups[-1]['lr']
+
         if args.distributed:
             average_number = torch.Tensor([train_loss, train_ctc_wer, train_interctc_wer, valid_loss, valid_ctc_wer, valid_interctc_wer]).float().cuda(args.rank)
             torch.distributed.all_reduce(average_number, op=ReduceOp.SUM)
             train_loss, train_ctc_wer, train_interctc_wer, valid_loss, valid_ctc_wer, valid_interctc_wer = (average_number / args.world_size).cpu().numpy()
         if args.rank == 0:
-            print("Epoch {} done, Train: Loss={:.4f}, ctc WER={:.4f} interctc WER={:.4f} Valid: Loss={:.4f} ctc WER={:.4f} interctc WER={:.4f} Current LR: {:4e}".format(
-                        epoch, train_loss, train_ctc_wer, train_interctc_wer, valid_loss, valid_ctc_wer, valid_interctc_wer, temp_lr), flush=True)
+            print("Epoch {} done, Train: Loss={:.4f}, ctc WER={:.4f} interctc WER={:.4f} Valid: Loss={:.4f} ctc WER={:.4f} interctc WER={:.4f} LR_pretrained: {:.4e}, LR_random: {:4e}".format(
+                        epoch, train_loss, train_ctc_wer, train_interctc_wer, valid_loss, valid_ctc_wer, valid_interctc_wer, temp_lr, lr_random), flush=True)
         
         if args.opt_type == 'normal':
             scheduler.step(valid_ctc_wer)
@@ -245,7 +283,7 @@ def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_trai
             feat_sizes = feat_sizes.cuda()
             label_sizes = label_sizes.cuda()
         
-        ctc_out, inter_out, enc_h = model(src, src_mask, args.ctc_alpha, args.interctc_alpha, args)
+        ctc_out, inter_out, enc_h = model(src, src_mask, args.ctc_alpha, args)
         bs, max_feat_size, _ = enc_h.size()
 
         # loss computation
