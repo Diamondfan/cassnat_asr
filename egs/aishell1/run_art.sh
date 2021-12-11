@@ -6,8 +6,8 @@
 data=/home/ruchao/Database/aishell/
 lm_data=/home/ruchao/Database/LibriSpeech/libri_lm
 
-stage=8
-end_stage=8
+stage=6
+end_stage=6
 featdir=data/fbank
 
 . ./cmd.sh
@@ -107,23 +107,19 @@ if [ $stage -le 5 ] && [ $end_stage -ge 5 ]; then
   echo "[Stage 5] External LM Training Finished."
 fi
 
-exp=exp/ar_convenc_best_interctc05_ctc05/
+exp=exp/ar_conformer_baseline_interctc05_layer6_spect10m005f2m27_multistep05k21k90k/
 
 if [ $stage -le 6 ] && [ $end_stage -ge 6 ]; then
-  #exp=exp/ar_convenc_e6d6_d512_multistep30k_150k_ctc1_specaugt4m005_warp/
-
   if [ ! -d $exp ]; then
     mkdir -p $exp
   fi
 
-  CUDA_VISIBLE_DEVICES="4,5,6,7" asr_train.py \
+  CUDA_VISIBLE_DEVICES="0,1,2,3" asr_train.py \
     --exp_dir $exp \
     --train_config conf/transformer.yaml \
     --data_config conf/data.yaml \
-    --batch_size 32 \
     --epochs 100 \
     --save_epoch 40 \
-    --anneal_lr_ratio 0.5 \
     --learning_rate 0.001 \
     --min_lr 0.00001 \
     --end_patience 10 \
@@ -132,6 +128,7 @@ if [ $stage -le 6 ] && [ $end_stage -ge 6 ]; then
     --label_smooth 0.1 \
     --ctc_alpha 0.5 \
     --interctc_alpha 0.5 \
+    --interctc_layer 6 \
     --use_cmvn \
     --seed 1234 \
     --print_freq 50 > $exp/train.log 2>&1 &

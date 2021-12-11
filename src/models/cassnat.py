@@ -25,6 +25,18 @@ def make_model(input_size, args):
 
     interctc_gen = Generator(args.d_model, args.vocab_size, add_norm=True) if args.interctc_alpha > 0 else None
     interce_gen = Generator(args.d_model, args.vocab_size, add_norm=True) if args.interce_alpha > 0 else None
+    if args.interce_alpha > 0:
+        if args.interce_layer <= args.N_self_dec:
+            args.selfce_alpha = args.interce_alpha
+            args.mixce_alpha = 0
+        else:
+            args.selfce_alpha = 0
+            args.mixce_alpha = args.interce_alpha
+            args.interce_layer = (args.interce_layer - args.N_self_dec)
+    else:
+        args.selfce_alpha = 0
+        args.mixce_alpha = 0
+
     if args.use_src:
         decoder_use = MixAttDecoder(args.d_model, c(attn), c(attn), c(ff), args.dropout, args.N_mix_dec)
     else:
@@ -85,6 +97,7 @@ class CassNAT(nn.Module):
     def forward(self, src, src_mask, src_size, tgt_label, ylen, args):
         if args.MWER_training:
             return self.forward_MWER(src, src_mask, src_size, tgt_label, ylen, args)
+        
         # 1. compute ctc output
         x, x_mask = self.src_embed(src, src_mask)
         enc_h = self.encoder(x, x_mask, args.interctc_alpha, args.interctc_layer)
@@ -126,16 +139,18 @@ class CassNAT(nn.Module):
         # 3. Extract Acoustic embedding and Map it to Word embedding
         pe = self.pe.type_as(src).unsqueeze(0).repeat(bs, 1, 1)[:,:ymax,:]
         ac_embed = self.acembed_extractor(pe, enc_h, trigger_mask)
-        pred_embed = self.embed_mapper(ac_embed, tgt_mask_bidi)
-        if args.interce_alpha > 0 and args.interce_layer == 0:
-            interce_out = self.interce_generator(pred_embed[0])
+        pred_embed = self.embed_mapper(ac_embed, tgt_mask_bidi, args.selfce_alpha, args.interce_layer)
+        if args.selfce_alpha > 0:
+            interce_out = self.interce_generator(pred_embed[-1])
+            pred_embed = pred_embed[:-1]
 
         if args.save_embedding:
             args.ac_embed, args.pred_embed = ac_embed[0].cpu(), pred_embed[0].cpu()
         
         # 4. decoder, output units generation
         if args.use_unimask:
-            pred_embed = torch.cat([args.sos_embed, pred_embed[:,:-1,:]], dim=1)
+            sos_embed = torch.zeros(pred_embed.size(0), 1, pred_embed.size(2)).type_as(pred_embed)
+            pred_embed = torch.cat([sos_embed, pred_embed[:,:-1,:]], dim=1)
             tgt_mask = tgt_mask_bidi & self.subsequent_mask(ymax).type_as(tgt_mask_bidi) # uni-direc
         else:
             tgt_mask = tgt_mask_bidi
@@ -144,11 +159,11 @@ class CassNAT(nn.Module):
         if args.use_src:
             if args.src_trigger:
                 x_mask = trigger_mask
-            dec_h = self.decoder(pred_embed, enc_h, x_mask, tgt_mask, args.interce_alpha, args.interce_layer)
+            dec_h = self.decoder(pred_embed, enc_h, x_mask, tgt_mask, args.mixce_alpha, args.interce_layer)
         else:
             dec_h = self.decoder(pred_embed, tgt_mask)
         
-        if args.interce_alpha > 0 and args.interce_layer > 0:
+        if args.mixce_alpha > 0:
             dec_h, interce_h = dec_h[0], dec_h[1]
             interce_out = self.interce_generator(interce_h)
         elif args.interce_alpha == 0:
@@ -489,8 +504,7 @@ class CassNAT(nn.Module):
 
         # 4. decoder, output units generation
         if args.use_unimask:
-            sos_input = src_size.new_zeros(bs, 1).fill_(sos).long()
-            sos_embed = args.word_embed(sos_input)
+            sos_embed = torch.zeros(pred_embed.size(0), 1, pred_embed.size(2)).type_as(pred_embed)
             pred_embed = torch.cat([sos_embed, pred_embed[:,:-1,:]], dim=1)
             tgt_mask = tgt_mask1 & self.subsequent_mask(ymax).type_as(tgt_mask1) # uni-direc
         else:
@@ -507,25 +521,41 @@ class CassNAT(nn.Module):
         if args.sample_num > 1:
             _, seql, dim = att_out.size() 
             att_pred = att_out.argmax(-1)
-            lm_input = torch.cat([att_out.new_zeros(att_out.size(0), 1).fill_(sos).long(), att_pred[:,:-1]], 1)
-            lm_tgt_mask = tgt_mask1 & self.subsequent_mask(ymax).type_as(tgt_mask1)
+            if args.rank_model != 'n-gram':
+                lm_input = torch.cat([att_out.new_zeros(att_out.size(0), 1).fill_(sos).long(), att_pred[:,:-1]], 1)
+                lm_tgt_mask = tgt_mask1 & self.subsequent_mask(ymax).type_as(tgt_mask1)
             
-            if args.rank_model == 'lm':
-                # this part used for lm rescore
-                lm_out = lm_model(lm_input, lm_tgt_mask)
-            if args.rank_model == 'at_baseline':
-                # this part use ast baseline to do the score part
-                x, src_mask = lm_model.src_embed(src, x_mask)
-                enc_h = lm_model.encoder(x, src_mask)
-                enc_h = enc_h.unsqueeze(1).repeat(1, args.sample_num, 1, 1).reshape(-1, enc_h.size(1), enc_h.size(2))
-                src_mask = src_mask.unsqueeze(1).repeat(1, args.sample_num, 1, 1).reshape(-1, src_mask.size(1), src_mask.size(2))
-                lm_out = lm_model.forward_att(enc_h, lm_input, src_mask, lm_tgt_mask)
+                if args.rank_model == 'lm':
+                    # this part used for lm rescore
+                    lm_out = lm_model(lm_input, lm_tgt_mask)
+                if args.rank_model == 'at_baseline':
+                    # this part use ast baseline to do the score part
+                    x, src_mask = lm_model.src_embed(src, x_mask)
+                    enc_h = lm_model.encoder(x, src_mask)
+                    enc_h = enc_h.unsqueeze(1).repeat(1, args.sample_num, 1, 1).reshape(-1, enc_h.size(1), enc_h.size(2))
+                    src_mask = src_mask.unsqueeze(1).repeat(1, args.sample_num, 1, 1).reshape(-1, src_mask.size(1), src_mask.size(2))
+                    lm_out = lm_model.forward_decoder(enc_h, lm_input, src_mask, lm_tgt_mask)
+
+                lm_score = torch.gather(lm_out, -1, att_pred.unsqueeze(-1)).squeeze(-1)
+                lm_score = lm_score.reshape(-1, args.sample_num, seql).masked_fill(tgt_mask1.reshape(-1, args.sample_num, tgt_mask1.size(-1))==0, 0)
+                prob_sum = lm_score.sum(-1) / (lm_score != 0).sum(-1).float()
+                max_indices = prob_sum.max(-1, keepdim=True)[1]
+            elif args.rank_model == 'n-gram':
+                prob_sum = att_pred.new_zeros(att_pred.size(0)).float()
+                tgt_len = tgt_mask1.sum(-1)
+                for i in range(att_pred.size(0)):
+                    sentence = []
+                    for j in range(tgt_len[i]):
+                        index = att_pred[i][j].item()
+                        if index != 2:
+                            sentence.append(vocab.index2word[index])
+                    score = lm_model.score(''.join(sentence).replace('▁', ' ').strip())
+                    prob_sum[i] = score / tgt_len[i]
+                max_indices = prob_sum.reshape(-1, args.sample_num).max(-1, keepdim=True)[1]
+            else:
+                raise NotImplementedError
             
-            lm_score = torch.gather(lm_out, -1, att_pred.unsqueeze(-1)).squeeze(-1)
-            lm_score = lm_score.reshape(-1, args.sample_num, seql).masked_fill(tgt_mask.reshape(-1, args.sample_num, tgt_mask.size(-1))==0, 0)
-            att_out = att_out.reshape(-1, args.sample_num, seql, dim).masked_fill(tgt_mask.reshape(-1, args.sample_num, tgt_mask.size(-2), tgt_mask.size(-1)).transpose(2,3)==0, 0)
-            prob_sum = lm_score.sum(-1) / (lm_score != 0).sum(-1).float()
-            max_indices = prob_sum.max(-1, keepdim=True)[1]
+            att_out = att_out.reshape(-1, args.sample_num, seql, dim).masked_fill(tgt_mask1.reshape(-1, args.sample_num, tgt_mask1.size(-2), tgt_mask1.size(-1)).transpose(2,3)==0, 0)
             att_out = torch.gather(att_out, 1, max_indices.unsqueeze(2).unsqueeze(3).repeat(1,1,seql,dim)).squeeze(1)
             if args.save_embedding:
                 ac_embed = ac_embed[0].reshape(-1, args.sample_num, ac_embed[0].size(-2), ac_embed[0].size(-1))

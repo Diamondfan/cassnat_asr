@@ -2,11 +2,11 @@
 . cmd.sh
 . path.sh
 
-stage=3
+stage=2
 end_stage=3
 
-encoder_initial_model=exp/ar_convenc_best_interctc05_ctc05/averaged.mdl
-asr_exp=exp/conv_fanat_convdec_maxlen4_interctc05_interce01_ce09_aftermapping/
+encoder_initial_model=exp/ar_conformer_baseline_interctc05_layer6_spect10m005f2m27_multistep05k21k90k/averaged.mdl
+asr_exp=exp/cassnat_multistep_initrand_convenc_interctc_convdec_interce_expandl1r1/
 
 if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
 
@@ -14,7 +14,7 @@ if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
     mkdir -p $asr_exp
   fi
 
-  CUDA_VISIBLE_DEVICES="0,1,2,3" fanat_train.py \
+  CUDA_VISIBLE_DEVICES="4,5,6,7" fanat_train.py \
     --exp_dir $asr_exp \
     --train_config conf/fanat_train.yaml \
     --data_config conf/data.yaml \
@@ -43,7 +43,7 @@ fi
 
 out_name='averaged.mdl'
 if [ $stage -le 2 ] && [ $end_stage -ge 2 ]; then
-  last_epoch=69
+  last_epoch=72
   
   average_checkpoints.py \
     --exp_dir $asr_exp \

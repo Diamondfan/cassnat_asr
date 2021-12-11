@@ -62,9 +62,9 @@ class Transformer(nn.Module):
         if interctc_gen is not None:
             self.interctc_generator = interctc_gen
 
-    def forward(self, src, tgt, src_mask, tgt_mask, ctc_alpha, interctc_alpha=0):
+    def forward(self, src, tgt, src_mask, tgt_mask, ctc_alpha, interctc_alpha=0, interctc_layer=6):
         x, x_mask = self.src_embed(src, src_mask)
-        enc_h = self.encoder(x, x_mask, interctc_alpha)
+        enc_h = self.encoder(x, x_mask, interctc_alpha, interctc_layer)
         #CTC Loss needs log probability as input
         if ctc_alpha > 0 and interctc_alpha == 0:
             ctc_out = self.ctc_generator(enc_h)
@@ -80,8 +80,15 @@ class Transformer(nn.Module):
         att_out = self.att_generator(dec_h)
         return ctc_out, att_out, enc_h, inter_out
 
-    def forward_att(self, enc_h, tgt, src_mask, tgt_mask):
-        dec_h = self.decoder(self.tgt_embed(tgt), enc_h, src_mask, tgt_mask)
+    def forward_att(self, src, tgt, src_mask, tgt_mask):
+        x, x_mask = self.src_embed(src, src_mask)
+        enc_h = self.encoder(x, x_mask)
+        dec_h = self.decoder(self.tgt_embed(tgt), enc_h, x_mask, tgt_mask)
+        att_out = F.softmax(self.att_generator.proj(dec_h), dim=-1)
+        return att_out
+
+    def forward_decoder(self, enc_h, tgt, x_mask, tgt_mask):
+        dec_h = self.decoder(self.tgt_embed(tgt), enc_h, x_mask, tgt_mask)
         att_out = F.softmax(self.att_generator.proj(dec_h), dim=-1)
         return att_out
 

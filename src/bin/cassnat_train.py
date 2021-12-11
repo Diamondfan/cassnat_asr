@@ -20,7 +20,7 @@ from data.vocab import Vocab
 from utils.optimizer import get_opt
 from models import make_cassnat, make_cassnat_conformer
 from utils.loss import LabelSmoothing, KLDivLoss
-from data.speech_loader import SpeechDataset, SpeechDataLoader
+from data.speech_loader import SpeechDataset, DynamicDataset, SpeechDataLoader
 
 class Config():
     name = 'config'
@@ -55,11 +55,28 @@ def main():
     parser.add_argument("--init_encoder", default=False, action='store_true', help="decide whether use encoder initialization")
     parser.add_argument("--fix_encoder", default=False, action='store_true', help="fix encoder, optimize decoder only")
     parser.add_argument("--knowlg_dist", default=False, action='store_true', help='AT model for knowledge distillation')
+    parser.add_argument("--kd_weight", type=float, default=0.1, help='Weight for knoledge distillation')
     parser.add_argument("--print_freq", default=100, type=int, help="Number of iter to print")
+    parser.add_argument("--use_slurm", action='store_true', help="use slurm")
     parser.add_argument("--seed", default=1, type=int, help="Random number seed")
 
     ## 1. Parse and print config
     args = parser.parse_args()
+    if args.use_slurm:
+        world_size = int(os.environ["WORLD_SIZE"])
+        args.distributed = True if world_size > 1 else False
+        if args.distributed:
+            rank = int(os.environ['SLURM_PROCID'])
+        else:
+            rank = 0
+        args.master_addr = os.environ["MASTER_ADDR"]
+    else:
+        num_gpu = len(os.environ['CUDA_VISIBLE_DEVICES'].split(','))
+        args.distributed = True if num_gpu > 1 else False
+        rank = 0
+        args.master_addr = "localhost"
+    args.port = os.environ["MASTER_PORT"]
+
     with open(args.train_config) as f:
         config = yaml.safe_load(f)
 
@@ -74,7 +91,10 @@ def main():
         setattr(args, key, val)
     for var in vars(args):
         config[var] = getattr(args, var)
-    print("Experiment starts with config {}".format(json.dumps(config, sort_keys=True, indent=4)))
+    
+    if rank == 0:
+        print("Experiment starts with config {}".format(json.dumps(config, sort_keys=True, indent=4)))
+    
     if args.use_specaug:
         specaug_conf = Config()
         for key, val in config["spec_aug"].items():
@@ -83,21 +103,22 @@ def main():
     else:
         args.specaug_conf = None
 
-    if not os.path.isdir(args.exp_dir):
+    if rank ==0 and not os.path.isdir(args.exp_dir):
         os.makedirs(args.exp_dir)
 
-    num_gpu = len(os.environ['CUDA_VISIBLE_DEVICES'].split(','))
-    args.distributed = True if num_gpu > 1 else False
-    if args.distributed:
-        import torch.multiprocessing as mp
-        mp.spawn(main_worker, nprocs=num_gpu, args=(num_gpu, args))
+    if args.use_slurm:
+        main_worker(rank, world_size, args)
     else:
-        main_worker(0, 1, args)
+        if args.distributed:
+            import torch.multiprocessing as mp
+            mp.spawn(main_worker, nprocs=num_gpu, args=(num_gpu, args))
+        else:
+            main_worker(0, 1, args)
 
 def main_worker(rank, world_size, args, backend='nccl'):
     args.rank, args.world_size = rank, world_size
     if args.distributed:
-        dist.init_process_group(backend=backend, init_method='tcp://localhost:35627',
+        dist.init_process_group(backend=backend, init_method='tcp://{}:{}'.format(args.master_addr, args.port),
                                     world_size=world_size, rank=rank)
     
     ## 2. Define model and optimizer
@@ -169,19 +190,19 @@ def main_worker(rank, world_size, args, backend='nccl'):
         args.at_model = at_model
         args.at_model.eval()
     
-    if args.use_unimask:
-        if rank == 0:
-            print("Loading word embedding from {}".format(args.resume_model))
-        checkpoint = torch.load(args.resume_model, map_location='cpu')['state_dict']
-        from models.modules.embedding import TextEmbedding
-        word_embed = TextEmbedding(args.d_model, args.vocab_size)
-        for name, param in word_embed.named_parameters():
-            param.data.copy_(checkpoint['module.tgt_embed.0.lut.weight'])
-            param.requires_grad = False
-        if use_cuda:
-            torch.cuda.set_device(args.rank)
-            word_embed = word_embed.cuda()
-        args.word_embed = word_embed
+    #if args.use_unimask:
+    #    if rank == 0:
+    #        print("Loading word embedding from {}".format(args.resume_model))
+    #    checkpoint = torch.load(args.resume_model, map_location='cpu')['state_dict']
+    #    from models.modules.embedding import TextEmbedding
+    #    word_embed = TextEmbedding(args.d_model, args.vocab_size)
+    #    for name, param in word_embed.named_parameters():
+    #        param.data.copy_(checkpoint['module.tgt_embed.0.lut.weight'])
+    #        param.requires_grad = False
+    #    if use_cuda:
+    #        torch.cuda.set_device(args.rank)
+    #        word_embed = word_embed.cuda()
+    #    args.word_embed = word_embed
 
     num_params = 0
     for name, param in model.named_parameters():
@@ -189,33 +210,41 @@ def main_worker(rank, world_size, args, backend='nccl'):
     if rank == 0:
         print("Number of parameters: {}".format(num_params))
 
+    if args.use_slurm:
+        local_rank = args.rank % torch.cuda.device_count()
+    else:
+        local_rank = args.rank
     if use_cuda:
-        torch.cuda.set_device(args.rank)
-        model = model.cuda()
-    if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.rank]) #, find_unused_parameters=True)
+        torch.cuda.set_device(local_rank)
+        model = model.cuda(local_rank)
 
+    if args.distributed:        
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank])
+    
     ## 3. Define vocabulary and data loader
-    trainset = SpeechDataset(vocab, args.train_paths, args)
+    dataset_types = {"SpeechDataset": (SpeechDataset, args.batch_size), "DynamicDataset": (DynamicDataset, 1)}
+    Dataset, actual_bs = dataset_types[args.dataset_type]
+
+    trainset = Dataset(vocab, args.train_paths, args)
     if args.use_cmvn:
         trainset._load_cmvn(args.global_cmvn)
-    train_loader = SpeechDataLoader(trainset, args.batch_size, args.padding_idx, num_workers=args.load_data_workers, 
+    train_loader = SpeechDataLoader(trainset, actual_bs, args.padding_idx, num_workers=args.load_data_workers, 
                                         distributed=args.distributed, shuffle=True)
     if rank == 0:
         print("Finish Loading training files. Number batches: {}".format(len(train_loader)))
 
     args.use_specaug = False
-    validset = SpeechDataset(vocab, args.dev_paths, args)
+    validset = Dataset(vocab, args.dev_paths, args)
     if args.use_cmvn:
         validset._load_cmvn(args.global_cmvn)
-    valid_loader = SpeechDataLoader(validset, args.batch_size, args.padding_idx, num_workers=args.load_data_workers, 
+    valid_loader = SpeechDataLoader(validset, actual_bs, args.padding_idx, num_workers=args.load_data_workers, 
                                         distributed=False, shuffle=False)
     if rank == 0:
         print("Finish Loading dev files. Number batches: {}".format(len(valid_loader)))
     
     criterion_ctc = torch.nn.CTCLoss(reduction='mean', zero_infinity=True)
     if args.knowlg_dist:
-        criterion_att = KLDivLoss(args.padding_idx)
+        criterion_att = KLDivLoss(args.padding_idx, args.kd_weight)
     else:
         criterion_att = LabelSmoothing(args.vocab_size, args.padding_idx, args.label_smooth)
     criterion = [criterion_ctc, criterion_att]
@@ -324,8 +353,8 @@ def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_trai
             feat_sizes = feat_sizes.cuda()
             label_sizes = label_sizes.cuda()
         
-        if args.use_unimask:
-            args.sos_embed = args.word_embed(tgt)[:,0:1,:]
+        #if args.use_unimask:
+        #    args.sos_embed = args.word_embed(tgt)[:,0:1,:]
 
         if args.MWER_training:
             ctc_out, att_out, pred_embed, tgt_mask_pred, interctc_out, interce_out, wer_weight, ctc_target = model(src, src_mask, feat_sizes, tgt_label, label_sizes, args)
@@ -336,9 +365,10 @@ def run_epoch(epoch, dataloader, model, criterion, args, optimizer=None, is_trai
         
         # loss computation
         if args.knowlg_dist:
-            tgt_mask = (tgt != args.padding_idx).unsqueeze(1)
-            tgt_mask = tgt_mask & subsequent_mask(tgt.size(-1)).type_as(tgt_mask)
-            at_prob = args.at_model.forward_att(src, tgt, src_mask, tgt_mask)
+            with torch.no_grad():
+                tgt_mask = (tgt != args.padding_idx).unsqueeze(1)
+                tgt_mask = tgt_mask & subsequent_mask(tgt.size(-1)).type_as(tgt_mask)
+                at_prob = args.at_model.forward_att(src, tgt, src_mask, tgt_mask)
             att_loss = criterion[1](att_out.view(-1, att_out.size(-1)), at_prob.view(-1, at_prob.size(-1)), tgt_label.view(-1))
         elif args.use_best_path:
             att_loss = criterion[1].forward_best_path(att_out, tgt_label, tgt_mask_pred)

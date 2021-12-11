@@ -31,7 +31,7 @@ def main():
     parser.add_argument("--text_label")
     parser.add_argument("--use_cmvn", default=False, action='store_true', help="Use global cmvn or not")
     parser.add_argument("--batch_size", default=32, type=int, help="Training minibatch size")
-    parser.add_argument("--load_data_workers", default=1, type=int, help="Number of parallel data loaders")
+    parser.add_argument("--load_data_workers", default=0, type=int, help="Number of parallel data loaders")
     parser.add_argument("--resume_model", default='', type=str, help="Model to do evaluation")
     parser.add_argument("--result_file", default='', type=str, help="File to save the results")
     parser.add_argument("--print_freq", default=100, type=int, help="Number of iter to print")
@@ -72,6 +72,8 @@ def main():
     args.vocab_size = vocab.n_words
     args.interctc_alpha = 0
     args.interce_alpha = 0
+    args.interctc_layer = 0
+    args.interce_layer = 0
     args.rank = 0
 
     assert args.input_size == (args.left_ctx + args.right_ctx + 1) // args.skip_frame * args.n_features
@@ -90,7 +92,10 @@ def main():
             param.data.copy_(model_state[name])
 
     if args.lm_weight > 0 or args.ctc_lm_weight > 0:
-        if args.rank_model != "n-gram":
+        if args.rank_model == "n-gram":
+            import kenlm
+            lm_model = kenlm.Model(args.rnnlm)
+        else:
             with open(args.lm_config) as f:
                 lm_config = yaml.safe_load(f)
             lm_args = Config()
@@ -122,17 +127,17 @@ def main():
     else:
         lm_model = None
 
-    if args.use_unimask:
-        checkpoint = torch.load(args.word_embed, map_location='cpu')['state_dict']
-        from models.modules.embedding import TextEmbedding
-        word_embed = TextEmbedding(args.d_model, args.vocab_size)
-        for name, param in word_embed.named_parameters():
-            param.data.copy_(checkpoint['module.tgt_embed.0.lut.weight'])
-            param.requires_grad = False
-        if use_cuda:
-            torch.cuda.set_device(args.rank)
-            word_embed = word_embed.cuda()
-        args.word_embed = word_embed
+    #if args.use_unimask:
+    #    checkpoint = torch.load(args.word_embed, map_location='cpu')['state_dict']
+    #    from models.modules.embedding import TextEmbedding
+    #    word_embed = TextEmbedding(args.d_model, args.vocab_size)
+    #    for name, param in word_embed.named_parameters():
+    #        param.data.copy_(checkpoint['module.tgt_embed.0.lut.weight'])
+    #        param.requires_grad = False
+    #    if use_cuda:
+    #        torch.cuda.set_device(args.rank)
+    #        word_embed = word_embed.cuda()
+    #    args.word_embed = word_embed
 
     num_params = 0
     for name, param in model.named_parameters():
@@ -159,7 +164,7 @@ def main():
     args.length_correct, args.length_total = 0, 0
     with torch.no_grad():
         model.eval()
-        if lm_model is not None:
+        if lm_model is not None and args.rank_model != "n-gram"::
             lm_model.eval()
 
         for i, data in enumerate(test_loader):

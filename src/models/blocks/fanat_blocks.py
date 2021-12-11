@@ -54,7 +54,6 @@ class Encoder(nn.Module):
         layer = SelfAttLayer(size, self_attn, feed_forward, dropout)
         self.layers = clones(layer, N)
         self.norm = LayerNorm(layer.size)
-        self.num_layers = N
         
     def forward(self, x, mask, interctc_alpha=0, interctc_layer=6):
         "Pass the input (and mask) through each layer in turn."
@@ -89,11 +88,19 @@ class SelfAttDecoder(nn.Module):
         layer = SelfAttLayer(size, self_attn, feed_forward, dropout)
         self.layers = clones(layer, N)
         
-    def forward(self, x, mask):
+    def forward(self, x, mask, interce_alpha=0, interce_layer=4):
         "Pass the input (and mask) through each layer in turn."
+        n_layer = 0
         for layer in self.layers:
             x = layer(x, mask)
-        return x
+            if interce_alpha > 0 and n_layer == interce_layer - 1:
+                interce_out = x
+            n_layer += 1
+
+        if interce_alpha > 0:
+            return (x, interce_out)
+        else:
+            return x
 
 class MixAttDecoder(nn.Module):
     "Generic N layer decoder with masking."
@@ -102,7 +109,6 @@ class MixAttDecoder(nn.Module):
         layer = MixAttLayer(size, self_attn, src_attn, feed_forward, dropout)
         self.layers = clones(layer, N)
         self.norm = LayerNorm(layer.size)
-        self.num_layers = N
         
     def forward(self, x, memory, src_mask, tgt_mask, interce_alpha=0, interce_layer=4):
         n_layer = 0
@@ -112,7 +118,7 @@ class MixAttDecoder(nn.Module):
                 interce_out = x
             n_layer += 1
 
-        if interce_alpha > 0 and interce_layer > 0:
+        if interce_alpha > 0:
             return (self.norm(x), interce_out)
         else:
             return self.norm(x)

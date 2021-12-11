@@ -7,4 +7,7 @@ from models.blocks.fanat_blocks import MixAttDecoder as TrfMAD
 from models.blocks.fanat_blocks import SelfAttDecoder as TrfSAD
 from models.blocks.fanat_blocks import AcEmbedExtractor as TrfAcExtra
 
+from models.blocks.fanat_blocks import Encoder as TrfEncoder
+from models.blocks.fanat_conformer_blocks import Encoder as ConEncoder
+
 
