@@ -44,7 +44,7 @@ def main():
     parser.add_argument("--max_decode_ratio", type=float, default=0, help='Decoding step to length ratio')
     parser.add_argument("--seed", default=1, type=int, help="random number seed")
 
-    os.environ['CUDA_VISIBLE_DEVICES'] = str(int(os.environ['CUDA_VISIBLE_DEVICES']) % 4 + 4)
+    os.environ['CUDA_VISIBLE_DEVICES'] = str(int(os.environ['CUDA_VISIBLE_DEVICES']) % 4)
 
     args = parser.parse_args()
     with open(args.test_config) as f:
@@ -160,11 +160,14 @@ def main():
     end = time.time()
     
     out_file = open(args.result_file, 'w')
+    if args.print_utt2diff:
+        utt2diff = open(os.path.join(os.path.dirname(args.result_file), 'utt2diff'), 'w')
+
     args.num_correct, args.total = 0, 0
     args.length_correct, args.length_total = 0, 0
     with torch.no_grad():
         model.eval()
-        if lm_model is not None and args.rank_model != "n-gram"::
+        if lm_model is not None and args.rank_model != "n-gram":
             lm_model.eval()
 
         for i, data in enumerate(test_loader):
@@ -197,6 +200,16 @@ def main():
                 #print(utt_list[j]+' '+' '.join(hyp))
                 #print(recog_results[j][0]['score_ctc'], recog_results[j][0]['score_lm'])
                 print(utt_list[j]+' '+' '.join(hyp), flush=True, file=out_file)
+
+                if args.print_utt2diff:  
+                    diff = len(recog_results[j][0]['hyp']) - len(labels[j])
+                    if diff > 2:
+                        diff = 3
+                    elif diff < -2:
+                        diff = -3
+                    else:
+                        diff = diff
+                    print(utt_list[j] + ' ' + str(diff), flush=True, file=utt2diff)
             
             batch_time.update(time.time() - end)
             if i % args.print_freq == 0:
@@ -204,8 +217,9 @@ def main():
 
         progress.print(i)
         if args.test_hitrate:
-            print(args.num_correct, args.total, args.num_correct / args.total)
-            print(args.length_correct, args.length_total, args.length_correct / args.length_total)
+            print(args.num_correct, args.total, 1 - args.num_correct / args.total)
+            print(args.length_correct, args.length_total, 1 - args.length_correct / args.length_total)
+        
 
 if __name__ == '__main__':
     main()

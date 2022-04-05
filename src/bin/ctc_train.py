@@ -18,7 +18,7 @@ import utils.util as util
 from utils.wer import ctc_greedy_wer
 from data.vocab import Vocab
 from utils.optimizer import get_opt, get_ctc_mul_opt
-from models import make_ctc_transformer, make_conformer
+from models import make_ctc_transformer, make_ctc_conformer
 from data.speech_loader import SpeechDataset, DynamicDataset, SpeechDataLoader
 
 
@@ -126,7 +126,7 @@ def main_worker(rank, world_size, args, backend='nccl'):
     if args.model_type == "transformer":
         model = make_ctc_transformer(args.input_size, args)
     elif args.model_type == "conformer":
-        model = make_conformer(args.input_size, args)
+        model = make_ctc_conformer(args.input_size, args)
     else:
         raise NotImplementedError
     optimizer = get_opt(args.opt_type, model, args) 

@@ -152,6 +152,9 @@ def main_worker(rank, world_size, args, backend='nccl'):
         start_epoch = checkpoint['epoch'] + 1
     else:
         start_epoch = 0
+
+    if args.rank == 0:
+        print(model)
     
     num_params = 0
     for name, param in model.named_parameters():
