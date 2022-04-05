@@ -14,7 +14,7 @@ import torch.nn.functional as F
 sys.path.append(os.environ['E2EASR']+'/src')
 import utils.util as util
 from data.vocab import Vocab
-from models import make_ctc_transformer, make_conformer
+from models import make_ctc_transformer, make_ctc_conformer
 from data.speech_loader import SpeechDataset, SpeechDataLoader
 from utils.beam_decode import ctc_beam_decode
 
@@ -74,7 +74,7 @@ def main():
     if args.model_type == "transformer":
         model = make_ctc_transformer(args.input_size, args)
     elif args.model_type == "conformer":
-        model = make_conformer(args.input_size, args)
+        model = make_ctc_conformer(args.input_size, args)
     else:
         raise NotImplementedError
 
