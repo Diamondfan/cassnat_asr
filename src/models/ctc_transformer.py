@@ -28,7 +28,7 @@ def make_model(input_size, args):
     model = CTCTransformer(
         ConvEmbedding(input_size, args.d_model, args.dropout, c(position), causal=args.causal),
         Encoder(args.d_model, c(attn), c(ff), args.dropout, args.N_enc),
-        generator, interctc_gen)
+        generator, interctc_gen, args)
         
     for p in model.parameters():
         if p.dim() > 1:
@@ -51,31 +51,45 @@ class Generator(nn.Module):
         return F.log_softmax(self.proj(x)/T, dim=-1)
 
 class CTCTransformer(nn.Module):
-    def __init__(self, src_embed, encoder, ctc_gen, interctc_gen=None):
+    def __init__(self, src_embed, encoder, ctc_gen, interctc_gen, args):
         super(CTCTransformer, self).__init__()
         self.src_embed = src_embed
         self.encoder = encoder
         self.ctc_generator = ctc_gen
+        self.ctc_alpha = args.ctc_alpha
+        self.interctc_alpha = args.interctc_alpha
+        self.interctc_layer = args.interctc_layer
+        self.causal = args.causal
+        self.forward_ = args.forward
+        self.ctc_loss = torch.nn.CTCLoss(reduction='mean', zero_infinity=True)
+        
         if interctc_gen is not None:
             self.interctc_generator = interctc_gen
+            self.interctc_loss = torch.nn.CTCLoss(reduction='mean', zero_infinity=True)
 
-    def forward(self, src, src_mask, ctc_alpha, args):
-        if args.causal:
-            src, src_mask = self.get_causal_mask(src, src_mask, args.forward)
+    def forward(self, src, src_mask, feat_sizes, tgt_label, label_sizes):
+        if self.causal:
+            src, src_mask = self.get_causal_mask(src, src_mask, self.forward_)
         
         x, x_mask = self.src_embed(src, src_mask)
-        enc_h = self.encoder(x, x_mask, args.interctc_alpha, args.interctc_layer)
-        #CTC Loss needs log probability as input
-        
-        if args.interctc_alpha > 0:
-            enc_h, inter_h = enc_h
-            ctc_out = self.ctc_generator(enc_h)
-            inter_out = self.interctc_generator(inter_h)
-        else:
-            ctc_out = self.ctc_generator(enc_h)
-            inter_out = 0
+        enc_h = self.encoder(x, x_mask, self.interctc_alpha, self.interctc_layer)
+        max_feat_size = enc_h.size(1)
+        feat_sizes = (feat_sizes * max_feat_size).long()
 
-        return ctc_out, inter_out, enc_h
+        enc_h = enc_h[0] if self.interctc_alpha > 0 else enc_h
+        ctc_out = self.ctc_generator(enc_h)
+        ctc_loss = self.ctc_loss(ctc_out.transpose(0,1), tgt_label, feat_sizes, label_sizes)
+        loss = self.ctc_alpha * ctc_loss
+
+        if self.interctc_alpha > 0:
+            inter_out = self.interctc_generator(enc_h[1])
+            interctc_loss = self.interctc_loss(inter_out.transpose(0,1), tgt_label, feat_sizes, label_sizes)
+            loss += self.interctc_alpha * interctc_loss
+        else:
+            inter_out = 0
+            interctc_loss = torch.Tensor([0])
+
+        return ctc_out, inter_out, loss, ctc_loss, interctc_loss, feat_sizes
 
     def subsequent_mask(self, size):
         ret = torch.ones(size, size, dtype=torch.uint8)
@@ -91,10 +105,10 @@ class CTCTransformer(nn.Module):
             src_mask = src_mask & torch.triu(ret, out=ret).unsqueeze(0).type_as(src_mask)
         return src, src_mask
 
-    def greedy_decode(self, src, src_mask, src_size, vocab, args):
+    def greedy_decode(self, src, src_mask, src_size, vocab):
         bs = src.size(0)
-        if args.causal:
-            src, src_mask = self.get_causal_mask(src, src_mask, args.forward)
+        if self.causal:
+            src, src_mask = self.get_causal_mask(src, src_mask, self.forward)
 
         x, x_mask = self.src_embed(src, src_mask)
         enc_h = self.encoder(x, x_mask)

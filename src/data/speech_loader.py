@@ -11,7 +11,7 @@ from data.feat_op import skip_feat, context_feat
 from data.spec_augment import spec_aug
 
 class SingleSet(object):
-    def __init__(self, vocab, data_path, rank):
+    def __init__(self, vocab, data_path, rank, filter_max, filter_min):
         self.name = data_path['name']
         self.vocab = vocab
         self.rank = rank
@@ -38,7 +38,8 @@ class SingleSet(object):
             else:
                 num_frames = None
 
-            self.items.append((utt, ark_path, text, num_frames))
+            if num_frames <= filter_max and num_frames >= filter_min:
+                self.items.append((utt, ark_path, text, num_frames))
         
     def get_len(self):
         return len(self.items)
@@ -80,6 +81,8 @@ class SpeechDataset(Dataset):
         self.left_context = args.left_ctx
         self.right_context = args.right_ctx
         self.skip_frame = args.skip_frame  
+        self.filter_max = args.filter_max
+        self.filter_min = args.filter_min
         self.use_specaug = args.use_specaug
         self.specaug_conf = args.specaug_conf 
         self.use_cmvn = False
@@ -100,7 +103,7 @@ class SpeechDataset(Dataset):
     def _load_streams(self, data_paths):
         data_streams = []
         for i in range(len(data_paths)):
-            stream = SingleSet(self.vocab, data_paths[i], self.rank)
+            stream = SingleSet(self.vocab, data_paths[i], self.rank, self.filter_max, self.filter_min)
             data_streams.append(stream)
         return data_streams
                     
@@ -147,6 +150,8 @@ class DynamicDataset(Dataset):
         self.max_len = args.max_len
         self.max_frmlen = args.max_frmlen
         self.max_lablen = args.max_lablen
+        self.filter_max = args.filter_max
+        self.filter_min = args.filter_min
         self.batch_size = args.batch_size
 
         self.left_context = args.left_ctx
@@ -179,7 +184,7 @@ class DynamicDataset(Dataset):
     def _load_streams(self, data_paths):
         data_streams = []
         for i in range(len(data_paths)):
-            stream = SingleSet(self.vocab, data_paths[i], self.rank)
+            stream = SingleSet(self.vocab, data_paths[i], self.rank, self.filter_max, self.filter_min)
             data_streams.append(stream)
         return data_streams
            
@@ -196,9 +201,12 @@ class DynamicDataset(Dataset):
         start = 0
         while True:
             frmlen = all_data[start][-1]
-            if frmlen > self.max_len:
+            if frmlen > self.filter_max or frmlen < self.filter_min:
                 start += 1 
-                continue
+                if start == len(all_data):
+                    break
+                else:
+                    continue
             lablen = len(all_data[start][-2])
             factor = max(int(frmlen / self.max_frmlen), int(lablen / self.max_lablen))
             bs = max(1, int(self.batch_size / (1 + factor)))

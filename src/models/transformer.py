@@ -13,6 +13,7 @@ from models.modules.attention import MultiHeadedAttention
 from models.modules.positionff import PositionwiseFeedForward
 from models.modules.embedding import PositionalEncoding, ConvEmbedding, TextEmbedding
 from models.blocks.transformer_blocks import Encoder, Decoder
+from utils.loss import LabelSmoothing
 from utils.ctc_prefix import CTCPrefixScore
 
 def make_model(input_size, args):
@@ -28,7 +29,7 @@ def make_model(input_size, args):
         Encoder(args.d_model, c(attn), c(ff), args.dropout, args.N_enc),
         nn.Sequential(TextEmbedding(args.d_model, args.vocab_size), c(position)), 
         Decoder(args.d_model, c(attn), c(attn), c(ff), args.dropout, args.N_dec),
-        c(generator), c(generator), interctc_gen)
+        c(generator), c(generator), interctc_gen, args)
         
     for p in model.parameters():
         if p.dim() > 1:
@@ -51,7 +52,7 @@ class Generator(nn.Module):
         return F.log_softmax(self.proj(x)/T, dim=-1)
 
 class Transformer(nn.Module):
-    def __init__(self, src_embed, encoder, tgt_embed, decoder, ctc_gen, att_gen, interctc_gen=None):
+    def __init__(self, src_embed, encoder, tgt_embed, decoder, ctc_gen, att_gen, interctc_gen, args):
         super(Transformer, self).__init__()
         self.src_embed = src_embed
         self.tgt_embed = tgt_embed
@@ -59,26 +60,48 @@ class Transformer(nn.Module):
         self.decoder = decoder
         self.ctc_generator = ctc_gen
         self.att_generator = att_gen
+        
+        self.ctc_alpha = args.ctc_alpha
+        self.interctc_alpha = args.interctc_alpha
+        self.interctc_layer = args.interctc_layer
+        self.ctc_loss = torch.nn.CTCLoss(reduction='mean', zero_infinity=True)
+        self.att_loss = LabelSmoothing(args.vocab_size, args.padding_idx, args.label_smooth)
+
         if interctc_gen is not None:
             self.interctc_generator = interctc_gen
+            self.interctc_loss = torch.nn.CTCLoss(reduction='mean', zero_infinity=True)
 
-    def forward(self, src, tgt, src_mask, tgt_mask, ctc_alpha, interctc_alpha=0, interctc_layer=6):
+    def forward(self, src, tgt, src_mask, tgt_mask, feat_sizes, label_sizes, tgt_label):
         x, x_mask = self.src_embed(src, src_mask)
-        enc_h = self.encoder(x, x_mask, interctc_alpha, interctc_layer)
-        #CTC Loss needs log probability as input
-        if ctc_alpha > 0 and interctc_alpha == 0:
-            ctc_out = self.ctc_generator(enc_h)
-            inter_out = 0
-        elif ctc_alpha > 0 and interctc_alpha > 0:
-            enc_h, inter_h = enc_h
-            ctc_out = self.ctc_generator(enc_h)
+        enc_h = self.encoder(x, x_mask, self.interctc_alpha, self.interctc_layer)
+        
+        if self.interctc_alpha > 0:
+            inter_h = enc_h[1]
             inter_out = self.interctc_generator(inter_h)
+            max_feat_size = inter_h.size(1)
+            feat_sizes = (feat_sizes * max_feat_size).long()
+            interctc_loss = self.interctc_loss(inter_out.transpose(0,1), tgt_label, feat_sizes, label_sizes)
         else:
-            ctc_out = 0
-            inter_out = 0
+            interctc_loss = torch.Tensor([0]) 
+
+        enc_h = enc_h if self.interctc_alpha == 0 else enc_h[0]
+        if self.ctc_alpha > 0:
+            ctc_out = self.ctc_generator(enc_h)
+            max_feat_size = enc_h.size(1)
+            feat_sizes = (feat_sizes * max_feat_size).long()
+            ctc_loss = self.ctc_loss(ctc_out.transpose(0,1), tgt_label, feat_sizes, label_sizes)
+        else:
+            ctc_loss = torch.Tensor([0])
+
         dec_h = self.decoder(self.tgt_embed(tgt), enc_h, x_mask, tgt_mask)
         att_out = self.att_generator(dec_h)
-        return ctc_out, att_out, enc_h, inter_out
+        att_loss = self.att_loss(att_out.view(-1, att_out.size(-1)), tgt_label.view(-1))        
+
+        loss = att_loss + self.ctc_alpha * ctc_loss
+        if self.interctc_alpha > 0:
+            loss += self.interctc_alpha * interctc_loss
+
+        return ctc_out, att_out, loss, att_loss, ctc_loss, feat_sizes
 
     def forward_att(self, src, tgt, src_mask, tgt_mask):
         x, x_mask = self.src_embed(src, src_mask)

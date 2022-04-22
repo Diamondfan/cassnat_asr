@@ -24,7 +24,7 @@ def main():
     # sum
     for epoch in average_epochs:
         path = os.path.join(args.exp_dir, "model.{}.mdl".format(epoch))
-        states = torch.load(path, map_location=torch.device("cpu"))["state_dict"]
+        states = torch.load(path, map_location=torch.device("cpu"))["model_state"]
         if avg is None:
             avg = states
         else:
@@ -39,7 +39,7 @@ def main():
     out_path = os.path.join(args.exp_dir, args.out_name)
         
     save_model = {}
-    save_model['state_dict'] = avg
+    save_model['model_state'] = avg
     torch.save(save_model, out_path)
 
 

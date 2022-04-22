@@ -14,6 +14,7 @@ from models.modules.positionff import PositionwiseFeedForward
 from models.modules.embedding import PositionalEncoding, ConvEmbedding, TextEmbedding
 from models.blocks.fanat_blocks import Encoder, AcEmbedExtractor, SelfAttDecoder, MixAttDecoder
 from utils.ctc_prefix import logzero, logone, CTCPrefixScore
+from utils.loss import LabelSmoothing, KLDivLoss
 
 def make_model(input_size, args):
     c = copy.deepcopy
@@ -48,7 +49,7 @@ def make_model(input_size, args):
         AcEmbedExtractor(args.d_model, c(attn), c(ff), args.dropout, args.N_extra),
         SelfAttDecoder(args.d_model, c(attn), c(ff), args.dropout, args.N_self_dec),
         decoder_use,
-        c(generator), c(generator), pe, interctc_gen, interce_gen)
+        c(generator), c(generator), pe, interctc_gen, interce_gen, args)
         
     for p in model.parameters():
         if p.dim() > 1:
@@ -79,7 +80,7 @@ class Generator(nn.Module):
         return F.log_softmax(self.proj(x)/T, dim=-1)
 
 class CassNAT(nn.Module):
-    def __init__(self, src_embed, encoder, acembed_extractor, embed_mapper, decoder, ctc_gen, att_gen, pe, interctc_gen=None, interce_gen=None):
+    def __init__(self, src_embed, encoder, acembed_extractor, embed_mapper, decoder, ctc_gen, att_gen, pe, interctc_gen, interce_gen, args):
         super(CassNAT, self).__init__()
         self.src_embed = src_embed
         self.encoder = encoder
@@ -89,15 +90,17 @@ class CassNAT(nn.Module):
         self.ctc_generator = ctc_gen
         self.att_generator = att_gen
         self.pe = pe
+        self.ctc_loss = torch.nn.CTCLoss(reduction='mean', zero_infinity=True)
+        self.att_loss = LabelSmoothing(args.vocab_size, args.padding_idx, args.label_smooth)
+
         if interctc_gen is not None:
             self.interctc_generator = interctc_gen
+            self.interctc_loss = torch.nn.CTCLoss(reduction='mean', zero_infinity=True)
         if interce_gen is not None:
             self.interce_generator = interce_gen
-
-    def forward(self, src, src_mask, src_size, tgt_label, ylen, args):
-        if args.MWER_training:
-            return self.forward_MWER(src, src_mask, src_size, tgt_label, ylen, args)
-        
+            self.interce_loss = LabelSmoothing(args.vocab_size, args.padding_idx, args.label_smooth)
+            
+    def forward(self, src, src_mask, src_size, tgt_label, ylen, label_sizes, args):
         # 1. compute ctc output
         x, x_mask = self.src_embed(src, src_mask)
         enc_h = self.encoder(x, x_mask, args.interctc_alpha, args.interctc_layer)
@@ -170,99 +173,31 @@ class CassNAT(nn.Module):
             interce_out = 0
         
         att_out = self.att_generator(dec_h)
-        return ctc_out, att_out, pred_embed, tgt_mask_bidi, interctc_out, interce_out
-
-    def forward_MWER(self, src, src_mask, src_size, tgt_label, tgtlen, args):
-        # 1. compute ctc output
-        x, x_mask = self.src_embed(src, src_mask)
-        enc_h = self.encoder(x, x_mask, args.interctc_alpha)
-        if args.ctc_alpha > 0 and args.interctc_alpha == 0:
-            ctc_out = self.ctc_generator(enc_h)
-            interctc_out = 0
-        elif args.ctc_alpha > 0 and args.interctc_alpha > 0:
-            enc_h, inter_h = enc_h[0], enc_h[1]
-            ctc_out = self.ctc_generator(enc_h)
-            interctc_out = self.interctc_generator(inter_h)
+        
+        loss = 0
+        if args.ctc_alpha > 0:
+            ctc_loss = self.ctc_loss(ctc_out.transpose(0,1), tgt_label, src_size, label_sizes)
+            loss += args.ctc_alpha * ctc_loss
         else:
-            ctc_out = enc_h.new_zeros(enc_h.size())
-            interctc_out = 0
-        
-        # 2. Expand enc_h and ctc_out to be sample_num*bs, 
-        assert args.ctc_alpha > 0
-        src_size = (src_size * ctc_out.size(1)).long()
-        blank = args.padding_idx
-        sample_num = args.sample_num
-        ctc_out_expand = ctc_out.unsqueeze(1).repeat(1, sample_num, 1, 1).reshape(-1, ctc_out.size(1), ctc_out.size(2))
-        enc_h = enc_h.unsqueeze(1).repeat(1, sample_num, 1, 1).reshape(-1, enc_h.size(1), enc_h.size(2))
-        x_mask = x_mask.unsqueeze(1).repeat(1, sample_num, 1, 1).reshape(-1, x_mask.size(1), x_mask.size(2))
-        src_size = src_size.unsqueeze(1).repeat(1, sample_num).reshape(-1)
-        
-        # 3. Obtain trigger mask (sample topk from best_path align, using ESA)
-        aligned_seq_shift, ylen, ymax = self.best_path_align(ctc_out_expand, x_mask, src_size, blank, 0, sample_num, threshold=0.9, include_best=True)
-        trigger_mask, ylen, ymax = self.align_to_mask(aligned_seq_shift, ylen, ymax, x_mask, src_size, blank)
-        wer_weight, ctc_target = self.MWER_preprocess(aligned_seq_shift, ylen, tgt_label, tgtlen, sample_num)
+            ctc_loss = torch.Tensor([0])
 
-        trigger_mask = self.expand_trigger_mask(trigger_mask, args.left_trigger, args.right_trigger)
-        trigger_mask = trigger_mask & x_mask
-
-        bs, _, d_model = enc_h.size()
-        tgt_mask_bidi = torch.full((bs, ymax), 1).type_as(src_mask)
-        tgt_mask_bidi = tgt_mask_bidi.scatter(1, ylen.unsqueeze(1)-1, 0).cumprod(1)
-        tgt_mask_bidi = tgt_mask_bidi.scatter(1, ylen.unsqueeze(1)-1, 1).unsqueeze(1)
+        if args.interctc_alpha > 0:
+            interctc_loss = self.interctc_loss(interctc_out.transpose(0,1), tgt_label, src_size, label_sizes)
+            loss += args.interctc_alpha * interctc_loss
         
-        # 3. Extract Acoustic embedding
-        pe = self.pe.type_as(src).unsqueeze(0).repeat(bs, 1, 1)[:,:ymax,:]
-        ac_embed = self.acembed_extractor(pe, enc_h, trigger_mask)
-        pred_embed = self.embed_mapper(ac_embed, tgt_mask_bidi)
-        if args.interce_alpha > 0 and args.interce_location == 'after_mapping':
-            interce_out = self.interce_generator(pred_embed[0])
-
-        if args.save_embedding:
-            args.ac_embed, args.pred_embed = ac_embed[0].cpu(), pred_embed[0].cpu()
-        
-        # 4. decoder, output units generation
-        if args.use_unimask:
-            pred_embed = torch.cat([args.sos_embed, pred_embed[:,:-1,:]], dim=1)
-            tgt_mask = tgt_mask_bidi & self.subsequent_mask(ymax).type_as(tgt_mask_bidi) # uni-direc
+        # loss computation
+        if args.use_best_path:
+            att_loss = self.att_loss.forward_best_path(att_out, tgt_label, tgt_mask_pred)
         else:
-            tgt_mask = tgt_mask_bidi
-            true_embed = None
+            att_loss = self.att_loss(att_out.view(-1, att_out.size(-1)), tgt_label.view(-1))
 
-        if args.use_src:
-            if args.src_trigger:
-                x_mask = trigger_mask
-            dec_h = self.decoder(pred_embed, enc_h, x_mask, tgt_mask, args.interce_alpha, args.interce_location)
-            if args.interce_alpha > 0 and args.interce_location != 'after_mapping':
-                dec_h, interce_h = dec_h[0], dec_h[1]
-                interce_out = self.interce_generator(interce_h)
-            elif args.interce_alpha == 0:
-                interce_out = 0
-        else:
-            dec_h = self.decoder(pred_embed, tgt_mask)
-        att_out = self.att_generator(dec_h)
-        return ctc_out, att_out, pred_embed, tgt_mask_bidi, interctc_out, interce_out, wer_weight, ctc_target
+        loss += args.att_alpha * att_loss
+        
+        if args.interce_alpha > 0:
+            interce_loss = self.interce_loss(interce_out.view(-1, interce_out.size(-1)), tgt_label.view(-1))
+            loss += args.interce_alpha * interce_loss
 
-    def MWER_preprocess(self, ctc_seq, ylen, tgt_label, tgtlen, sample_num):
-        # ctc_seq: bsxsample_num, T         tgt_label: bs, T
-        # wer_errors: errors for each sampled path
-        # ctc_target: predicted path, for caculating probability of decoder output
-        bs, T = tgt_label.size()
-        ymax = torch.max(ylen).item()
-        wer_errors = torch.zeros(ctc_seq.size(0)).type_as(ctc_seq)
-        ctc_target = torch.zeros(ctc_seq.size(0), ymax).type_as(ctc_seq)
-        for b in range(bs):
-            tgt_seq = tgt_label[b,:tgtlen[b]].cpu().numpy().tolist()
-            for i in range(sample_num):
-                idx = b * sample_num + i
-                ctc_out = []
-                for token in ctc_seq[idx]:
-                    if token != 0:
-                        ctc_out.append(token.item())
-                
-                wer_errors[idx] = ed.eval(tgt_seq, ctc_out)
-                ctc_out.append(2)
-                ctc_target[idx,:ylen[idx]] = torch.tensor(ctc_out).type_as(ctc_seq)
-        return wer_errors.reshape(-1, sample_num), ctc_target
+        return ctc_out, att_out, loss, ctc_loss, att_loss
 
     def expand_trigger_mask(self, trigger_mask, left_trigger, right_trigger):
         if right_trigger > 0:
@@ -346,20 +281,6 @@ class CassNAT(nn.Module):
         dup = aligned_seq == aligned_seq_shift
         aligned_seq.masked_fill_(dup, 0)
         aligned_seq_shift[:,1:] = aligned_seq[:,:-1]
-
-        if sample_dist > 0:
-            for b in range(bs):
-                orig_pos = torch.nonzero(aligned_seq_shift[b])
-                sample_shift = torch.randint(-sample_dist, sample_dist+1, orig_pos.size()).type_as(aligned_seq_shift)
-                new_pos = orig_pos + sample_shift
-                if new_pos.size(0) > 1:
-                    new_pos[-2] = min(new_pos[-2], xmax-1)  # useful when sample_dist = 2
-                new_pos[-1] = min(new_pos[-1], xmax-1)
-                new_aligned_seq = aligned_seq_shift[b].clone()
-                new_aligned_seq[orig_pos] = blank
-                new_aligned_seq[new_pos] = 1
-                if torch.sum(new_aligned_seq) == ylens[b]:
-                    aligned_seq_shift[b] = new_aligned_seq
         return aligned_seq_shift, ylens, ymax
 
     def align_to_mask(self, aligned_seq_shift, ylens, ymax, src_mask, src_size, blank):

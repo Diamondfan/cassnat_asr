@@ -57,7 +57,7 @@ def make_model(input_size, args):
 
     model = ConCassNAT(
                 ConvEmbedding(input_size, args.d_model, args.dropout, enc_position),
-                encoder, Extra, Sad, Mad, c(generator), c(generator), pe, interctc_gen, interce_gen)
+                encoder, Extra, Sad, Mad, c(generator), c(generator), pe, interctc_gen, interce_gen, args)
 
     if args.interce_alpha > 0:
         if args.interce_layer <= args.N_self_dec:

@@ -38,7 +38,7 @@ def make_model(input_size, args):
     interctc_gen = Generator(args.d_model, args.vocab_size, add_norm=True) if args.interctc_alpha > 0 else None
     model = CTCConformer(
         ConvEmbedding(input_size, args.d_model, args.dropout, enc_position),
-        encoder, generator, interctc_gen)
+        encoder, generator, interctc_gen, args)
         
     for p in model.parameters():
         if p.dim() > 1:

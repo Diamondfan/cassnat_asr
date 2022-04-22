@@ -84,18 +84,18 @@ class ConvEmbedding(nn.Module):
         super(ConvEmbedding, self).__init__()
 
         if causal:
-            conv1 = nn.Conv2d(1, 64, (2,3), (2,2), (0,1))
-            conv2 = nn.Conv2d(64, 128, (2,3), (2,2), (0,1))
+            conv1 = nn.Conv2d(1, d_model, (2,3), (2,2), (0,1))
+            conv2 = nn.Conv2d(d_model, d_model, (2,3), (2,2), (0,1))
             self.conv = nn.Sequential(Padding(pad=(0, 0, 1, 0)), conv1, nn.ReLU(),
                                       Padding(pad=(0, 0, 1, 0)), conv2, nn.ReLU())
         else:
-            conv1 = nn.Conv2d(1, 64, 3, 2, 1)
-            conv2 = nn.Conv2d(64, 128, 3, 2, 1)
+            conv1 = nn.Conv2d(1, d_model, 3, 2, 1)
+            conv2 = nn.Conv2d(d_model, d_model, 3, 2, 1)
             self.conv = nn.Sequential(conv1, nn.ReLU(), conv2, nn.ReLU())
 
         self.d_model = d_model 
         
-        self.linear_out = nn.Linear(128 * (((input_size-1)//2) // 2 + 1), d_model)
+        self.linear_out = nn.Linear(d_model * (((input_size-1)//2) // 2 + 1), d_model)
         self.pos_enc = pos_enc
 
     def forward(self, x, mask):

@@ -1,0 +1,56 @@
+vocab_file: data/dict/vocab_wp.txt
+global_cmvn: data/fbank/cmvn.ark
+
+#model configuration
+model_type: "transformer"
+input_size: 240
+N_enc: 12
+N_extra: 1
+N_self_dec: 1 #5 #3
+N_mix_dec: 6 #2 #4
+d_model: 512 #256
+d_ff: 2048
+n_head: 8 #4
+dropout: 0
+
+#conformer related
+share_ff: False
+d_encff: 1024
+d_decff: 1024 #2048
+pos_type: "relative"
+enc_max_relative_len: 20
+enc_kernel_size: 31
+use_conv_dec: True #False
+dec_max_relative_len: 8
+dec_kernel_size: 3
+
+n_features: 80
+vocab_size: 4990
+left_ctx: 0
+right_ctx: 2
+skip_frame: 1
+padding_idx: 0
+
+use_gpu: True
+
+#beam_decode
+beam_width: 1
+ctc_beam: 1 #20
+ctc_pruning: 0 #30
+ctc_lp: 0 #2
+ctc_lm_weight: 0.1 #used to load lm for ranking ESA
+length_penalty: 0
+T: 1.0
+ 
+use_best_path: False
+use_trigger: True
+use_src: True
+src_trigger: False
+use_unimask: False
+left_trigger: 0
+right_trigger: 0
+sample_dist: 0
+sample_num: 50
+threshold: 0.9
+
+test_hitrate: False

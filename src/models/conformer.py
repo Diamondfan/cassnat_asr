@@ -19,14 +19,14 @@ def make_model(input_size, args):
     c = copy.deepcopy
     #assert args.pos_type == "relative", "conformer must use relative positional encoding"
     if args.pos_type == "relative":
-        enc_position = RelativePositionalEncoding(args.d_model, args.dropout, args.max_relative_len)
+        enc_position = RelativePositionalEncoding(args.d_model, args.dropout, args.enc_max_relative_len)
         enc_attn = RelMultiHeadedAttention(args.n_head, args.d_model, args.dropout)
     elif args.pos_type == "absolute":
         enc_position = PositionalEncoding(args.d_model, args.dropout)
         enc_attn = MultiHeadedAttention(args.n_head, args.d_model, args.dropout)
         
     attn = MultiHeadedAttention(args.n_head, args.d_model, args.dropout)
-    conv_module = ConvModule(args.d_model, args.kernel_size, activation=Swish())
+    conv_module = ConvModule(args.d_model, args.enc_kernel_size, activation=Swish())
     enc_ff = PositionwiseFeedForward(args.d_model, args.d_encff, args.dropout, activation=Swish())
     dec_ff = PositionwiseFeedForward(args.d_model, args.d_decff, args.dropout, activation=Swish())
     position = PositionalEncoding(args.d_model, args.dropout)
@@ -38,7 +38,7 @@ def make_model(input_size, args):
         Encoder(args.d_model, c(enc_ff), enc_attn, conv_module, c(enc_ff), args.dropout, args.N_enc, args.pos_type, args.share_ff),
         nn.Sequential(TextEmbedding(args.d_model, args.vocab_size), position), 
         Decoder(args.d_model, c(attn), c(attn), dec_ff, args.dropout, args.N_dec),
-        c(generator), c(generator), interctc_gen)
+        c(generator), c(generator), interctc_gen, args)
     
     for p in model.parameters():
         if p.dim() > 1:

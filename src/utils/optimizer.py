@@ -7,7 +7,6 @@ class BaseOpt(object):
     def __init__(self, optimizer):
         self.optimizer = optimizer
         self._step = 0
-        self._rate = 0
         for p in self.optimizer.param_groups:
             p['initial_lr'] = p['lr']
 
@@ -16,7 +15,6 @@ class BaseOpt(object):
         rate = self.rate()
         for p in self.optimizer.param_groups:
             p['lr'] = p['initial_lr'] * rate
-        self._rate = rate
         self.optimizer.step()
 
     def rate(self, step=None):
@@ -40,7 +38,6 @@ class MulBaseOpt(object):
     def __init__(self, optimizer):
         self.optimizer = optimizer
         self._step = 0 
-        self._rate = 0 
         for i in range(len(self.optimizer.param_groups)):
             self.optimizer.param_groups[i]['initial_lr'] = self.optimizer.param_groups[i]['lr']
 
@@ -49,7 +46,6 @@ class MulBaseOpt(object):
         rate = self.rate()
         for i in range(len(self.optimizer.param_groups)):
             self.optimizer.param_groups[i]['lr'] = self.optimizer.param_groups[i]['initial_lr'] * rate[i]
-        self._rate = rate
         self.optimizer.step()
 
     def rate(self, step=None):
@@ -99,15 +95,12 @@ class NoamOpt(BaseOpt):
                 return base_rate * max(decay_num, 0)
 
     def state_dict(self):
-        """Return state_dict."""
-        return {
-            "_step": self._step,
-            "warmup_steps": self.warmup_steps,
-            "warmup_type": self.warmup_type,
-            "factor": self.factor,
-            "model_size": self.model_size,
-            "_rate": self._rate,
+        state_dict = {
+            "_step": self._step, "warmup_steps": self.warmup_steps,
+            "warmup_type": self.warmup_type, "factor": self.factor,
+            "model_size": self.model_size, "total_steps": self.total_steps,
             "optimizer": self.optimizer.state_dict()}
+        return state_dict
 
 class MulNoamOpt(MulBaseOpt):
     "Optim wrapper that implements rate."
@@ -167,16 +160,15 @@ class MulNoamOpt(MulBaseOpt):
         return rates
 
     def state_dict(self):
-        """Return state_dict."""
-        return {
-            "_step": self._step,
-            "warmup_steps": self.warmup_steps,
-            "warmup_type": self.warmup_type,
-            "factor": self.factor,
-            "model_size": self.model_size,
-            "_rate": self._rate,
+        state_dict = {
+            "_step": self._step, "factor": self.factor,
+            "pretrained_factor": self.pretrained_factor, 
+            "warmup_steps": self.warmup_steps, "warmup_type": self.warmup_type,
+            "pretrained_warmup_steps": self.pretrained_warmup_steps, 
+            "pretrained_idx": self.pretrained_idx, "total_steps": self.total_steps, 
+            "model_size": self.model_size, "n_groups": self.n_groups,
             "optimizer": self.optimizer.state_dict()}
-
+        return state_dict
 
 class CosineOpt(BaseOpt):
     "Optim wrapper that implements rate."
@@ -192,13 +184,10 @@ class CosineOpt(BaseOpt):
         return 0.5 * (math.cos(math.pi * (step - self.warmup) / self.total) + 1)
 
     def state_dict(self):
-        """Return state_dict."""
-        return {
-            "_step": self._step,
-            "warmup": self.warmup,
-            "total": self.total,
-            "_rate": self._rate,
+        state_dict =  {
+            "_step": self._step, "warmup": self.warmup, "total": self.total,
             "optimizer": self.optimizer.state_dict()}
+        return state_dict
 
 class LRMulStepScheduler(BaseOpt):
     def __init__(self, decay_rate, s_warm, s_decay, s_keep, optimizer):
@@ -222,34 +211,32 @@ class LRMulStepScheduler(BaseOpt):
         return rate
 
     def state_dict(self):
-        """Return state_dict."""
-        return {
-            "_step": self._step,
-            "decay_rate": self.decay_rate, 
-            "s_warm": self.s_warm,
-            "s_decay": self.s_decay, 
-            "s_keep": self.s_keep, 
-            "_rate": self._rate,
-            "optimizer": self.optimizer.state_dict()}
+        state_dict = {
+            "_step": self._step, "decay_rate": self.decay_rate, 
+            "s_warm": self.s_warm, "s_decay": self.s_decay, 
+            "s_keep": self.s_keep, "optimizer": self.optimizer.state_dict()}
+        return state_dict
             
-def get_opt(opt_type, model, args):
-    opt = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.learning_rate, betas=(0.9, 0.98), eps=1e-9, weight_decay=args.weight_decay)
-    if opt_type == "noam":
+def get_optim(optim_type, model, args):
+    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.learning_rate, betas=(0.9, 0.98), eps=1e-9, weight_decay=args.weight_decay)
+    if optim_type == "noam":
         factor = args.noam_factor
         warmup_steps = args.warmup_steps
         total_steps = args.total_steps
         warmup_type = args.warmup_type
-        return NoamOpt(opt, args.d_model, factor, warmup_steps, total_steps, warmup_type)
-    elif opt_type == "normal":
-        return opt
-    elif opt_type == "cosine":
-        return CosineOpt(args.cosine_total, args.cosine_warmup, opt)
-    elif opt_type == "noamwarm":
-        return NoamWarmOpt(args.noam_warmup, opt)
-    elif opt_type == "multistep":
-        return LRMulStepScheduler(args.decay_rate, args.s_warm, args.s_decay, args.s_keep, opt)
-    else:
-        raise NotImplementedError
+        return NoamOpt(optimizer, args.d_model, factor, warmup_steps, total_steps, warmup_type)
+    
+    if optim_type == "normal":
+        return optimizer
+    
+    if optim_type == "cosine":
+        return CosineOpt(args.cosine_total, args.cosine_warmup, optimizer)
+     
+    if optim_type == "multistep":
+        return LRMulStepScheduler(args.decay_rate, args.s_warm, args.s_decay, args.s_keep, optimizer)
+    
+    raise NotImplementedError
+
 
 def get_ctc_mul_opt(opt_type, model, args):
     updated_params = [{"params": model.src_embed.parameters()}, {"params": model.encoder.parameters()}, 
@@ -271,8 +258,6 @@ def get_ctc_mul_opt(opt_type, model, args):
         return opt 
     elif opt_type == "cosine":
         return CosineOpt(args.cosine_total, args.cosine_warmup, opt)
-    elif opt_type == "noamwarm":
-        return NoamWarmOpt(args.noam_warmup, opt)
     elif opt_type == "multistep":
         return LRMulStepScheduler(args.decay_rate, args.s_warm, args.s_decay, args.s_keep, opt)
     else:
