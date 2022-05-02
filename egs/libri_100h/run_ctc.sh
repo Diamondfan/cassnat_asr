@@ -77,16 +77,15 @@ if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
     
     $cmd JOB=1:$nj $desdir/log/decode.JOB.log \
       CUDA_VISIBLE_DEVICES=JOB ctc_decode.py \
+        --task "ctc" \
         --test_config conf/ctc_decode.yaml \
         --lm_config conf/lm.yaml \
         --data_path $desdir/feats.JOB.scp \
         --resume_model $test_model \
         --result_file $desdir/token_results.JOB.txt \
         --batch_size $batch_size \
-        --decode_type $decode_type \
         --rnnlm $rnnlm_model \
         --lm_weight $lmwt \
-        --use_cmvn \
         --print_freq 20 
     
     cat $desdir/token_results.*.txt | sort -k1,1 > $desdir/token_results.txt

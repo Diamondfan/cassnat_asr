@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 
-# 2020 Ruchao Fan
+# 2020 Ruchao Fan PAII Inc.
+# 2022 Ruchao Fan SPAPL UCLA
 # This script is to run our proposed CASS-NAT, The name is CASS-NAT
 # (CTC alignement-based Signgle Step Non-autoregressive Transformer).
+
 
 . cmd.sh
 . path.sh
@@ -10,10 +12,8 @@
 stage=1
 end_stage=1
 lm_model=exp/libri_tfunilm16x512_4card_cosineanneal_ep20_maxlen120/averaged.mdl
-encoder_initial_model=exp/1kh_transformer_baseline_wotime_warp_f27t005/averaged.mdl
-#asr_exp=exp/cassnat_multistep_initart_wosrc_wosrctrig_bimask/
-#asr_exp=exp/cassnat_multistep_initart_wsrc_2blk_wsrctrig_bimask/
-asr_exp=exp/100h_test/ #cassnat_multistep_initart_wsrc_6blk_wosrctrig_bimask/
+
+asr_exp=exp/cassnat_noam15k_initrand_interctc05_ly6_interce01_ly6/
 
 if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
 
@@ -21,18 +21,18 @@ if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
     mkdir -p $asr_exp
   fi
 
-  CUDA_VISIBLE_DEVICES="2" train_asr.py \
+  CUDA_VISIBLE_DEVICES="0,1" train_asr.py \
     --task "cassnat" \
     --exp_dir $asr_exp \
     --train_config conf/cassnat_train.yaml \
     --data_config conf/data_wp.yaml \
     --optim_type "noam" \
-    --epochs 100 \
-    --start_saving_epoch 40 \
+    --epochs 60 \
+    --start_saving_epoch 20 \
     --end_patience 10 \
     --seed 1234 \
     --print_freq 100 \
-    --port 12348 #> $asr_exp/train.log 2>&1 &
+    --port 18765 > $asr_exp/train.log 2>&1 &
     
   echo "[Stage 1] ASR Training Finished."
 fi
@@ -95,6 +95,7 @@ if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
     
     $cmd JOB=1:$nj $desdir/log/decode.JOB.log \
       CUDA_VISIBLE_DEVICES=JOB cassnat_decode.py \
+        --task "cassnat" \
         --test_config conf/cassnat_decode.yaml \
         --lm_config $rank_yaml \
         --rank_model $rank_model \
@@ -103,11 +104,8 @@ if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
         --resume_model $test_model \
         --result_file $desdir/token_results.JOB.txt \
         --batch_size $batch_size \
-        --decode_type $decode_type \
         --rnnlm $rnnlm_model \
         --lm_weight $lmwt \
-        --max_decode_ratio 0 \
-        --use_cmvn \
         --print_freq 20
 
     cat $desdir/token_results.*.txt | sort -k1,1 > $desdir/token_results.txt

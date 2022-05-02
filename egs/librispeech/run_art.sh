@@ -2,12 +2,8 @@
 
 # 2020 (Ruchao Fan)
 
-# The data are already downloaded in the corresponding dir
-data=/data/nas1/user/ruchao/Database/LibriSpeech/
-lm_data=/data/nas1/user/ruchao/Database/LibriSpeech/libri_lm
-
-stage=8
-end_stage=8
+stage=1
+end_stage=1
 featdir=data/fbank
 
 unit=wp         #word piece
@@ -18,86 +14,8 @@ bpemode=unigram #bpe or unigram
 . ./path.sh
 . parse_options.sh
 
-if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
-  # format the data as Kaldi data directories
-  for part in dev-clean test-clean dev-other test-other train-clean-100 train-clean-360 train-other-500; do
-    # use underscore-separated names in data directories.
-    local/data_prep.sh $data/LibriSpeech/$part data/$(echo $part | sed s/-/_/g)
-  done
-  echo "[Stage 1] Data Preparation Finished."
-fi
-
-train_set="train_clean_100 train_clean_360 train_other_500"
-test_set="dev_clean test_clean dev_other test_other"
-dev_set="dev_clean dev_other"
-if [ $stage -le 2 ] && [ $end_stage -ge 2 ]; then
-    
-  for part in $train_set; do
-    steps/make_fbank.sh --nj 32 --cmd $cmd --write_utt2num_frames true \
-      data/$part exp/make_fbank/$part $featdir/$part
-  done
-  
-  #compute global cmvn with training data
-  all_feats=data/train_feats.scp
-  ( for f in $train_set; do cat data/$f/feats.scp; done ) | sort -k1 > $all_feats
-
-  #remember to replace cmvn.ark in training config and it is applied in dataloader
-  compute-cmvn-stats scp:$all_feats data/fbank/cmvn.ark || exit 1; 
-
-  for part in $test_set; do
-    steps/make_fbank.sh --nj 32 --cmd $cmd --write_utt2num_frames true \
-      data/$part exp/make_fbank/$part $featdir/$part
-  done
-
-  echo "[Stage 2] Feature Extraction Finished"
-fi
-
-dict=data/dict/vocab_${unit}.txt ; mkdir -p data/dict
-bpemodel=data/dict/bpemodel_${bpemode}_${nbpe}
-if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then  
-  echo "Create a dictionary..."
-  all_text=data/train_text
-  ( for f in $train_set; do cat data/$f/text; done ) | sort -k1 > $all_text
-  
-  if [ $unit == wp ]; then
-    cut -f 2- -d " " $all_text > data/dict/input.txt
-    spm_train --input=data/dict/input.txt --vocab_size=$nbpe --model_type=$bpemode \
-        --model_prefix=$bpemodel --input_sentence_size=100000000
-
-    spm_encode --model=${bpemodel}.model --output_format=piece < data/dict/input.txt | tr ' ' '\n' | \
-        sort | uniq | awk '{print $0 }' > $dict
-  else
-    echo "Not ImplementedError"; exit 1
-  fi
-
-  for part in $train_set $test_set; do
-    paste -d " " <(awk '{print $1}' data/$part/text) <(cut -f 2- -d" " data/$part/text \
-            | spm_encode --model=${bpemodel}.model --output_format=piece) \
-            > data/$part/token.scp
-  done
-  echo "[Stage 3] Dictionary and Transcription Finished."
-fi
-
-if [ $stage -le 4 ] && [ $end_stage -ge 4 ]; then
-  echo "stage 4: LM Preparation"
-  lmdir=data/lm_train
-  if [ ! -d $lmdir ]; then
-    mkdir -p $lmdir
-  fi
-  # use external data
-  cat data/train_text | gzip -c > $lmdir/train_text.gz
-  # combine external text and transcriptions and shuffle them with seed 777
-  zcat $lm_data/librispeech-lm-norm.txt.gz $lmdir/train_text.gz |\
-        spm_encode --model=${bpemodel}.model --output_format=piece > $lmdir/train.txt
-  
-  ( for f in $dev_set; do cat data/$f/text; done ) | sort -k1 | cut -f 2- -d" " |\
-        spm_encode --model=${bpemodel}.model --output_format=piece > $lmdir/valid.txt
-
-  echo "[Stage 4] LM Preparation Finished."
-fi
-
 lm_exp=exp/libri_tfunilm16x512_4card_cosineanneal_ep20_maxlen120/
-if [ $stage -le 5 ] && [ $end_stage -ge 5 ]; then
+if [ $stage -le 0 ] && [ $end_stage -ge 0 ]; then
 
   if [ ! -d $lm_exp ]; then
     mkdir -p $lm_exp
@@ -123,36 +41,30 @@ fi
 asr_exp=exp/1kh_transformer_baseline_wotime_warp_f27t005/
 #asr_exp=exp/1kh_transformer_baseline_wotime_warp_f27t005/
 
-if [ $stage -le 6 ] && [ $end_stage -ge 6 ]; then
+if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
 
   if [ ! -d $asr_exp ]; then
     mkdir -p $asr_exp
   fi
 
-  CUDA_VISIBLE_DEVICES="0,1,2,3" asr_train.py \
+  CUDA_VISIBLE_DEVICES="0,1,2,3" train_asr.py \
+    --task "art" \
     --exp_dir $asr_exp \
     --train_config conf/transformer.yaml \
-    --data_config conf/data.yaml \
-    --batch_size 16 \
-    --epochs 120 \
-    --save_epoch 50 \
-    --learning_rate 0.001 \
-    --min_lr 0.00001 \
+    --data_config conf/data_wp.yaml \
+    --optim_type "noam" \
+    --epochs 100 \
+    --start_saving_epoch 50 \
     --end_patience 10 \
-    --opt_type "noam" \
-    --weight_decay 0 \
-    --label_smooth 0.1 \
-    --ctc_alpha 1 \
-    --interctc_alpha 0 \
-    --use_cmvn \
     --seed 1234 \
-    --print_freq 50 > $asr_exp/train.log 2>&1 &
+    --print_freq 100 \
+    --port 12345 #> $asr_exp/train.log 2>&1 &
     
   echo "[Stage 6] ASR Training Finished."
 fi
 
 out_name='averaged.mdl'
-if [ $stage -le 7 ] && [ $end_stage -ge 7 ]; then
+if [ $stage -le 2 ] && [ $end_stage -ge 2 ]; then
   last_epoch=75  # Need to be modified according to the convergence
   
   average_checkpoints.py \
@@ -173,7 +85,7 @@ if [ $stage -le 7 ] && [ $end_stage -ge 7 ]; then
 
 fi
 
-if [ $stage -le 8 ] && [ $end_stage -ge 8 ]; then
+if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
   asr_exp=exp/1kh_conformer_rel_maxlen20_e10d5_accum2_specaug_tmax10_multistep2k_40k_160k_ln/
   exp=$asr_exp
   lm_exp=exp/libri_tfunilm16x512_4card_cosineanneal_ep20_maxlen120/

@@ -87,41 +87,101 @@ class KLDivLoss(nn.Module):
             target_dist = (1 - self.kd_weight) * true_dist + self.kd_weight * at_prob
         return self.criterion(x, target_dist).masked_fill(mask.unsqueeze(1)==0, 0).sum() / tokens
 
-class TPLoss(nn.Module):
-    def __init__(self):
-        super(TPLoss, self).__init__()
-        self.criterion = nn.CrossEntropyLoss(reduction='none')
-    
-    def forward(self, tp_out, aligned_seq, src_mask):
-        """tp_out: b * T * d, aligned_seq: b * T src_mask: b * 1 * T"""
-        tp_loss = self.criterion(tp_out.view(-1, tp_out.size(-1)), aligned_seq.view(-1))
-        tokens = src_mask.sum().item()
-        tp_loss = tp_loss.masked_fill(src_mask.squeeze(1).reshape(-1)==0, 0).sum() / tokens
-        acc = (torch.argmax(tp_out, -1) == aligned_seq).masked_fill(src_mask.squeeze(1)==0, 0).sum().item()
-        return tp_loss, acc, tokens
+class Wav2vecLoss(nn.Module):
+    def __init__(self, infonce=False, loss_weights=None, log_keys=None):
+        super(Wav2vecLoss, self).__init__()
+        self.infonce = infonce
+        self.loss_weights = loss_weights
+        self.log_keys = [] if log_keys is None else log_keys
 
-class EmbedLoss(nn.Module):
-    def __init__(self, padding_idx, embed_loss_type='l1'):
-        super(EmbedLoss, self).__init__()
-        self.padding_idx = padding_idx
-        self.loss_type = embed_loss_type # ce, regression, contrasitive
-        if embed_loss_type == 'l2':
-            self.criterion = torch.nn.MSELoss(reduction='none')
-        elif embed_loss_type == 'l1':
-            self.criterion = torch.nn.L1Loss(reduction='none')
-        elif embed_loss_type == 'ce':
-            self.criterion = torch.nn.CrossEntropyLoss(reduction='none')
-        elif embed_loss_type == 'contrast':
-            self.criterion = 1
+    def forward(self, model, net_output, reduce=True):
+        """Compute the loss for the given sample.
+        Returns a tuple with three elements:
+        1) the loss
+        2) the sample size, which is used as the denominator for the gradient
+        3) logging outputs to display while training
+        """
+        logits = model.get_logits(net_output).float()
+        target = model.get_targets(sample, net_output)
+
+        weights = None
+
+        losses = []
+
+        reduction = "none" if (not reduce) else "sum"
+        if self.infonce:
+            loss = F.cross_entropy(logits, target, reduction=reduction)
         else:
-            raise NotImplementedError
+            loss = F.binary_cross_entropy_with_logits(
+                logits, target.float(), weights, reduction=reduction
+            )
 
-    def forward(self, pred_embed, word_embed, tgt, tgt_mask):
-        if self.loss_type == 'l2':
-            true_embed = word_embed(tgt)
-            tgt_mask = tgt_mask.transpose(1,2).reshape(-1, 1)
-            tokens = tgt_mask.sum().item()
-            loss = self.criterion(pred_embed.view(-1, pred_embed.size(-1)), true_embed.view(-1, true_embed.size(-1)))
-            return loss.masked_fill(tgt_mask==0, 0).sum() / tokens / loss.size(1)
+        #sample_size = sample["net_input"]["mask_indices"].sum()
+        sample_size = target.numel() if self.infonce else target.long().sum().item()
+        losses.append(loss.detach().clone())
 
+        if self.loss_weights is not None:
+            assert hasattr(model, "get_extra_losses")
+            extra_losses = model.get_extra_losses(net_output)
+            if torch.is_tensor(extra_losses):
+                extra_losses = [extra_losses]
+            if len(self.loss_weights) == 1 and len(extra_losses) != 1:
+                self.loss_weights = [self.loss_weights[0]] * len(extra_losses)
+            assert len(extra_losses) == len(
+                self.loss_weights
+            ), f"{len(extra_losses)}, {len(self.loss_weights)}"
+            for p, coef in zip(extra_losses, self.loss_weights):
+                if coef != 0 and p is not None:
+                    p = coef * p.float() * sample_size
+                    loss += p
+                    losses.append(p)
+
+        logging_output = {
+            "loss": loss.item() if (reduce) else loss.detach(),
+            "ntokens": sample_size,
+            "nsentences": sample["id"].numel(),
+            "sample_size": sample_size,
+        }
+
+        for lk in self.log_keys:
+            # Only store "logits" and "target" for computing MAP and MAUC
+            # during validation
+            if lk == "logits":
+                if not self.training:
+                    logging_output["logits"] = logits.cpu().numpy()
+            elif lk == "target":
+                if not self.training:
+                    # If the targets have been mixed with the predictions of
+                    # teacher models, find the original targets
+                    if hasattr(model, "get_original_targets"):
+                        original_target = model.get_original_targets(sample, net_output)
+                    else:
+                        original_target = target
+                    logging_output["target"] = original_target.cpu().numpy()
+            elif lk in net_output:
+                value = net_output[lk]
+                value = float(value)
+                logging_output[lk] = value
+
+        if len(losses) > 1:
+            for i, l in enumerate(losses):
+                logging_output[f"loss_{i}"] = l.item()
+
+        if self.infonce:
+            with torch.no_grad():
+                if logits.numel() == 0:
+                    corr = 0
+                    count = 0
+                else:
+                    assert logits.dim() > 1, logits.shape
+                    max = logits.argmax(-1) == 0
+                    min = logits.argmin(-1) == 0
+                    both = max & min
+                    corr = max.long().sum().item() - both.long().sum().item()
+                    count = float(max.numel())
+
+                logging_output["correct"] = corr
+                logging_output["count"] = count
+
+        return loss, sample_size, logging_output
 

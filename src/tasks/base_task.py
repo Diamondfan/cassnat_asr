@@ -8,7 +8,7 @@ class BaseTask(object):
     def __init__(self, args):
         self.use_cuda = args.use_gpu
 
-    def load_checkpoint(self, checkpoint, rank):
+    def load_checkpoint(self, checkpoint, rank, use_cuda):
         if rank == 0:
             print("Loading checkpoint from {}".format(checkpoint))
         checkpoint = torch.load(checkpoint, map_location='cpu')
@@ -19,8 +19,18 @@ class BaseTask(object):
                 name = "module." + name
             param.data.copy_(model_state[name])
         
-        self.optimizer.load_state_dict(checkpoint['optimizer'])
+        self.optimizer.load_state_dict(checkpoint['optimizer'], rank, use_cuda)
         self.start_epoch = checkpoint['epoch'] + 1
+
+    def load_test_model(self, resume_model):
+        if resume_model:
+            print("Loading model from {}".format(resume_model))
+            checkpoint = torch.load(resume_model, map_location='cpu')
+            model_state = checkpoint["model_state"]
+            for name, param in self.model.named_parameters():
+                if name not in model_state:
+                    name = "module." + name
+                param.data.copy_(model_state[name])
     
     def model_stats(self, rank, use_slurm, distributed):
         if rank == 0:

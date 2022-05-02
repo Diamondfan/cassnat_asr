@@ -89,7 +89,7 @@ def main_worker(rank, world_size, args, backend='nccl'):
 
     task_dict = {"art": ArtTask, "cassnat": CassNATTask, "ctc": CTCTask}
     if args.task in task_dict:
-        task = task_dict[args.task](args)
+        task = task_dict[args.task]("train", args)
     else:
         raise NotImplementedError
     

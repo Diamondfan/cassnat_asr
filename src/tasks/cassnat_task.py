@@ -15,15 +15,16 @@ from utils.wer import ctc_greedy_wer, att_greedy_wer
 from data.speech_loader import SpeechDataset, DynamicDataset, SpeechDataLoader
 
 class CassNATTask(BaseTask):
-    def __init__(self, args):
+    def __init__(self, mode, args):
         super(CassNATTask, self).__init__(args)
         self.vocab = Vocab(args.vocab_file, args.rank)
         args.vocab_size = self.vocab.n_words
 
-        self.set_model(args)
-        self.set_optimizer(args)
-        self.load_model(args)
-        self.set_dataloader(args)
+        if mode == "train":
+            self.set_model(args)
+            self.set_optimizer(args)
+            self.load_model(args)
+            self.set_dataloader(args)
         
     def set_model(self, args):
         assert args.input_size == (args.left_ctx + args.right_ctx + 1) // args.skip_frame * args.n_features
@@ -46,7 +47,7 @@ class CassNATTask(BaseTask):
         self.model_stats(args.rank, args.use_slurm, args.distributed)
             
     def load_pretrained_model(self, resume_model, rank, init_encoder, fix_encoder): 
-        if init_encoder and args.resume_model:
+        if init_encoder and resume_model:
             if rank == 0:
                 print("Loading model from {}".format(resume_model))
             checkpoint = torch.load(resume_model, map_location='cpu')['model_state']

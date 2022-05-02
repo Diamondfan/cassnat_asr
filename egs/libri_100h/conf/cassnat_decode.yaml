@@ -1,4 +1,5 @@
 vocab_file: data/dict/vocab_wp.txt
+use_cmvn: True
 global_cmvn: data/fbank/cmvn.ark
 
 #model configuration
@@ -34,6 +35,8 @@ padding_idx: 0
 use_gpu: True
 
 #beam_decode
+decode_type: 'esa'
+max_decode_ratio: 0
 beam_width: 1
 ctc_beam: 1 #20
 ctc_pruning: 0 #30
@@ -54,3 +57,4 @@ sample_num: 50
 threshold: 0.9
 
 test_hitrate: False
+save_embedding: False

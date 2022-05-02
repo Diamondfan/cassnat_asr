@@ -14,19 +14,29 @@ from utils.optimizer import get_optim
 from models import make_ctc_transformer, make_ctc_conformer
 from data.speech_loader import SpeechDataset, DynamicDataset, SpeechDataLoader
 
-
+class Config():
+    name = 'config'
 
 class CTCTask(BaseTask):
-    def __init__(self, args):
+    def __init__(self, mode, args):
         super(CTCTask, self).__init__(args)
         self.vocab = Vocab(args.vocab_file, args.rank)
         args.vocab_size = self.vocab.n_words
 
-        self.set_model(args)
-        self.set_optimizer(args)
-        self.load_model(args)
-        self.set_dataloader(args)
-        
+        if mode == "train":
+            self.set_model(args)
+            self.set_optimizer(args)
+            self.load_model(args)
+            self.set_dataloader(args)
+        if mode == "test":
+            args.ctc_alpha = 0
+            args.interctc_alpha = 0
+            args.interctc_layer = 0
+            self.set_model(args)
+            self.set_test_dataloader(args)
+            self.load_test_model(args.resume_model)
+            self.model_stats(0, False, False)
+
     def set_model(self, args):
         assert args.input_size == (args.left_ctx + args.right_ctx + 1) // args.skip_frame * args.n_features
         if args.model_type == "transformer":
@@ -64,6 +74,30 @@ class CTCTask(BaseTask):
 
         self.start_epoch = 0
 
+    def load_lm_model(self, args):
+        if args.lm_weight > 0:
+            with open(args.lm_config) as f:
+                lm_config = yaml.safe_load(f)
+            lm_args = Config()
+            for key, val in lm_config.items():
+                setattr(lm_args, key, val)
+
+            from models.lm import make_model as make_lm_model
+            lm_args.vocab_size = self.vocab.n_words
+            lm_model = make_lm_model(lm_args)
+            print("Loading language model from {}".format(args.rnnlm))
+            checkpoint_lm = torch.load(args.rnnlm, map_location='cpu')
+            model_state = checkpoint_lm["state_dict"]
+            for name, param in lm_model.named_parameters():
+                if name not in model_state:
+                    name = "module." + name
+                param.data.copy_(model_state[name])
+            if args.use_gpu:
+                lm_model.cuda()
+        else:
+            lm_model = None
+        self.lm_model = lm_model
+
     def set_dataloader(self, args):
         dataset_types = {"SpeechDataset": (SpeechDataset, args.batch_size), "DynamicDataset": (DynamicDataset, 1)}
         Dataset, actual_bs = dataset_types[args.dataset_type]
@@ -87,6 +121,16 @@ class CTCTask(BaseTask):
 
         self.train_loader = train_loader
         self.valid_loader = valid_loader
+
+    def set_test_dataloader(self, args):
+        args.use_specaug = False
+        args.specaug_conf = None
+        testset = SpeechDataset(self.vocab, args.test_paths, args)
+        if args.use_cmvn:
+            testset._load_cmvn(args.global_cmvn)
+        test_loader = SpeechDataLoader(testset, args.batch_size, args.padding_idx, num_workers=args.load_data_workers, shuffle=False)
+        print("Finish Loading test files. Number batches: {}".format(len(test_loader)))
+        self.test_loader = test_loader
 
     def set_optimizer(self, args):
         self.optimizer = get_optim(args.optim_type, self.model, args) 
@@ -204,4 +248,48 @@ class CTCTask(BaseTask):
                 progress.print(i)
 
         return losses.avg, ctc_wers.avg, interctc_wers.avg
+
+    def decode(self, args):    
+        batch_time = util.AverageMeter('Time', ':6.3f')
+        progress = util.ProgressMeter(len(self.test_loader), batch_time)
+        end = time.time()
+    
+        out_file = open(args.result_file, 'w')
+        with torch.no_grad():
+            self.model.eval()
+            if self.lm_model is not None:
+                self.lm_model.eval()
+
+            for i, data in enumerate(self.test_loader):
+                utt_list, feats, _, feat_sizes, _ = data
+                src, src_mask = feats, (feats[:,:,0] != args.padding_idx).unsqueeze(1)
+        
+                if args.use_gpu:
+                    src, src_mask = src.cuda(), src_mask.cuda()
+                    feat_sizes = feat_sizes.cuda()
+
+                if args.decode_type == "greedy":
+                    recog_results = self.model.greedy_decode(src, src_mask, feat_sizes, self.vocab, args)
+                elif args.decode_type == "beam":
+                    recog_results = self.model.beam_decode(src, src_mask, feat_sizes, self.vocab, args, lm_model)
+                else:
+                    raise NotImplementedError
+
+                for j in range(len(utt_list)):
+                    hyp = []
+                    for idx in recog_results[j][0]['hyp']:
+                        if idx == self.vocab.word2index['sos'] or idx == args.padding_idx:
+                            continue
+                        if idx == self.vocab.word2index['eos']:
+                            break
+                        hyp.append(self.vocab.index2word[idx])
+                    #print(utt_list[j]+' '+' '.join(hyp))
+                    print(utt_list[j]+' '+' '.join(hyp), flush=True, file=out_file)
+    
+                batch_time.update(time.time() - end)
+                if i % args.print_freq == 0:
+                    progress.print(i)
+            progress.print(i)
+        return 0
+
     

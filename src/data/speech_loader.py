@@ -38,8 +38,10 @@ class SingleSet(object):
             else:
                 num_frames = None
 
-            if num_frames <= filter_max and num_frames >= filter_min:
-                self.items.append((utt, ark_path, text, num_frames))
+            if num_frames is not None:
+                if num_frames > filter_max and num_frames < filter_min:
+                    continue
+            self.items.append((utt, ark_path, text, num_frames))
         
     def get_len(self):
         return len(self.items)
@@ -278,11 +280,11 @@ class DynamicDataset(Dataset):
     def __len__(self):
         return len(self.batched_data)
 
-class MyDataLoader(DataLoader):
+class SuperviseLoader(DataLoader):
     def __init__(self, dataset, **kwargs):
         self.padding_idx = kwargs.pop("padding_idx")
         kwargs["collate_fn"] = self.collate_fn
-        super(MyDataLoader, self).__init__(dataset, **kwargs)
+        super(SuperviseLoader, self).__init__(dataset, **kwargs)
 
     def collate_fn(self, batch):
         if isinstance(batch[0], list):
@@ -310,7 +312,31 @@ class MyDataLoader(DataLoader):
             text_sizes[x] = text_length - 2 #substract sos and eos
         return utt_list, feats.float(), texts.long(), feat_sizes.float(), text_sizes.long()
 
-class SpeechDataLoader(MyDataLoader):
+class SSLLoader(DataLoader):
+    def __init__(self, dataset, **kwargs):
+        self.padding_idx = kwargs.pop("padding_idx")
+        kwargs["collate_fn"] = self.collate_fn
+        super(SSLLoader, self).__init__(dataset, **kwargs)
+
+    def collate_fn(self, batch):
+        if isinstance(batch[0], list):
+            batch = batch[0]
+        feats_min_length = min(x[1].shape[0] for x in batch)
+        feat_size = batch[0][1].shape[1]
+        feats = torch.full([batch_size, feats_min_length, feat_size], float(self.padding_idx))
+        utt_list = []
+
+        for x in range(len(batch)):
+            utt, feature, text = batch[x]
+            feat_length = feature.shape[0]
+            diff = feat_length - feats_min_length
+            start = np.random.randint(0, diff + 1)
+            end = start + feats_min_length
+            feats[x].copy_(torch.Tensor(feature)[start:end])
+            utt_list.append(utt)
+        return utt_list, feats.float()
+
+class SpeechDataLoader(SuperviseLoader):
     def __init__(self, dataset, batch_size, padding_idx=-1, distributed=False, shuffle=False, num_workers=0, timeout=1000):
         self.dataset = dataset
         if distributed:
@@ -331,16 +357,25 @@ class SpeechDataLoader(MyDataLoader):
         except:
             pass
 
-#class IterSpeechDataLoader(MyDataLoader):
-#    def __init__(self, dataset, batch_size, padding_idx=-1, distributed=False, shuffle=False, num_workers=0, timeout=1000):
-#        self.dataset = dataset
-#        self.dataset.shuffle = shuffle
-#        kwargs = {"batch_size": None, "padding_idx": padding_idx, "num_workers": num_workers}
-#        super(IterSpeechDataLoader, self).__init__(dataset, **kwargs)
-#
-#    def set_epoch(self, epoch):
-#        self.dataset.set_epoch(epoch)
-#
-#    def get_num_utterance(self):
-#        return self.dataset.get_num_utterance()
+class SSLDataLoader(SSLLoader):
+    def __init__(self, dataset, batch_size, padding_idx=-1, distributed=False, shuffle=False, num_workers=0, timeout=1000):
+        self.dataset = dataset
+        if distributed:
+            base_sampler = torch.utils.data.distributed.DistributedSampler(dataset)
+        elif shuffle:
+            base_sampler = torch.utils.data.RandomSampler(dataset)
+        else:
+            base_sampler = torch.utils.data.SequentialSampler(dataset)
+        
+        self.base_sampler = base_sampler
+        sampler = torch.utils.data.BatchSampler(base_sampler, batch_size, False)
+        kwargs = {"batch_sampler": sampler, "padding_idx": padding_idx, "num_workers": num_workers}
+        super(SSLDataLoader, self).__init__(dataset, **kwargs)
+
+    def set_epoch(self, epoch):
+        try:
+            self.base_sampler.set_epoch(epoch)
+        except:
+            pass
+
 

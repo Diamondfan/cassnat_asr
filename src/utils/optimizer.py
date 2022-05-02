@@ -26,11 +26,16 @@ class BaseOpt(object):
     def state_dict(self):
         raise NotImplementedError
 
-    def load_state_dict(self, state_dict):
+    def load_state_dict(self, state_dict, rank, use_cuda):
         """Load state_dict."""
         for key, value in state_dict.items():
             if key == "optimizer":
                 self.optimizer.load_state_dict(state_dict["optimizer"])
+                if use_cuda:
+                    for state in self.optimizer.state.values():
+                        for k, v in state.items():
+                            if isinstance(v, torch.Tensor):
+                                state[k] = v.cuda(rank)
             else:
                 setattr(self, key, value)
 

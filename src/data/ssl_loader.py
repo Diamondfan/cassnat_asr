@@ -10,8 +10,6 @@ import kaldiio
 import numpy as np
 
 from torch.utils.data import Dataset, DataLoader, BatchSampler
-from data.feat_op import skip_feat, context_feat
-from data.spec_augment import spec_aug
 
 class SingleSet(object):
     def __init__(self, data_path, rank):
@@ -67,50 +65,14 @@ class SingleSet(object):
             print("Reading %d lines from %s" % (len(label_dict), lab_path))
         return label_dict
 
-
-class ChunkSet(SingleSet):
-    # there are bugs in this version, need to be fixed as scp_dataset.py
-    def __init__(self, data_path, config): #chunk_size=300, left_ctx=10, right_ctx=10):
-        self.name = data_path['type']
-        scp_path = data_path['wav']
-        ark_dict = self._load_feature(scp_path)
-        chunk_size = config['chunk_size']
-        left_ctx = config['chunk_left_ctx']
-        right_ctx = config['chunk_right_ctx']
-        
-        if 'utt2num_frames' in data_path:
-            nframe_dict = self._load_label(data_path['utt2num_frames'])
-            assert (len(ark_dict)-len(nframe_dict))<5, "aux label and sample size mismatch"
-        
-        self.items = []
-        for i in range(len(ark_dict)):
-            utt, ark_path = ark_dict[i]
-
-            num_frames = nframe_dict[utt][0]
-            num_seg = int(num_frames / chunk_size)
-    
-            for j in range(num_seg):
-                start = j * chunk_size
-                end = (j + 1) * chunk_size
-                if j == 0:
-                    segment = (start, end + right_ctx)
-                elif j < num_seg - 1:
-                    segment = (start - left_ctx, end + right_ctx)
-                else:
-                    segment = (start - left_ctx, num_frames)
-
-                self.items.append((utt+'_'+str(j), ark_path, segment))
-
 class SSLDataset(Dataset):
     def __init__(self, data_paths, args):
         self.rank = args.rank
-        self.left_context = args.left_ctx
-        self.right_context = args.right_ctx
-        self.skip_frame = args.skip_frame  
+        self.filter_max = args.filter_max
+        self.filter_min = args.filter_min
         self.use_specaug = args.use_specaug
         self.specaug_conf = args.specaug_conf 
         self.use_cmvn = False
-        self.ssl_type = args.ssl_type
         self.data_streams = self._load_streams(data_paths)
         self.data_stream_sizes = [i.get_len() for i in self.data_streams]
         self.data_stream_cum_sizes = [self.data_stream_sizes[0]]
@@ -145,31 +107,18 @@ class SSLDataset(Dataset):
         else:
             internal_idx = idx - self.data_stream_cum_sizes[stream_idx-1]
         
-        utt, ark_path, _ = self.data_streams[stream_idx].items[internal_idx]
+        utt, ark_path, num_frames = self.data_streams[stream_idx].items[internal_idx]
         feat = kaldiio.load_mat(ark_path)
 
         if self.use_cmvn:
             assert feat.shape[1] == self.mean.shape[0]
             feat = (feat - self.mean) / self.std
 
-        if self.ssl_type in ["apc", "biapc", "cpc", "hubert"]:
-            labels = feat
-        elif self.ssl_type == "mpc":
-            feat, labels = self.random_mask(feat)
-        elif self.ssl_type == "mrc":
-            feat, labels = self.specaug_mask(feat)
-        
+        # suppose specaug is not used
+        assert self.use_specaug == False
         if self.use_specaug:
             feat = spec_aug(feat, self.specaug_conf)
 
-        seq_len, dim = feat.shape
-        if seq_len % self.skip_frame != 0:
-            pad_len = self.skip_frame - seq_len % self.skip_frame
-            feat = np.vstack([feat,np.zeros((pad_len, dim))])
-            labels = np.vstack([labels,np.zeros((pad_len, dim))])
-
-        feat = skip_feat(context_feat(feat, self.left_context, self.right_context), self.skip_frame)
-        labels = skip_feat(context_feat(labels, self.left_context, self.right_context), self.skip_frame)
         return (utt, feat, labels)
 
     def specaug_mask(self, feat):

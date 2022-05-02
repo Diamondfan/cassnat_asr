@@ -79,8 +79,8 @@ class Transformer(nn.Module):
             inter_h = enc_h[1]
             inter_out = self.interctc_generator(inter_h)
             max_feat_size = inter_h.size(1)
-            feat_sizes = (feat_sizes * max_feat_size).long()
-            interctc_loss = self.interctc_loss(inter_out.transpose(0,1), tgt_label, feat_sizes, label_sizes)
+            feat_size = (feat_sizes * max_feat_size).long()
+            interctc_loss = self.interctc_loss(inter_out.transpose(0,1), tgt_label, feat_size, label_sizes)
         else:
             interctc_loss = torch.Tensor([0]) 
 
@@ -88,8 +88,8 @@ class Transformer(nn.Module):
         if self.ctc_alpha > 0:
             ctc_out = self.ctc_generator(enc_h)
             max_feat_size = enc_h.size(1)
-            feat_sizes = (feat_sizes * max_feat_size).long()
-            ctc_loss = self.ctc_loss(ctc_out.transpose(0,1), tgt_label, feat_sizes, label_sizes)
+            feat_size = (feat_sizes * max_feat_size).long()
+            ctc_loss = self.ctc_loss(ctc_out.transpose(0,1), tgt_label, feat_size, label_sizes)
         else:
             ctc_loss = torch.Tensor([0])
 
@@ -101,7 +101,7 @@ class Transformer(nn.Module):
         if self.interctc_alpha > 0:
             loss += self.interctc_alpha * interctc_loss
 
-        return ctc_out, att_out, loss, att_loss, ctc_loss, feat_sizes
+        return ctc_out, att_out, loss, att_loss, ctc_loss, feat_size
 
     def forward_att(self, src, tgt, src_mask, tgt_mask):
         x, x_mask = self.src_embed(src, src_mask)

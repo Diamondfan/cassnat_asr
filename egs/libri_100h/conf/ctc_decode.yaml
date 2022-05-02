@@ -1,4 +1,5 @@
 vocab_file: data/dict/vocab_char.txt
+use_cmvn: True
 global_cmvn: data/fbank/cmvn.ark
 
 #model configuration
@@ -30,6 +31,7 @@ padding_idx: 0
 use_gpu: True
 
 #For CTC decoding
+decode_type: "greedy"
 ctc_pruning: 1 #33
 ctc_beam: 1 #20
 ctc_lp: 0 #2.0

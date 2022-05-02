@@ -7,14 +7,21 @@ d_model: 512 #256
 d_ff: 2048          
 n_head: 8 #4
 dropout: 0.1
+ctc_alpha: 1
+interctc_alpha: 0
+interctc_layer: 0
+label_smooth: 0.1
+disable_ls: False
+resume_model: ""
 
 #conformer related conf
+use_conv_enc: False
 share_ff: False
 d_encff: 1024
 d_decff: 2048
 pos_type: "relative"
-max_relative_len: 20
-kernel_size: 31
+enc_max_relative_len: 20
+enc_kernel_size: 31
 
 n_features: 80
 vocab_size: 4990
@@ -34,16 +41,35 @@ cosine_warmup: 1000
 
 #Double, multistep
 decay_rate: 0.01
-s_warm: 1000 #2000
-s_decay: 40000
-s_keep: 160000
+s_warm: 1250
+s_decay: 50000
+s_keep: 200000
+
+#normal
+learning_rate: 0.0002
+min_lr: 0.000002
+patience: 2
+anneal_lr_ratio: 0.5
+
+# dataloader
+dataset_type: "DynamicDataset"   #"SpeechDataset, DynamicDataset"
+max_len: 5000
+batch_size: 16
+
+batch_type: "utterance"
+max_frmlen: 800 
+max_lablen: 150 
+filter_max: 5000
+filter_min: 0
 
 padding_idx: 0
 accum_grad: 2
 grad_clip: 5
+weight_decay: 0
 
 use_gpu: True
 
+use_cmvn: True
 use_specaug: True
 spec_aug:
   use_time_warp: False
