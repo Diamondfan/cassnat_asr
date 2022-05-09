@@ -17,8 +17,8 @@ interce_alpha: 0.01
 interce_layer: 6
 label_smooth: 0.1
 disable_ls: False
-resume_model: "" #"exp/100h_wp_cfmer_interctc05_layer6_noam_warmup15k_lrpk1e-3_epoch60_2gpus/averaged.mdl"
-init_encoder: False #True
+resume_model: "exp/100h_wp_cfmer_interctc05_layer6_noam_warmup15k_lrpk1e-3_epoch60_2gpus/averaged.mdl"
+init_encoder: True
 fix_encoder: False
 
 #conformer related conf
@@ -76,7 +76,7 @@ anneal_lr_ratio: 0.5
 # dataloader
 dataset_type: "DynamicDataset"   #"SpeechDataset, DynamicDataset"
 max_len: 5000
-batch_size: 16
+batch_size: 8 #16
 
 batch_type: "utterance"
 max_frmlen: 800 
@@ -85,7 +85,7 @@ filter_max: 5000
 filter_min: 0
 
 padding_idx: 0
-accum_grad: 2
+accum_grad: 4 #2
 grad_clip: 5
 weight_decay: 0
 

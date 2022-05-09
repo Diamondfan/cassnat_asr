@@ -223,7 +223,8 @@ class LRMulStepScheduler(BaseOpt):
         return state_dict
             
 def get_optim(optim_type, model, args):
-    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.learning_rate, betas=(0.9, 0.98), eps=1e-9, weight_decay=args.weight_decay)
+    eps = args.eps if hasattr(args, 'eps') else 1e-9
+    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.learning_rate, betas=(0.9, 0.98), eps=eps, weight_decay=args.weight_decay)
     if optim_type == "noam":
         factor = args.noam_factor
         warmup_steps = args.warmup_steps

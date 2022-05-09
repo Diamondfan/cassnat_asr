@@ -67,7 +67,7 @@ if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
   lp=0        #set in conf/decode.yaml, length penalty
   ctcwt=0.4
   lmwt=0
-  nj=4
+  nj=1
   batch_size=1
   test_set="dev_clean dev_other"
   
@@ -86,7 +86,7 @@ if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
     utils/split_scp.pl data/$tset/feats.scp $split_scps || exit 1;
     
     $cmd JOB=1:$nj $desdir/log/decode.JOB.log \
-      CUDA_VISIBLE_DEVICES=JOB decode_asr.py \
+      CUDA_VISIBLE_DEVICES=3 decode_asr.py \
         --task "art" \
         --test_config conf/decode.yaml \
         --lm_config conf/lm.yaml \

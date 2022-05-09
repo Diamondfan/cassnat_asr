@@ -20,6 +20,7 @@ class BaseTask(object):
             param.data.copy_(model_state[name])
         
         self.optimizer.load_state_dict(checkpoint['optimizer'], rank, use_cuda)
+        self._num_updates = self.optimizer._step
         self.start_epoch = checkpoint['epoch'] + 1
 
     def load_test_model(self, resume_model):

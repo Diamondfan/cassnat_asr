@@ -323,10 +323,11 @@ class SSLLoader(DataLoader):
             batch = batch[0]
         feats_min_length = min(x[1].shape[0] for x in batch)
         feat_size = batch[0][1].shape[1]
+        batch_size = len(batch)
         feats = torch.full([batch_size, feats_min_length, feat_size], float(self.padding_idx))
         utt_list = []
 
-        for x in range(len(batch)):
+        for x in range(batch_size):
             utt, feature, text = batch[x]
             feat_length = feature.shape[0]
             diff = feat_length - feats_min_length

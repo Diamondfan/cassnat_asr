@@ -96,6 +96,7 @@ class ArtTask(BaseTask):
                 lm_model.cuda()
         else:
             lm_model = None
+
         self.lm_model = lm_model
 
     def set_dataloader(self, args):
@@ -245,7 +246,7 @@ class ArtTask(BaseTask):
             if is_train:
                 loss = loss / args.accum_grad
                 loss.backward()
-                if (i+1) % args.accum_grad == 0:
+                if (i+1) % args.accum_grad == 0 or (i == (len(dataloader) - 1)):
                     grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), args.grad_clip)
                     self.optimizer.step()
 

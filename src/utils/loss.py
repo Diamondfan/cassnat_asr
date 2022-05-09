@@ -1,6 +1,7 @@
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 class LabelSmoothing(nn.Module):
     "Implement label smoothing."
@@ -102,7 +103,7 @@ class Wav2vecLoss(nn.Module):
         3) logging outputs to display while training
         """
         logits = model.get_logits(net_output).float()
-        target = model.get_targets(sample, net_output)
+        target = model.get_targets(net_output)
 
         weights = None
 
@@ -118,6 +119,7 @@ class Wav2vecLoss(nn.Module):
 
         #sample_size = sample["net_input"]["mask_indices"].sum()
         sample_size = target.numel() if self.infonce else target.long().sum().item()
+        loss /= sample_size
         losses.append(loss.detach().clone())
 
         if self.loss_weights is not None:
@@ -132,14 +134,13 @@ class Wav2vecLoss(nn.Module):
             ), f"{len(extra_losses)}, {len(self.loss_weights)}"
             for p, coef in zip(extra_losses, self.loss_weights):
                 if coef != 0 and p is not None:
-                    p = coef * p.float() * sample_size
+                    p = coef * p.float() #* sample_size
                     loss += p
                     losses.append(p)
 
         logging_output = {
             "loss": loss.item() if (reduce) else loss.detach(),
             "ntokens": sample_size,
-            "nsentences": sample["id"].numel(),
             "sample_size": sample_size,
         }
 
