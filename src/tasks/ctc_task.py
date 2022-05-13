@@ -11,7 +11,7 @@ from tasks import BaseTask
 from data.vocab import Vocab
 from utils.wer import ctc_greedy_wer
 from utils.optimizer import get_optim
-from models import make_ctc_transformer, make_ctc_conformer
+from models import make_ctc_model
 from data.speech_loader import SpeechDataset, DynamicDataset, SpeechDataLoader
 
 class Config():
@@ -39,14 +39,7 @@ class CTCTask(BaseTask):
 
     def set_model(self, args):
         assert args.input_size == (args.left_ctx + args.right_ctx + 1) // args.skip_frame * args.n_features
-        if args.model_type == "transformer":
-            model = make_ctc_transformer(args.input_size, args)
-        elif args.model_type == "conformer":
-            model = make_ctc_conformer(args.input_size, args)
-        else:
-            raise NotImplementedError
-
-        self.model = model
+        self.model = make_ctc_model(args.input_size, args)
 
     def load_model(self, args):
         last_checkpoint = os.path.join(args.exp_dir, 'model.last.mdl')

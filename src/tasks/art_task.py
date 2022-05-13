@@ -209,10 +209,16 @@ class ArtTask(BaseTask):
         ctc_wers = util.AverageMeter('CtcWer', ':.4f')
         att_wers = util.AverageMeter('AttWer', ':.4f')
         token_speed = util.AverageMeter('TokenSpeed', ":.2f")
-        progress = util.ProgressMeter(len(dataloader), batch_time, losses, ctc_losses, att_losses, ctc_wers, att_wers, token_speed, prefix="Epoch: [{}]".format(epoch))
+        
+        if is_train:
+            num_updates = math.ceil(len(dataloader) / args.accum_grad)
+        else:
+            num_updates = len(dataloader)
+
+        progress = util.ProgressMeter(num_updates, batch_time, losses, ctc_losses, att_losses, ctc_wers, att_wers, token_speed, prefix="Epoch: [{}]".format(epoch))
      
         end = time.time()
-               
+        updates = -1       
         for i, data in enumerate(dataloader):
             start = time.time()
             utt_list, feats, labels, feat_sizes, label_sizes = data
@@ -256,12 +262,17 @@ class ArtTask(BaseTask):
                         self.model.att_loss.set_smoothing(0.0)
                     
                     self.optimizer.zero_grad()
+                    updates += 1
+                    if updates % args.print_freq == 0 and args.rank == 0:
+                        progress.print(updates)
+            else:
+                updates += 1
+                if updates % args.print_freq == 0 and args.rank == 0:
+                    progress.print(updates)
             
             batch_time.update(time.time() - end)
             token_speed.update(tokens/(time.time()-start))
-
-            if i % args.print_freq == 0 and args.rank == 0:
-                progress.print(i)
+            
         return losses.avg, att_wers.avg, ctc_wers.avg
 
     def decode(self, args):    

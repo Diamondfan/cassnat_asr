@@ -3,6 +3,7 @@
 
 import os
 import yaml
+import math
 import time
 import torch
 from torch.distributed import ReduceOp
@@ -11,7 +12,7 @@ import utils.util as util
 from tasks import BaseTask
 from data.vocab import Vocab
 from utils.optimizer import get_optim
-from models import make_cassnat_transformer, make_cassnat_conformer
+from models import make_cassnat_model
 from utils.wer import ctc_greedy_wer, att_greedy_wer
 from data.speech_loader import SpeechDataset, DynamicDataset, SpeechDataLoader
 
@@ -44,14 +45,7 @@ class CassNATTask(BaseTask):
         
     def set_model(self, args):
         assert args.input_size == (args.left_ctx + args.right_ctx + 1) // args.skip_frame * args.n_features
-        if args.model_type == "transformer":
-            model = make_cassnat_transformer(args.input_size, args)
-        elif args.model_type == "conformer":
-            model = make_cassnat_conformer(args.input_size, args)
-        else:
-            raise NotImplementedError
-
-        self.model = model
+        self.model = make_cassnat_model(args.input_size, args)
 
     def load_model(self, args):
         last_checkpoint = os.path.join(args.exp_dir, 'model.last.mdl')
@@ -236,10 +230,17 @@ class CassNATTask(BaseTask):
         ctc_wers = util.AverageMeter('CtcWer', ':.4f')
         att_wers = util.AverageMeter('AttWer', ':.4f')
         token_speed = util.AverageMeter('TokenSpeed', ":.2f")
-        progress = util.ProgressMeter(len(dataloader), batch_time, losses, ctc_losses, att_losses, ctc_wers, \
+        
+        if is_train:
+            num_updates = math.ceil(len(dataloader) / args.accum_grad)
+        else:
+            num_updates = len(dataloader)
+
+        progress = util.ProgressMeter(num_updates, batch_time, losses, ctc_losses, att_losses, ctc_wers, \
                                         att_wers, token_speed, prefix="Epoch: [{}]".format(epoch))
         
         end = time.time()
+        updates = -1
         
         for i, data in enumerate(dataloader):
             start = time.time()
@@ -273,6 +274,14 @@ class CassNATTask(BaseTask):
                     grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), args.grad_clip)
                     self.optimizer.step()
                     self.optimizer.zero_grad()
+                    updates += 1
+                    
+                    if updates % args.print_freq == 0 and args.rank == 0:
+                        progress.print(updates)
+            else:
+                updates += 1
+                if updates % args.print_freq == 0 and args.rank == 0:
+                    progress.print(updates)
 
             losses.update(loss.item(), tokens)
             ctc_losses.update(ctc_loss.item(), tokens)
@@ -280,8 +289,6 @@ class CassNATTask(BaseTask):
             batch_time.update(time.time() - end)
             token_speed.update(tokens/(time.time()-start))
 
-            if i % args.print_freq == 0 and args.rank == 0:
-                progress.print(i)
         return losses.avg, att_wers.avg, ctc_wers.avg
 
     def decode(self, args):

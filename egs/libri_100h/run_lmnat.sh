@@ -12,7 +12,7 @@
 stage=1
 end_stage=1
 
-asr_exp=exp/test #cassnat_noam15k_initart_interctc05_ly6_interce01_ly6/
+asr_exp=exp/lmnat_noam15k_initart_inittflm_freeze/
 
 if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
 
@@ -31,7 +31,7 @@ if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
     --end_patience 10 \
     --seed 1234 \
     --print_freq 100 \
-    --port 18765 #>> $asr_exp/train.log 2>&1 &
+    --port 18765 > $asr_exp/train.log 2>&1 &
     
   echo "[Stage 1] ASR Training Finished."
 fi

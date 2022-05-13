@@ -93,6 +93,43 @@ class MixAttLayer(nn.Module):
         x = self.sublayer[4](x, self.feed_forward2, self.ff_scale)
         return x
 
+class Mix3AttLayer(nn.Module):
+    "Attention block with self-attn, src-attn, and feed forward (defined below)"
+    def __init__(self, size, feed_forward1, self_attn, conv_module, src_attn_audio, src_attn_txt, feed_forward2, dropout, pos_type, share_ff=False, ff_scale=0.5):
+        super(Mix3AttLayer, self).__init__()
+        self.size = size
+        self.src_attn_audio = src_attn_audio
+        self.src_attn_txt = src_attn_txt
+        self.self_attn = self_attn
+        self.feed_forward1 = feed_forward1
+        self.conv_module = conv_module
+        if share_ff:
+            self.feed_forward2 = feed_forward1
+        else:
+            self.feed_forward2 = feed_forward2
+
+        self.sublayer = clones(SublayerConnection(size, dropout), 6)
+        self.size = size
+        self.pos_type = pos_type
+        self.ff_scale = ff_scale
+
+    def forward(self, x, memory_audio, memory_text, src_mask_audio, src_mask_text, self_mask, pos_embed):
+        x = self.sublayer[0](x, self.feed_forward1, self.ff_scale)
+
+        if self.pos_type == "absolute":
+            x = self.sublayer[1](x, self.conv_module) 
+            x = self.sublayer[2](x, lambda x: self.self_attn(x, x, x, self_mask, pos_embed))
+        elif self.pos_type == "relative":
+            x = self.sublayer[2](x, lambda x: self.self_attn(x, x, x, self_mask, pos_embed))
+            x = self.sublayer[1](x, self.conv_module)
+
+        ma, mt = memory_audio, memory_text
+        x = self.sublayer[3](x, lambda x: self.src_attn_audio(x, ma, ma, src_mask_audio))
+        x = self.sublayer[4](x, lambda x: self.src_attn_txt(x, mt, mt, src_mask_text))
+        x = self.sublayer[5](x, self.feed_forward2, self.ff_scale)
+        return x
+
+
 class Encoder(nn.Module):
     "Core encoder is a stack of N layers"
     def __init__(self, size, feed_forward1, self_attn, conv_module, feed_forward2, dropout, N, pos_type, share_ff=False, ff_scale=0.5):
@@ -187,4 +224,32 @@ class MixAttDecoder(nn.Module):
             return (self.norm(x), interce_out)
         else:
             return self.norm(x)
+
+class Mix3AttDecoder(nn.Module):
+    "Generic N layer decoder with masking."
+    def __init__(self, size, feed_forward1, self_attn, conv_module, src_attn_audio, src_attn_text, feed_forward2, dropout, N, pos_type, share_ff=False, ff_scale=0.5):
+        super(Mix3AttDecoder, self).__init__()
+        layer = Mix3AttLayer(size, feed_forward1, self_attn, conv_module, src_attn_audio, src_attn_text, feed_forward2, dropout, pos_type, share_ff, ff_scale)
+        self.layers = clones(layer, N)
+        self.pos_type = pos_type
+        self.norm = LayerNorm(layer.size)
+        
+    def forward(self, x, memory_audio, memory_text, src_mask_audio, src_mask_text, tgt_mask, interce_alpha=0, interce_layer=0):
+        if self.pos_type == "relative":
+            x, pos_embed = x[0], x[1]
+        elif self.pos_type == "absolute":
+            pos_embed = None
+
+        n_layer = 0
+        for layer in self.layers:
+            x = layer(x, memory_audio, memory_text, src_mask_audio, src_mask_text, tgt_mask, pos_embed)
+            if interce_alpha > 0 and n_layer == interce_layer - 1:
+                interce_out = x
+            n_layer += 1
+
+        if interce_alpha > 0:
+            return (self.norm(x), interce_out)
+        else:
+            return self.norm(x)
+
 

@@ -4,6 +4,7 @@
 import os
 import yaml
 import time
+import math
 import torch
 from torch.distributed import ReduceOp
 
@@ -11,7 +12,7 @@ import utils.util as util
 from tasks import BaseTask
 from data.vocab import Vocab
 from utils.optimizer import get_optim
-from models import make_lmnat_transformer, make_lmnat_conformer
+from models import make_lmnat_model
 from utils.wer import ctc_greedy_wer, att_greedy_wer
 from data.speech_loader import SpeechDataset, DynamicDataset, SpeechDataLoader
 
@@ -45,13 +46,8 @@ class LMNATTask(BaseTask):
         
     def set_model(self, args):
         assert args.input_size == (args.left_ctx + args.right_ctx + 1) // args.skip_frame * args.n_features
-        if args.model_type == "transformer":
-            model = make_lmnat_transformer(args.input_size, args)
-        elif args.model_type == "conformer":
-            model = make_lmnat_conformer(args.input_size, args)
+        self.model = make_lmnat_model(args.input_size, args)
     
-        self.model = model
-
     def set_lm_model(self, args):
         with open(args.lm_config) as f:
             lm_config = yaml.safe_load(f)
@@ -62,6 +58,12 @@ class LMNATTask(BaseTask):
         lm_args.vocab_size = self.vocab.n_words
         from models.lm import make_model as make_lm_model
         self.lm_model = make_lm_model(lm_args)
+        
+        if args.use_gpu:
+            self.lm_model = self.lm_model.cuda()
+
+        for name, param in self.lm_model.named_parameters():
+            param.data.requires_grad = False
 
     def load_model(self, args):
         last_checkpoint = os.path.join(args.exp_dir, 'model.last.mdl')
@@ -246,10 +248,17 @@ class LMNATTask(BaseTask):
         ctc_wers = util.AverageMeter('CtcWer', ':.4f')
         att_wers = util.AverageMeter('AttWer', ':.4f')
         token_speed = util.AverageMeter('TokenSpeed', ":.2f")
-        progress = util.ProgressMeter(len(dataloader), batch_time, losses, ctc_losses, att_losses, ctc_wers, \
+        
+        if is_train:
+            num_updates = math.ceil(len(dataloader) / args.accum_grad)
+        else:
+            num_updates = len(dataloader)
+
+        progress = util.ProgressMeter(num_updates, batch_time, losses, ctc_losses, att_losses, ctc_wers, \
                                         att_wers, token_speed, prefix="Epoch: [{}]".format(epoch))
         
         end = time.time()
+        updates = -1
         
         for i, data in enumerate(dataloader):
             start = time.time()
@@ -266,7 +275,7 @@ class LMNATTask(BaseTask):
                 feat_sizes = feat_sizes.cuda()
                 label_sizes = label_sizes.cuda()
             
-            ctc_out, att_out, loss, ctc_loss, att_loss = self.model(src, src_mask, feat_sizes, tgt_label, label_sizes, label_sizes, self.lm_model, args)
+            ctc_out, att_out, loss, ctc_loss, att_loss = self.model(src, src_mask, feat_sizes, tgt, tgt_label, label_sizes, label_sizes, self.lm_model, args)
             bs, max_feat_size, _ = ctc_out.size()
             feat_sizes = (feat_sizes * max_feat_size).long()
             
@@ -283,6 +292,14 @@ class LMNATTask(BaseTask):
                     grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), args.grad_clip)
                     self.optimizer.step()
                     self.optimizer.zero_grad()
+                    updates += 1
+                    
+                    if updates % args.print_freq == 0 and args.rank == 0:
+                        progress.print(updates)
+            else:
+                updates += 1
+                if updates % args.print_freq == 0 and args.rank == 0:
+                    progress.print(updates)
 
             losses.update(loss.item(), tokens)
             ctc_losses.update(ctc_loss.item(), tokens)
@@ -290,8 +307,6 @@ class LMNATTask(BaseTask):
             batch_time.update(time.time() - end)
             token_speed.update(tokens/(time.time()-start))
 
-            if i % args.print_freq == 0 and args.rank == 0:
-                progress.print(i)
         return losses.avg, att_wers.avg, ctc_wers.avg
 
     def decode(self, args):

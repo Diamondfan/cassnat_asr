@@ -35,7 +35,6 @@ dec_kernel_size: 3
 
 #nat related conf
 use_trigger: True
-use_src: True
 src_trigger: False
 use_unimask: False
 left_trigger: 1

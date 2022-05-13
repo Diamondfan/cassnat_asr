@@ -9,23 +9,58 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from models.modules.norm import LayerNorm
-from models.modules.attention import MultiHeadedAttention
+from models.modules.attention import MultiHeadedAttention, RelMultiHeadedAttention
 from models.modules.positionff import PositionwiseFeedForward
-from models.modules.embedding import PositionalEncoding, ConvEmbedding, TextEmbedding
-from models.blocks.fanat_blocks import Encoder, AcEmbedExtractor, SelfAttDecoder, MixAttDecoder
+from models.modules.embedding import PositionalEncoding, RelativePositionalEncoding, ConvEmbedding, TextEmbedding
+from models.modules.conformer_related import Swish, ConvModule
+from models.blocks import TrfEncoder, ConEncoder
+from models.blocks import ConSAD, ConMAD, TrfSAD, TrfMAD, ConAcExtra, TrfAcExtra
 from utils.ctc_prefix import logzero, logone, CTCPrefixScore
 from utils.loss import LabelSmoothing, KLDivLoss
 
 def make_model(input_size, args):
     c = copy.deepcopy
-    attn = MultiHeadedAttention(args.n_head, args.d_model)
-    ff = PositionwiseFeedForward(args.d_model, args.d_ff, args.dropout)
-    position = PositionalEncoding(args.d_model, args.dropout)
-    generator = Generator(args.d_model, args.vocab_size)
-    pe = create_pe(args.d_model)
+    # we do not make a comparison with relative and absolute in CASS_NAT
+    if args.use_conv_enc:
+        assert args.pos_type == "relative", "conformer must use relative positional encoding"
+        enc_position = RelativePositionalEncoding(args.d_model, args.dropout, args.enc_max_relative_len)     
+        enc_attn = RelMultiHeadedAttention(args.n_head, args.d_model, args.dropout)
+        enc_conv_module = ConvModule(args.d_model, args.enc_kernel_size, activation=Swish())    
+        enc_ff = PositionwiseFeedForward(args.d_model, args.d_encff, args.dropout, activation=Swish())
+        encoder = ConEncoder(args.d_model, c(enc_ff), enc_attn, enc_conv_module, c(enc_ff), args.dropout, args.N_enc, args.pos_type, args.share_ff)
+    else:
+        assert args.model_type == "transformer"
+        attn = MultiHeadedAttention(args.n_head, args.d_model)
+        ff = PositionwiseFeedForward(args.d_model, args.d_encff, args.dropout)
+        enc_position = PositionalEncoding(args.d_model, args.dropout)
+        encoder = TrfEncoder(args.d_model, c(attn), c(ff), args.dropout, args.N_enc)
 
+    if args.use_conv_dec:
+        dec_self_attn = RelMultiHeadedAttention(args.n_head, args.d_model, args.dropout)
+        dec_src_attn = MultiHeadedAttention(args.n_head, args.d_model, args.dropout)
+        dec_conv_module = ConvModule(args.d_model, args.dec_kernel_size, activation=Swish())
+        dec_position = RelativePositionalEncoding(args.d_model, args.dropout, args.dec_max_relative_len)
+        dec_ff = PositionwiseFeedForward(args.d_model, args.d_decff, args.dropout, activation=Swish())
+        dec_ff_original = PositionwiseFeedForward(args.d_model, args.d_ff, args.dropout, activation=Swish())
+        Extra = ConAcExtra(args.d_model, c(dec_src_attn), dec_ff_original, dec_position, args.pos_type, args.dropout, args.N_extra)
+        Sad = ConSAD(args.d_model, c(dec_ff), c(dec_self_attn), c(dec_conv_module), c(dec_ff), args.dropout, args.N_self_dec, args.pos_type, args.share_ff)
+        Mad = ConMAD(args.d_model, c(dec_ff), c(dec_self_attn), c(dec_conv_module), c(dec_src_attn), c(dec_ff), args.dropout, args.N_mix_dec, args.pos_type, args.share_ff)
+    else:
+        dec_ff = PositionwiseFeedForward(args.d_model, args.d_decff, args.dropout)
+        dec_attn = MultiHeadedAttention(args.n_head, args.d_model, args.dropout)
+        Extra = TrfAcExtra(args.d_model, c(dec_attn), c(dec_ff), args.dropout, args.N_extra)
+        Sad = TrfSAD(args.d_model, c(dec_attn), c(dec_ff), args.dropout, args.N_self_dec)
+        Mad = TrfMAD(args.d_model, c(dec_attn), c(dec_attn), c(dec_ff), args.dropout, args.N_mix_dec)
+    
+    generator = Generator(args.d_model, args.vocab_size)
     interctc_gen = Generator(args.d_model, args.vocab_size, add_norm=True) if args.interctc_alpha > 0 else None
     interce_gen = Generator(args.d_model, args.vocab_size, add_norm=True) if args.interce_alpha > 0 else None
+    pe = create_pe(args.d_model)
+
+    model = CassNAT(
+                ConvEmbedding(input_size, args.d_model, args.dropout, enc_position),
+                encoder, Extra, Sad, Mad, c(generator), c(generator), pe, interctc_gen, interce_gen, args)
+
     if args.interce_alpha > 0:
         if args.interce_layer <= args.N_self_dec:
             args.selfce_alpha = args.interce_alpha
@@ -38,19 +73,6 @@ def make_model(input_size, args):
         args.selfce_alpha = 0
         args.mixce_alpha = 0
 
-    if args.use_src:
-        decoder_use = MixAttDecoder(args.d_model, c(attn), c(attn), c(ff), args.dropout, args.N_mix_dec)
-    else:
-        decoder_use = SelfAttDecoder(args.d_model, c(attn), c(ff), args.dropout, args.N_mix_dec)
-
-    model = CassNAT(
-        ConvEmbedding(input_size, args.d_model, args.dropout, c(position)),
-        Encoder(args.d_model, c(attn), c(ff), args.dropout, args.N_enc),
-        AcEmbedExtractor(args.d_model, c(attn), c(ff), args.dropout, args.N_extra),
-        SelfAttDecoder(args.d_model, c(attn), c(ff), args.dropout, args.N_self_dec),
-        decoder_use,
-        c(generator), c(generator), pe, interctc_gen, interce_gen, args)
-        
     for p in model.parameters():
         if p.dim() > 1:
             nn.init.xavier_uniform_(p)
@@ -159,12 +181,9 @@ class CassNAT(nn.Module):
             tgt_mask = tgt_mask_bidi
             true_embed = None
 
-        if args.use_src:
-            if args.src_trigger:
-                x_mask = trigger_mask
-            dec_h = self.decoder(pred_embed, enc_h, x_mask, tgt_mask, args.mixce_alpha, args.interce_layer)
-        else:
-            dec_h = self.decoder(pred_embed, tgt_mask)
+        if args.src_trigger:
+            x_mask = trigger_mask
+        dec_h = self.decoder(pred_embed, enc_h, x_mask, tgt_mask, args.mixce_alpha, args.interce_layer)
         
         if args.mixce_alpha > 0:
             dec_h, interce_h = dec_h[0], dec_h[1]

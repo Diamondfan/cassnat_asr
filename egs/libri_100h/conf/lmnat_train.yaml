@@ -17,7 +17,7 @@ interce_alpha: 0.01
 interce_layer: 6
 label_smooth: 0.1
 disable_ls: False
-resume_model: "" #"exp/100h_wp_cfmer_interctc05_layer6_noam_warmup15k_lrpk1e-3_epoch60_2gpus/averaged.mdl"
+resume_model: "exp/100h_wp_cfmer_interctc05_layer6_noam_warmup15k_lrpk1e-3_epoch60_2gpus/averaged.mdl"
 init_encoder: True
 fix_encoder: False
 
@@ -38,12 +38,10 @@ dec_kernel_size: 3
 
 #nat related conf
 use_trigger: True
-use_src: True
 src_trigger: False
 use_unimask: False
 left_trigger: 1
 right_trigger: 1
-use_best_path: False
 sample_dist: 0
 sample_topk: 0 #4
 sample_num: 0
