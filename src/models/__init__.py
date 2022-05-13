@@ -6,4 +6,6 @@ from models.ctc_conformer import make_model as make_ctc_conformer
 
 from models.cassnat import make_model as make_cassnat_transformer
 from models.cassnat_conformer import make_model as make_cassnat_conformer
+from models.lmnat import make_model as make_lmnat_transformer
+from models.lmnat_conformer import make_model as make_lmnat_conformer
 

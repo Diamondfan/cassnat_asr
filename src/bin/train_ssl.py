@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-# 2022 Ruchao Fan
+# 2021 Ruchao Fan
 # SPAPL
+# For self-supervised learning training
 
 import os
 import sys
@@ -12,7 +13,7 @@ import torch.distributed as dist
 import torch.backends.cudnn as cudnn
 
 sys.path.append(os.environ['E2EASR']+'/src')
-from tasks import CTCTask, ArtTask, CassNATTask, LMNATTask
+from tasks import Wav2vecTask
 from utils.parser import BaseParser
 
 class Config():
@@ -44,7 +45,6 @@ def main():
         config['train_paths'] = [j for i, j in data['train_data_path'].items()]
         config['dev_paths'] = [j for i, j in data['dev_data_path'].items()]
         config['global_cmvn'] = data['global_cmvn']
-        config['vocab_file'] = data['vocab_file']
 
     if rank == 0 and not os.path.isdir(args.exp_dir):
         os.makedirs(args.exp_dir)
@@ -58,13 +58,8 @@ def main():
         print("Experiment starts with config {}".format(json.dumps(config, sort_keys=True, indent=4)))
         json.dump(config, open(os.path.join(args.exp_dir, "config.yaml"), 'w'), sort_keys=True, indent=4)
 
-    if args.use_specaug:
-        specaug_conf = Config()
-        for key, val in config["spec_aug"].items():
-            setattr(specaug_conf, key, val)
-        args.specaug_conf = specaug_conf
-    else:
-        args.specaug_conf = None
+    args.use_specaug = False
+    args.specaug_conf = None
 
     if args.use_slurm:
         main_worker(rank, world_size, args)
@@ -87,14 +82,14 @@ def main_worker(rank, world_size, args, backend='nccl'):
     if use_cuda:
         torch.cuda.manual_seed(args.seed)
 
-    task_dict = {"art": ArtTask, "cassnat": CassNATTask, "ctc": CTCTask, "lmnat": LMNATTask}
+    task_dict = {"wav2vec": Wav2vecTask}
     if args.task in task_dict:
         task = task_dict[args.task]("train", args)
     else:
         raise NotImplementedError
     
     task.run(args)
-      
+ 
 if __name__ == '__main__':
     main()
 

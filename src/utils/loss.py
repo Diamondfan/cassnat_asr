@@ -137,6 +137,8 @@ class Wav2vecLoss(nn.Module):
                     p = coef * p.float() #* sample_size
                     loss += p
                     losses.append(p)
+                else:
+                    losses.append(torch.Tensor([0]))
 
         logging_output = {
             "loss": loss.item() if (reduce) else loss.detach(),

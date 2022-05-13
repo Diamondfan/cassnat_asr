@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # 2020 Ruchao Fan
+# 2022 Ruchao Fan
 
 import torch.nn as nn
 from models.modules.norm import LayerNorm
@@ -46,6 +47,25 @@ class MixAttLayer(nn.Module):
         x = self.sublayer[0](x, lambda x: self.self_attn(x, x, x, self_mask))
         x = self.sublayer[1](x, lambda x: self.src_attn(x, m, m, src_mask))
         return self.sublayer[2](x, self.feed_forward)
+
+class Mix3AttLayer(nn.Module):
+    "Attention block with self-attn, src-attn from audio, src-attn from text, and feed forward (defined below)"
+    def __init__(self, size, self_attn, src_attn_audio, src_attn_text, feed_forward, dropout):
+        super(Mix3AttLayer, self).__init__()
+        self.size = size
+        self.self_attn = self_attn
+        self.src_attn_audio = src_attn_audio
+        self.src_attn_text = src_attn_text
+        self.feed_forward = feed_forward
+        self.sublayer = clones(SublayerConnection(size, dropout), 4)
+ 
+    def forward(self, x, memory_audio, memory_text, src_mask_audio, src_mask_text, self_mask):
+        ma, mt = memory_audio, memory_text
+        x = self.sublayer[0](x, lambda x: self.self_attn(x, x, x, self_mask))
+        x = self.sublayer[1](x, lambda x: self.src_attn_audio(x, ma, ma, src_mask_audio))
+        x = self.sublayer[2](x, lambda x: self.src_atn_text(x, mt, mt, srrc_mask_text))
+        return self.sublayer[3](x, self.feed_forward)
+
 
 class Encoder(nn.Module):
     "Core encoder is a stack of N layers"
@@ -122,5 +142,27 @@ class MixAttDecoder(nn.Module):
             return (self.norm(x), interce_out)
         else:
             return self.norm(x)
+
+class Mix3AttDecoder(nn.Module):
+    "Generic N layer decoder with masking."
+    def __init__(self, size, self_attn, src_attn_audio, src_attn_text, feed_forward, dropout, N):
+        super(Mix3AttDecoder, self).__init__()
+        layer = MixAttLayer(size, self_attn, src_attn_audio, src_attn_text, feed_forward, dropout)
+        self.layers = clones(layer, N)
+        self.norm = LayerNorm(layer.size)
+        
+    def forward(self, x, memory_audio, memory_text, src_mask_audio, src_mask_text, tgt_mask, interce_alpha=0, interce_layer=4):
+        n_layer = 0
+        for layer in self.layers:
+            x = layer(x, memory_audio, memory_text, src_mask_audio, src_mask_text, tgt_mask)
+            if interce_alpha > 0 and n_layer == interce_layer - 1:
+                interce_out = x
+            n_layer += 1
+
+        if interce_alpha > 0:
+            return (self.norm(x), interce_out)
+        else:
+            return self.norm(x)
+
 
 

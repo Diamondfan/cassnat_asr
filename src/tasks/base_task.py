@@ -35,7 +35,7 @@ class BaseTask(object):
     
     def model_stats(self, rank, use_slurm, distributed):
         if rank == 0:
-            print(self.model)
+            #print(self.model)
             num_params, updated_params = 0, 0
 
             for name, param in self.model.named_parameters():

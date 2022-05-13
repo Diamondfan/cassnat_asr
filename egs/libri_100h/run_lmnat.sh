@@ -11,9 +11,8 @@
 
 stage=1
 end_stage=1
-lm_model=exp/libri_tfunilm16x512_4card_cosineanneal_ep20_maxlen120/averaged.mdl
 
-asr_exp=exp/cassnat_noam15k_initart_interctc05_ly6_interce01_ly6/
+asr_exp=exp/test #cassnat_noam15k_initart_interctc05_ly6_interce01_ly6/
 
 if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
 
@@ -22,9 +21,9 @@ if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
   fi
 
   CUDA_VISIBLE_DEVICES="0,1" train_asr.py \
-    --task "cassnat" \
+    --task "lmnat" \
     --exp_dir $asr_exp \
-    --train_config conf/cassnat_train.yaml \
+    --train_config conf/lmnat_train.yaml \
     --data_config conf/data_wp.yaml \
     --optim_type "noam" \
     --epochs 60 \
