@@ -14,7 +14,6 @@ from utils.optimizer import get_optim
 from models import make_transformer, make_conformer
 from utils.wer import ctc_greedy_wer, att_greedy_wer
 from utils.beam_decode import ctc_beam_decode
-from data.speech_loader import SpeechDataset, DynamicDataset, SpeechDataLoader
 
 class Config():
     name = 'config'
@@ -51,15 +50,6 @@ class ArtTask(BaseTask):
             raise NotImplementedError
 
         self.model = model
-
-    def load_model(self, args):
-        last_checkpoint = os.path.join(args.exp_dir, 'model.last.mdl')
-        if os.path.exists(last_checkpoint):
-            self.load_checkpoint(last_checkpoint, args.rank, args.use_gpu)
-        else:
-            self.load_pretrained_model(args.resume_model, args.rank)
-    
-        self.model_stats(args.rank, args.use_slurm, args.distributed)
             
     def load_pretrained_model(self, resume_model, rank): 
         if resume_model:
@@ -71,7 +61,6 @@ class ArtTask(BaseTask):
                 if name not in model_state:
                     name = "module." + name
                 param.data.copy_(model_state[name])
-
         self.start_epoch = 0
 
     def load_lm_model(self, args):
@@ -98,40 +87,6 @@ class ArtTask(BaseTask):
             lm_model = None
 
         self.lm_model = lm_model
-
-    def set_dataloader(self, args):
-        dataset_types = {"SpeechDataset": (SpeechDataset, args.batch_size), "DynamicDataset": (DynamicDataset, 1)}
-        Dataset, actual_bs = dataset_types[args.dataset_type]
-
-        trainset = Dataset(self.vocab, args.train_paths, args)
-        if args.use_cmvn:
-            trainset._load_cmvn(args.global_cmvn)
-        train_loader = SpeechDataLoader(trainset, actual_bs, args.padding_idx, num_workers=args.load_data_workers, 
-                                       distributed=args.distributed, shuffle=True)
-        if args.rank == 0:
-            print("Finish Loading training files. Number batches: {}".format(len(train_loader)))
-
-        args.use_specaug = False  # specaug cannot be applied to valid
-        validset = Dataset(self.vocab, args.dev_paths, args)
-        if args.use_cmvn:
-            validset._load_cmvn(args.global_cmvn)
-        valid_loader = SpeechDataLoader(validset, actual_bs, args.padding_idx, num_workers=args.load_data_workers, 
-                                        distributed=False, shuffle=False)
-        if args.rank == 0:
-            print("Finish Loading dev files. Number batches: {}".format(len(valid_loader)))
-
-        self.train_loader = train_loader
-        self.valid_loader = valid_loader
-    
-    def set_test_dataloader(self, args):
-        args.use_specaug = False
-        args.specaug_conf = None
-        testset = SpeechDataset(self.vocab, args.test_paths, args)
-        if args.use_cmvn:
-            testset._load_cmvn(args.global_cmvn)
-        test_loader = SpeechDataLoader(testset, args.batch_size, args.padding_idx, num_workers=args.load_data_workers, shuffle=False)
-        print("Finish Loading test files. Number batches: {}".format(len(test_loader)))
-        self.test_loader = test_loader
 
     def set_optimizer(self, args):
         self.optimizer = get_optim(args.optim_type, self.model, args) 
@@ -248,7 +203,9 @@ class ArtTask(BaseTask):
             losses.update(loss.item(), tokens)
             ctc_losses.update(ctc_loss.item(), tokens)
             att_losses.update(att_loss.item(), tokens)
-                    
+            batch_time.update(time.time() - end)
+            token_speed.update(tokens/(time.time()-start))
+            
             if is_train:
                 loss = loss / args.accum_grad
                 loss.backward()
@@ -269,9 +226,6 @@ class ArtTask(BaseTask):
                 updates += 1
                 if updates % args.print_freq == 0 and args.rank == 0:
                     progress.print(updates)
-            
-            batch_time.update(time.time() - end)
-            token_speed.update(tokens/(time.time()-start))
             
         return losses.avg, att_wers.avg, ctc_wers.avg
 

@@ -122,7 +122,7 @@ class LMNAT(nn.Module):
             self.interce_generator = interce_gen
             self.interce_loss = LabelSmoothing(args.vocab_size, args.padding_idx, args.label_smooth)
             
-    def forward(self, src, src_mask, src_size, tgt, tgt_label, ylen, label_sizes, lm_model, args):
+    def forward(self, src, src_mask, src_size, tgt_label, label_sizes, text_embed, text_mask, args):
         # 1. compute ctc output
         x, x_mask = self.src_embed(src, src_mask)
         enc_h = self.encoder(x, x_mask, args.interctc_alpha, args.interctc_layer)
@@ -139,12 +139,13 @@ class LMNAT(nn.Module):
             interctc_out = 0
         
         # 2. prepare different masks,
+        ylen = label_sizes
         if args.use_trigger:
             assert args.ctc_alpha > 0
             src_size = (src_size * ctc_out.size(1)).long()
             blank = args.padding_idx
 
-            aligned_seq_shift, ylen, ymax = self.viterbi_align(ctc_out, x_mask, src_size, tgt_label[:,:-1], ylen, blank, args.sample_dist, args.sample_topk)
+            aligned_seq_shift, ylen, ymax = self.viterbi_align(ctc_out, x_mask, src_size, tgt_label[:,:-1], ylen, blank, args.sample_topk)
             trigger_mask, ylen, ymax = self.align_to_mask(aligned_seq_shift, ylen, ymax, x_mask, src_size, blank)
 
             # trigger mask expansion
@@ -168,9 +169,6 @@ class LMNAT(nn.Module):
             interce_out = self.interce_generator(pred_embed[-1])
             pred_embed = pred_embed[:-1]
 
-        if args.save_embedding:
-            args.ac_embed, args.pred_embed = token_acoustic_embed[0].cpu(), pred_embed[0].cpu()
-        
         # 4. decoder, output units generation
         if args.use_unimask:
             sos_embed = torch.zeros(pred_embed.size(0), 1, pred_embed.size(2)).type_as(pred_embed)
@@ -180,14 +178,9 @@ class LMNAT(nn.Module):
             tgt_mask = tgt_mask_bidi
             true_embed = None
 
-        # 5. get lm_output
-        lm_tgt_mask = tgt_mask & self.subsequent_mask(tgt.size(-1)).type_as(tgt_mask)
-        enc_txt = lm_model(tgt, lm_tgt_mask, features_only=True)
-        enc_txt = enc_txt.detach()
-
         if args.src_trigger:
             x_mask = trigger_mask
-        dec_h = self.mad(pred_embed, enc_h, enc_txt, x_mask, tgt_mask, tgt_mask, args.mixce_alpha, args.interce_layer)
+        dec_h = self.mad(pred_embed, enc_h, text_embed, x_mask, text_mask, tgt_mask, args.mixce_alpha, args.interce_layer)
         
         if args.mixce_alpha > 0:
             dec_h, interce_h = dec_h[0], dec_h[1]
@@ -230,7 +223,7 @@ class LMNAT(nn.Module):
             trigger_mask = trigger_mask | trigger_shift_left
         return trigger_mask
 
-    def viterbi_align(self, ctc_out, src_mask, src_size, ys, ylens, blank, sample_dist, sample_topk):
+    def viterbi_align(self, ctc_out, src_mask, src_size, ys, ylens, blank, sample_topk):
         """
         ctc_out: log probability of ctc output
         src_mask, src_size: specify the effective length of each sample in a batch
@@ -314,7 +307,7 @@ class LMNAT(nn.Module):
         ymax += 1
         return trigger_mask, ylen, ymax
 
-    def best_path_align(self, ctc_out, src_mask, src_size, blank, sample_dist=0, sample_num=0, threshold=0.9, include_best=True):
+    def best_path_align(self, ctc_out, src_mask, src_size, blank, sample_num=0, threshold=0.9, include_best=True):
         "This is used for decoding, forced alignment is needed for training"
         bs, xmax, _ = ctc_out.size()
         if sample_num > 1:
@@ -336,49 +329,13 @@ class LMNAT(nn.Module):
         ylen = torch.sum((aligned_seq_shift != blank), 1)
         ymax = torch.max(ylen).item()
 
-        if sample_dist > 0:
-            for b in range(bs):
-                orig_pos = torch.nonzero(aligned_seq_shift[b,:])
-                sample_shift = torch.randint(-sample_dist, sample_dist+1, orig_pos.size()).type_as(aligned_seq_shift)
-                new_pos = orig_pos + sample_shift
-                new_pos[-1] = min(new_pos[-1], xmax-1)
-                new_aligned_seq = aligned_seq_shift[b].clone()
-                new_aligned_seq[orig_pos] = blank
-                new_aligned_seq[new_pos] = 1
-                if torch.sum(new_aligned_seq) == ylen[b]:
-                    aligned_seq_shift[b] = new_aligned_seq
-        return aligned_seq_shift, ylen, ymax
-
-    def beam_path_align(self, ctc_out, src_mask, src_size, blank, ctc_top_seqs, sample_num):
-        # Obatain a better alignment and then trigger mask with languag model
-        # This is similar with ctc beam search, but without merging the paths with same output
-        bs = int(ctc_out.size(0) /  sample_num)
-        tgt_label, ylen = [], []
-        for b in range(bs):
-            for i in range(sample_num):
-                tgt_label.append([])
-                ylen.append(0)
-                for idx in ctc_top_seqs[b][i]['hyp']:
-                    tgt_label[-1].append(idx)
-                    ylen[-1] += 1
-
-        ymax = max(ylen)
-        tgt = src_size.new_zeros(bs*sample_num, ymax).long()
-        for b in range(bs*sample_num):
-            tgt[b].narrow(0, 0, ylen[b]).copy_(torch.Tensor(tgt_label[b]).type_as(src_size))
-        ylen = torch.Tensor(ylen).type_as(src_size)
-        
-        if ymax == 0:
-            aligned_seq_shift = ctc_out.new_zeros(ctc_out.size(0), ctc_out.size(1)).long()
-        else:
-            aligned_seq_shift, ylen, ymax = self.viterbi_align(ctc_out, src_mask, src_size, tgt, ylen, blank, 0, 0)
         return aligned_seq_shift, ylen, ymax
 
     def subsequent_mask(self, size):
         ret = torch.ones(size, size, dtype=torch.uint8)
         return torch.tril(ret, out=ret).unsqueeze(0)
     
-    def beam_decode(self, src, x_mask, src_size, vocab, args, lm_model=None, ctc_top_seqs=None, labels=None, label_sizes=None):
+    def beam_decode(self, src, x_mask, src_size, vocab, args, lm_model=None, text_encoder=None, ctc_top_seqs=None, labels=None, label_sizes=None):
         """att decoding with rnnlm and ctc out probability
 
         args.rnnlm: path of rnnlm model
@@ -397,7 +354,7 @@ class LMNAT(nn.Module):
             src_size = (src_size * ctc_out.size(1)).long()
             #used to include oracle path in sampe path
             if args.test_hitrate:
-                aligned_seq_shift1, ylen1, ymax1 = self.viterbi_align(ctc_out, src_mask, src_size, labels[:,1:-1], label_sizes, blank, args.sample_dist, 0)
+                aligned_seq_shift1, ylen1, ymax1 = self.viterbi_align(ctc_out, src_mask, src_size, labels[:,1:-1], label_sizes, blank, 0)
 
             if args.sample_num > 1:
                 ctc_out = ctc_out.unsqueeze(1).repeat(1, args.sample_num, 1, 1).reshape(-1, ctc_out.size(1), ctc_out.size(2))
@@ -405,12 +362,10 @@ class LMNAT(nn.Module):
                 src_mask = src_mask.unsqueeze(1).repeat(1, args.sample_num, 1, 1).reshape(-1, src_mask.size(1), src_mask.size(2))
                 src_size = src_size.unsqueeze(1).repeat(1, args.sample_num).reshape(-1)
             
-            if args.decode_type == 'ctc_att':
-                aligned_seq_shift, ylen, ymax = self.beam_path_align(ctc_out, src_mask, src_size, blank, ctc_top_seqs, args.sample_num)
-            elif args.decode_type == 'oracle_att':
-                aligned_seq_shift, ylen, ymax = self.viterbi_align(ctc_out, src_mask, src_size, labels[:,1:-1], label_sizes, blank, args.sample_dist, 0)
+            if args.decode_type == 'oracle_att':
+                aligned_seq_shift, ylen, ymax = self.viterbi_align(ctc_out, src_mask, src_size, labels[:,1:-1], label_sizes, blank, 0)
             else:             
-                aligned_seq_shift, ylen, ymax = self.best_path_align(ctc_out, src_mask, src_size, blank, args.sample_dist, args.sample_num, args.threshold)
+                aligned_seq_shift, ylen, ymax = self.best_path_align(ctc_out, src_mask, src_size, blank, args.sample_num, args.threshold)
             
             if args.test_hitrate and args.sample_num < 2:
                 args.total += (aligned_seq_shift1 != 0).sum().item()
@@ -438,10 +393,10 @@ class LMNAT(nn.Module):
         tgt_mask1 = tgt_mask1.scatter(1, ylen.unsqueeze(1)-1, 0).cumprod(1)
         tgt_mask1 = tgt_mask1.scatter(1, ylen.unsqueeze(1)-1, 1).unsqueeze(1)
         
-        # 3. Extract Acoustic embedding and Map it to Word embedding
+        # 3. Extract Acoustic embedding
         pe = self.pe.type_as(src).unsqueeze(0).repeat(bs, 1, 1)[:,:ymax,:]
-        ac_embed = self.acembed_extractor(pe, enc_h, trigger_mask)
-        pred_embed = self.embed_mapper(ac_embed, tgt_mask1)
+        token_acoustic_embed = self.taee(pe, enc_h, trigger_mask)
+        pred_embed = self.sad(token_acoustic_embed, tgt_mask1)
 
         # 4. decoder, output units generation
         if args.use_unimask:
@@ -451,12 +406,20 @@ class LMNAT(nn.Module):
         else:
             tgt_mask = tgt_mask1
 
-        if args.use_src:
-            if args.src_trigger:
-                src_mask = trigger_mask
-            dec_h = self.decoder(pred_embed, enc_h, src_mask, tgt_mask)
-        else:
-            dec_h = self.decoder(pred_embed, tgt_mask)
+        if args.src_trigger:
+            src_mask = trigger_mask
+
+        # 5. obtain text_embed from ctc_output
+        text_input = torch.zeros(aligned_seq_shift.size(0), ymax).type_as(aligned_seq_shift)
+        text_input[:,0] = sos
+        for cand in range(aligned_seq_shift.size(0)):
+            text = aligned_seq_shift[cand].masked_select(aligned_seq_shift[cand] != 0)
+            text_input[cand,1:text.size(0)+1] = text
+
+        text_mask = (text_input != 0).unsqueeze(1)
+        text_embed, text_mask = text_encoder.extract_features(text_input, text_mask)
+        
+        dec_h = self.mad(pred_embed, enc_h, text_embed, src_mask, text_mask, tgt_mask)
         att_out = self.att_generator(dec_h)
         
         if args.sample_num > 1:
@@ -481,6 +444,7 @@ class LMNAT(nn.Module):
                 lm_score = lm_score.reshape(-1, args.sample_num, seql).masked_fill(tgt_mask1.reshape(-1, args.sample_num, tgt_mask1.size(-1))==0, 0)
                 prob_sum = lm_score.sum(-1) / (lm_score != 0).sum(-1).float()
                 max_indices = prob_sum.max(-1, keepdim=True)[1]
+
             elif args.rank_model == 'n-gram':
                 prob_sum = att_pred.new_zeros(att_pred.size(0)).float()
                 tgt_len = tgt_mask1.sum(-1)
@@ -498,6 +462,7 @@ class LMNAT(nn.Module):
             
             att_out = att_out.reshape(-1, args.sample_num, seql, dim).masked_fill(tgt_mask1.reshape(-1, args.sample_num, tgt_mask1.size(-2), tgt_mask1.size(-1)).transpose(2,3)==0, 0)
             att_out = torch.gather(att_out, 1, max_indices.unsqueeze(2).unsqueeze(3).repeat(1,1,seql,dim)).squeeze(1)
+
             if args.save_embedding:
                 ac_embed = ac_embed[0].reshape(-1, args.sample_num, ac_embed[0].size(-2), ac_embed[0].size(-1))
                 ac_embed = torch.gather(ac_embed, 1, max_indices.unsqueeze(2).unsqueeze(3).repeat(1,1,ac_embed.size(-2),ac_embed.size(-1))).squeeze(1)
@@ -534,6 +499,7 @@ class LMNAT(nn.Module):
                 num = 1 if ((aligned_seq_shift != 0).sum().item() == (aligned_seq_shift1 != 0).sum().item()) else 0
                 args.length_correct += num
                 #args.err = (aligned_seq_shift != 0).sum().item() - (aligned_seq_shift1 != 0).sum().item()
+
         ys = torch.ones(1, 1).fill_(sos).long()
         if args.use_gpu:
             ys = ys.cuda()

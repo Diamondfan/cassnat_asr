@@ -6,6 +6,7 @@ import yaml
 import time
 import math
 import torch
+import contextlib
 from torch.distributed import ReduceOp
 
 import utils.util as util
@@ -30,7 +31,7 @@ class LMNATTask(BaseTask):
             self.set_optimizer(args)
             self.load_model(args)
             self.set_dataloader(args)
-            self.set_lm_model(args)
+            self.set_text_encoder(args)
 
         if mode == "test":
             args.rank = 0
@@ -39,7 +40,11 @@ class LMNATTask(BaseTask):
             args.interce_alpha = 0
             args.interce_layer = 0
             args.label_smooth = 0
+            args.text_encoder_path = ""
+            args.exp_dir="./"
+            args.freeze_text_encoder = False
             self.set_model(args)
+            self.set_text_encoder(args)
             self.set_test_dataloader(args)
             self.load_test_model(args.resume_model)
             self.model_stats(0, False, False)
@@ -48,22 +53,47 @@ class LMNATTask(BaseTask):
         assert args.input_size == (args.left_ctx + args.right_ctx + 1) // args.skip_frame * args.n_features
         self.model = make_lmnat_model(args.input_size, args)
     
-    def set_lm_model(self, args):
-        with open(args.lm_config) as f:
-            lm_config = yaml.safe_load(f)
-        lm_args = Config()
-        for key, val in lm_config.items():
-            setattr(lm_args, key, val)
-                
-        lm_args.vocab_size = self.vocab.n_words
-        from models.lm import make_model as make_lm_model
-        self.lm_model = make_lm_model(lm_args)
+    def set_text_encoder(self, args):
+        with open(args.text_encoder_config) as f:
+            text_encoder_config = yaml.safe_load(f)
+        text_encoder_args = Config()
+        for key, val in text_encoder_config.items():
+            setattr(text_encoder_args, key, val)
         
-        if args.use_gpu:
-            self.lm_model = self.lm_model.cuda()
+        last_checkpoint = os.path.join(args.exp_dir, 'model.last.mdl')
+        if os.path.exists(last_checkpoint) or args.text_encoder_path:
+            if args.rank == 0:
+                print("Loading pretrained text encoder model from {}".format(args.text_encoder_path))
+            last_checkpoint = last_checkpoint if os.path.exists(last_checkpoint) else args.text_encoder_path
+            checkpoint = torch.load(last_checkpoint, map_location='cpu')
+        else:
+            checkpoint = None
 
-        for name, param in self.lm_model.named_parameters():
-            param.data.requires_grad = False
+        if args.text_encoder_type == "lm":        
+            #text_encoder_args.vocab_size = self.vocab.n_words        
+            from models.lm import make_model as make_lm_model
+            text_encoder = make_lm_model(text_encoder_args)
+            
+            if checkpoint:
+                try:
+                    model_state = checkpoint["state_dict"]
+                except:
+                    model_state = checkpoint["text_encoder_state"]
+
+        if args.freeze_text_encoder or checkpoint:   
+            for name, param in text_encoder.named_parameters():
+                if args.freeze_text_encoder:
+                    param.data.requires_grad = False
+
+                if checkpoint:
+                    if name not in model_state:
+                        name = "module." + name
+                    param.data.copy_(model_state[name])
+
+        if args.use_gpu:
+            text_encoder = text_encoder.cuda()
+
+        self.text_encoder = text_encoder
 
     def load_model(self, args):
         last_checkpoint = os.path.join(args.exp_dir, 'model.last.mdl')
@@ -93,6 +123,22 @@ class LMNATTask(BaseTask):
                     if fix_encoder:
                         param.requires_grad = False
         self.start_epoch = 0
+
+    def load_test_model(self, resume_model):
+        if resume_model:
+            print("Loading model from {}".format(resume_model))
+            checkpoint = torch.load(resume_model, map_location='cpu')
+            model_state = checkpoint["model_state"]
+            text_encoder_state = checkpoint["text_encoder_state"]
+            for name, param in self.model.named_parameters():
+                if name not in model_state:
+                    name = "module." + name
+                param.data.copy_(model_state[name])
+
+            for name, param in self.text_encoder.named_parameters():
+                if name not in text_encoder_state:
+                    name = "module." + name
+                param.data.copy_(text_encoder_state[name])
 
     def load_lm_model(self, args):
         if args.lm_weight > 0 or args.ctc_lm_weight > 0:
@@ -188,11 +234,13 @@ class LMNATTask(BaseTask):
         
             self.train_loader.dataset.use_specaug = (epoch >= args.specaug_start_epoch)    
             self.model.train()
+            self.text_encoder.train()
             args.sample_dist = sample_dist
             args.sample_topk = sample_topk
             train_loss, train_wer, train_ctc_wer = self.run_one_epoch(epoch, args, is_train=True)
             
             self.model.eval()
+            self.text_encoder.eval()
             with torch.no_grad():
                 args.sample_dist, args.sample_topk = 0, 0
                 valid_loss, valid_wer, valid_ctc_wer = self.run_one_epoch(epoch, args, is_train=False)
@@ -210,23 +258,29 @@ class LMNATTask(BaseTask):
             if args.optim_type == 'normal':
                 scheduler.step(valid_wer)
             
-            if epoch > args.start_saving_epoch and args.rank == 0:
-                output_file = args.exp_dir + '/model.' + str(epoch) + '.mdl'
+            if args.rank == 0:
                 checkpoint = {'epoch': epoch, 
                               'optimizer': self.optimizer.state_dict(),
                               'model_state': self.model.state_dict(),
-                            }
-                torch.save(checkpoint, output_file)
+                              'text_encoder_state': self.text_encoder.state_dict(),
+                            }                
                 last_output_file = args.exp_dir + '/model.last.mdl'
                 torch.save(checkpoint, last_output_file)
-            
+
+                if epoch > args.start_saving_epoch:
+                    output_file = args.exp_dir + '/model.' + str(epoch) + '.mdl'   
+                    torch.save(checkpoint, output_file)
+
             if valid_wer < best_wer:
                 best_wer = valid_wer
                 best_epoch = epoch
                 if args.rank == 0:
                     output_file = args.exp_dir + '/best_model.mdl'
-                    checkpoint = {'epoch': epoch, 'optimizer': self.optimizer.state_dict(),
-                                    'model_state': self.model.state_dict()}
+                    checkpoint = {'epoch': epoch, 
+                                    'optimizer': self.optimizer.state_dict(),
+                                    'model_state': self.model.state_dict(),
+                                    'text_encoder_state': self.text_encoder.state_dict(),
+                                }
                     torch.save(checkpoint, output_file)
             
             if epoch + 1 - best_epoch >= early_stop_patience:
@@ -264,18 +318,20 @@ class LMNATTask(BaseTask):
             start = time.time()
             utt_list, feats, labels, feat_sizes, label_sizes = data
             src, src_mask = feats, (feats[:,:,0] != args.padding_idx).unsqueeze(1)
-            tgt_label = labels[:,1:]
-            tgt = labels[:,:-1]
+            tgt, tgt_label = labels[:,:-1], labels[:,1:]
+            tgt_mask = (tgt != args.padding_idx).unsqueeze(1)
             tokens = (tgt_label != args.padding_idx).sum().item()
             
             if args.use_gpu:
                 src, src_mask = src.cuda(), src_mask.cuda()
-                tgt_label = tgt_label.cuda()
-                tgt = tgt.cuda()
-                feat_sizes = feat_sizes.cuda()
-                label_sizes = label_sizes.cuda()
+                tgt, tgt_label = tgt.cuda(), tgt_label.cuda()
+                tgt_mask = tgt_mask.cuda()
+                feat_sizes, label_sizes = feat_sizes.cuda(), label_sizes.cuda()
             
-            ctc_out, att_out, loss, ctc_loss, att_loss = self.model(src, src_mask, feat_sizes, tgt, tgt_label, label_sizes, label_sizes, self.lm_model, args)
+            with torch.no_grad() if args.freeze_text_encoder else contextlib.ExitStack():
+                text_embed, text_mask = self.text_encoder.extract_features(tgt, tgt_mask)
+            
+            ctc_out, att_out, loss, ctc_loss, att_loss = self.model(src, src_mask, feat_sizes, tgt_label, label_sizes, text_embed, text_mask, args)
             bs, max_feat_size, _ = ctc_out.size()
             feat_sizes = (feat_sizes * max_feat_size).long()
             
@@ -285,6 +341,12 @@ class LMNATTask(BaseTask):
             att_errs, all_tokens = att_greedy_wer(att_out, tgt_label.cpu().numpy(), args.padding_idx)
             att_wers.update(att_errs/all_tokens, all_tokens)
             
+            losses.update(loss.item(), tokens)
+            ctc_losses.update(ctc_loss.item(), tokens)
+            att_losses.update(att_loss.item(), tokens)
+            batch_time.update(time.time() - end)
+            token_speed.update(tokens/(time.time()-start))
+
             if is_train:
                 loss = loss / args.accum_grad
                 loss.backward()
@@ -300,12 +362,6 @@ class LMNATTask(BaseTask):
                 updates += 1
                 if updates % args.print_freq == 0 and args.rank == 0:
                     progress.print(updates)
-
-            losses.update(loss.item(), tokens)
-            ctc_losses.update(ctc_loss.item(), tokens)
-            att_losses.update(att_loss.item(), tokens)
-            batch_time.update(time.time() - end)
-            token_speed.update(tokens/(time.time()-start))
 
         return losses.avg, att_wers.avg, ctc_wers.avg
 
@@ -323,6 +379,7 @@ class LMNATTask(BaseTask):
         args.length_correct, args.length_total = 0, 0
         with torch.no_grad():
             self.model.eval()
+            self.text_encoder.eval()
             if self.lm_model is not None and args.rank_model != "n-gram":
                 self.lm_model.eval()
 
@@ -337,16 +394,8 @@ class LMNATTask(BaseTask):
 
                 if args.decode_type == 'ctc_only':
                     recog_results = ctc_beam_decode(self.model, src, src_mask, feat_sizes, self.vocab, args, self.lm_model)
-                
-                elif args.decode_type == 'ctc_att':
-                    batch_top_seqs = ctc_beam_decode(self.model, src, src_mask, feat_sizes, self.vocab, args, self.lm_model)
-                    recog_results, args = self.model.beam_decode(src, src_mask, feat_sizes, self.vocab, args, self.lm_model, batch_top_seqs, labels=labels, label_sizes=label_sizes)
-                
-                elif args.decode_type == 'adapt_sample':
-                    recog_results = self.model.beam_decode_adapt_num(src, src_mask, feat_sizes, self.vocab, args, self.lm_model, labels=labels, label_sizes=label_sizes)
-                
                 else:
-                    recog_results, args = self.model.beam_decode(src, src_mask, feat_sizes, self.vocab, args, self.lm_model, labels=labels, label_sizes=label_sizes)
+                    recog_results, args = self.model.beam_decode(src, src_mask, feat_sizes, self.vocab, args, self.lm_model, self.text_encoder, labels=labels, label_sizes=label_sizes)
                 
                 for j in range(len(utt_list)):
                     hyp = []

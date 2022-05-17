@@ -12,7 +12,6 @@ from data.vocab import Vocab
 from utils.wer import ctc_greedy_wer
 from utils.optimizer import get_optim
 from models import make_ctc_model
-from data.speech_loader import SpeechDataset, DynamicDataset, SpeechDataLoader
 
 class Config():
     name = 'config'
@@ -41,15 +40,6 @@ class CTCTask(BaseTask):
         assert args.input_size == (args.left_ctx + args.right_ctx + 1) // args.skip_frame * args.n_features
         self.model = make_ctc_model(args.input_size, args)
 
-    def load_model(self, args):
-        last_checkpoint = os.path.join(args.exp_dir, 'model.last.mdl')
-        if os.path.exists(last_checkpoint):
-            self.load_checkpoint(last_checkpoint, args.rank)
-        else:
-            self.load_pretrained_model(args.resume_model, args.rank)
-    
-        self.model_stats(args.rank, args.use_slurm, args.distributed)
-            
     def load_pretrained_model(self, resume_model, rank): 
         if resume_model:
             for name, param in self.model.named_parameters():
@@ -90,40 +80,6 @@ class CTCTask(BaseTask):
         else:
             lm_model = None
         self.lm_model = lm_model
-
-    def set_dataloader(self, args):
-        dataset_types = {"SpeechDataset": (SpeechDataset, args.batch_size), "DynamicDataset": (DynamicDataset, 1)}
-        Dataset, actual_bs = dataset_types[args.dataset_type]
-
-        trainset = Dataset(self.vocab, args.train_paths, args)
-        if args.use_cmvn:
-            trainset._load_cmvn(args.global_cmvn)
-        train_loader = SpeechDataLoader(trainset, actual_bs, args.padding_idx, num_workers=args.load_data_workers, 
-                                       distributed=args.distributed, shuffle=True)
-        if args.rank == 0:
-            print("Finish Loading training files. Number batches: {}".format(len(train_loader)))
-
-        args.use_specaug = False  # specaug cannot be applied to valid
-        validset = Dataset(self.vocab, args.dev_paths, args)
-        if args.use_cmvn:
-            validset._load_cmvn(args.global_cmvn)
-        valid_loader = SpeechDataLoader(validset, actual_bs, args.padding_idx, num_workers=args.load_data_workers, 
-                                        distributed=False, shuffle=False)
-        if args.rank == 0:
-            print("Finish Loading dev files. Number batches: {}".format(len(valid_loader)))
-
-        self.train_loader = train_loader
-        self.valid_loader = valid_loader
-
-    def set_test_dataloader(self, args):
-        args.use_specaug = False
-        args.specaug_conf = None
-        testset = SpeechDataset(self.vocab, args.test_paths, args)
-        if args.use_cmvn:
-            testset._load_cmvn(args.global_cmvn)
-        test_loader = SpeechDataLoader(testset, args.batch_size, args.padding_idx, num_workers=args.load_data_workers, shuffle=False)
-        print("Finish Loading test files. Number batches: {}".format(len(test_loader)))
-        self.test_loader = test_loader
 
     def set_optimizer(self, args):
         self.optimizer = get_optim(args.optim_type, self.model, args) 

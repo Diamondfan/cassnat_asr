@@ -40,7 +40,6 @@ use_unimask: False
 left_trigger: 1
 right_trigger: 1
 use_best_path: False
-sample_dist: 0
 sample_topk: 0 #4
 sample_num: 0
 save_embedding: False
@@ -52,10 +51,12 @@ right_ctx: 0
 skip_frame: 1
 
 #noam warm up
+multi_optim: True
 warmup_type: "noam_warmup"  # noam_warmup, custom_exp, custom_linear
-noam_factor: 0.001               # learning rate for noam_wamup, factor for custom_exp
-warmup_steps: 15000
-total_steps: 250000           # for custom_linear
+noam_factor: [0.001, 0.001, 0.001, 0.001]      # src_embed, encoder, ctc_generator and interctc, decoder related, #learning rate for noam_wamup, factor for custom_exp
+warmup_steps: [15000, 15000, 15000, 15000]
+freeze_steps: [0, 0, 0, 0]
+total_steps: [250000, 250000, 250000, 250000]           # for custom_linear
 
 # multistep
 decay_rate: 0.01

@@ -48,14 +48,17 @@ class TransformerLM(nn.Module):
         self.encoder = encoder
         self.out_generator = out_gen
 
-    def forward(self, tgt, tgt_mask, features_only=False):
+    def forward(self, tgt, tgt_mask):
         tgt = self.text_embed(tgt)
         enc_h = self.encoder(tgt, tgt_mask)
-        if features_only:
-            return enc_h
-        else:
-            lm_out = self.out_generator(enc_h)
-            return lm_out
+        lm_out = self.out_generator(enc_h)
+        return lm_out
+
+    def extract_features(self, tgt, tgt_mask):
+        tgt_mask = tgt_mask & self._subsequent_mask(tgt.size(-1)).type_as(tgt_mask)
+        tgt = self.text_embed(tgt)
+        enc_text = self.encoder(tgt, tgt_mask)
+        return enc_text, tgt_mask
 
     def _subsequent_mask(self, size):
         ret = torch.ones(size, size, dtype=torch.uint8)

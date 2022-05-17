@@ -122,7 +122,7 @@ class CassNAT(nn.Module):
             self.interce_generator = interce_gen
             self.interce_loss = LabelSmoothing(args.vocab_size, args.padding_idx, args.label_smooth)
             
-    def forward(self, src, src_mask, src_size, tgt_label, ylen, label_sizes, args):
+    def forward(self, src, src_mask, src_size, tgt_label, label_sizes, args):
         # 1. compute ctc output
         x, x_mask = self.src_embed(src, src_mask)
         enc_h = self.encoder(x, x_mask, args.interctc_alpha, args.interctc_layer)
@@ -139,6 +139,7 @@ class CassNAT(nn.Module):
             interctc_out = 0
         
         # 2. prepare different masks,
+        ylen = label_sizes
         if args.use_trigger:
             assert args.ctc_alpha > 0
             src_size = (src_size * ctc_out.size(1)).long()
@@ -146,7 +147,7 @@ class CassNAT(nn.Module):
             if args.use_best_path:
                 trigger_mask, ylen, ymax = self.best_path_align(ctc_out, x_mask, src_size, blank)
             else:
-                aligned_seq_shift, ylen, ymax = self.viterbi_align(ctc_out, x_mask, src_size, tgt_label[:,:-1], ylen, blank, args.sample_dist, args.sample_topk)
+                aligned_seq_shift, ylen, ymax = self.viterbi_align(ctc_out, x_mask, src_size, tgt_label[:,:-1], ylen, blank, args.sample_topk)
                 trigger_mask, ylen, ymax = self.align_to_mask(aligned_seq_shift, ylen, ymax, x_mask, src_size, blank)
 
             trigger_mask = self.expand_trigger_mask(trigger_mask, args.left_trigger, args.right_trigger)
@@ -229,7 +230,7 @@ class CassNAT(nn.Module):
             trigger_mask = trigger_mask | trigger_shift_left
         return trigger_mask
 
-    def viterbi_align(self, ctc_out, src_mask, src_size, ys, ylens, blank, sample_dist, sample_topk):
+    def viterbi_align(self, ctc_out, src_mask, src_size, ys, ylens, blank, sample_topk):
         """
         ctc_out: log probability of ctc output
         src_mask, src_size: specify the effective length of each sample in a batch
@@ -313,7 +314,7 @@ class CassNAT(nn.Module):
         ymax += 1
         return trigger_mask, ylen, ymax
 
-    def best_path_align(self, ctc_out, src_mask, src_size, blank, sample_dist=0, sample_num=0, threshold=0.9, include_best=True):
+    def best_path_align(self, ctc_out, src_mask, src_size, blank, sample_num=0, threshold=0.9, include_best=True):
         "This is used for decoding, forced alignment is needed for training"
         bs, xmax, _ = ctc_out.size()
         if sample_num > 1:
@@ -335,17 +336,6 @@ class CassNAT(nn.Module):
         ylen = torch.sum((aligned_seq_shift != blank), 1)
         ymax = torch.max(ylen).item()
 
-        if sample_dist > 0:
-            for b in range(bs):
-                orig_pos = torch.nonzero(aligned_seq_shift[b,:])
-                sample_shift = torch.randint(-sample_dist, sample_dist+1, orig_pos.size()).type_as(aligned_seq_shift)
-                new_pos = orig_pos + sample_shift
-                new_pos[-1] = min(new_pos[-1], xmax-1)
-                new_aligned_seq = aligned_seq_shift[b].clone()
-                new_aligned_seq[orig_pos] = blank
-                new_aligned_seq[new_pos] = 1
-                if torch.sum(new_aligned_seq) == ylen[b]:
-                    aligned_seq_shift[b] = new_aligned_seq
         return aligned_seq_shift, ylen, ymax
 
     def beam_path_align(self, ctc_out, src_mask, src_size, blank, ctc_top_seqs, sample_num):
@@ -396,7 +386,7 @@ class CassNAT(nn.Module):
             src_size = (src_size * ctc_out.size(1)).long()
             #used to include oracle path in sampe path
             if args.test_hitrate:
-                aligned_seq_shift1, ylen1, ymax1 = self.viterbi_align(ctc_out, src_mask, src_size, labels[:,1:-1], label_sizes, blank, args.sample_dist, 0)
+                aligned_seq_shift1, ylen1, ymax1 = self.viterbi_align(ctc_out, src_mask, src_size, labels[:,1:-1], label_sizes, blank, 0)
 
             if args.sample_num > 1:
                 ctc_out = ctc_out.unsqueeze(1).repeat(1, args.sample_num, 1, 1).reshape(-1, ctc_out.size(1), ctc_out.size(2))
@@ -407,9 +397,9 @@ class CassNAT(nn.Module):
             if args.decode_type == 'ctc_att':
                 aligned_seq_shift, ylen, ymax = self.beam_path_align(ctc_out, src_mask, src_size, blank, ctc_top_seqs, args.sample_num)
             elif args.decode_type == 'oracle_att':
-                aligned_seq_shift, ylen, ymax = self.viterbi_align(ctc_out, src_mask, src_size, labels[:,1:-1], label_sizes, blank, args.sample_dist, 0)
+                aligned_seq_shift, ylen, ymax = self.viterbi_align(ctc_out, src_mask, src_size, labels[:,1:-1], label_sizes, blank, 0)
             else:             
-                aligned_seq_shift, ylen, ymax = self.best_path_align(ctc_out, src_mask, src_size, blank, args.sample_dist, args.sample_num, args.threshold)
+                aligned_seq_shift, ylen, ymax = self.best_path_align(ctc_out, src_mask, src_size, blank, args.sample_num, args.threshold)
             
             if args.test_hitrate and args.sample_num < 2:
                 args.total += (aligned_seq_shift1 != 0).sum().item()
@@ -450,12 +440,10 @@ class CassNAT(nn.Module):
         else:
             tgt_mask = tgt_mask1
 
-        if args.use_src:
-            if args.src_trigger:
-                src_mask = trigger_mask
-            dec_h = self.decoder(pred_embed, enc_h, src_mask, tgt_mask)
-        else:
-            dec_h = self.decoder(pred_embed, tgt_mask)
+        if args.src_trigger:
+            src_mask = trigger_mask
+        dec_h = self.decoder(pred_embed, enc_h, src_mask, tgt_mask)
+
         att_out = self.att_generator(dec_h)
         
         if args.sample_num > 1:
@@ -597,145 +585,4 @@ class CassNAT(nn.Module):
                             if args.length_penalty is not None else lambda x:x['score']                
                 batch_top_seqs[b] = sorted(all_seqs[b], key=sort_f, reverse=True)[:args.beam_width]
         return batch_top_seqs, args
-
-    def beam_decode_adapt_num(self, src, x_mask, src_size, vocab, args, lm_model=None, ctc_top_seqs=None, labels=None, label_sizes=None):
-        """
-        Use batch size 1 to do adpative path samping, not useful.
-        """
-        sos = vocab.word2index['sos']
-        eos = vocab.word2index['eos']
-        blank = vocab.word2index['blank']
-
-        x, src_mask = self.src_embed(src, x_mask)
-        enc_h = self.encoder(x, src_mask)
-        ctc_out = self.ctc_generator(enc_h)
-        bs, xmax, _ = ctc_out.size()
-        src_size = (src_size * xmax).long()
-        mask = (ctc_out.max(-1)[0].exp() < 0.9).unsqueeze(-1)
-        topk = ctc_out.topk(2, -1)[1]
-        sample_num = min(args.sample_num, 2 ** mask.sum().item())
-        
-        topk = topk.repeat(sample_num, 1, 1)
-        mask = mask.repeat(sample_num, 1, 1)
-        enc_h = enc_h.repeat(sample_num, 1, 1)
-        src_mask = src_mask.repeat(sample_num, 1, 1)
-        src_size = src_size.repeat(sample_num).reshape(-1)
-
-        select = torch.randint(0, 2, (topk.size(0), topk.size(1), 1)).type_as(topk).masked_fill(mask==0, 0)
-        select.index_fill_(0, torch.arange(0, bs, sample_num).type_as(select), 0)
-        best_paths = topk.gather(-1, select).squeeze(-1)
-        
-        best_paths = best_paths.masked_fill(src_mask.squeeze(1)==0, 0)
-        aligned_seq_shift = best_paths.new_zeros(best_paths.size())
-        aligned_seq_shift[:, 1:] = best_paths[:,:-1]
-        dup = best_paths == aligned_seq_shift
-        best_paths.masked_fill_(dup, 0)
-        aligned_seq_shift[:,1:] = best_paths[:,:-1]
-        ylen = torch.sum((aligned_seq_shift != blank), 1)
-        ymax = torch.max(ylen).item()
-
-        trigger_mask = (aligned_seq_shift != blank).cumsum(1).unsqueeze(1).repeat(1, ymax+1, 1)
-        trigger_mask = trigger_mask == torch.arange(ymax+1).type_as(trigger_mask).unsqueeze(0).unsqueeze(2)
-        trigger_mask[:,-1:,:].masked_fill_(src_mask==0, 0)
-        trigger_mask[:,-1,:].scatter_(1, src_size.unsqueeze(1)-1, 1)
-        
-        ylen = ylen + 1
-        ymax += 1
-        trigger_mask = trigger_mask & src_mask
-
-        bs, _, d_model = enc_h.size()
-        tgt_mask1 = torch.full((bs, ymax), 1).type_as(src_mask)
-        tgt_mask1 = tgt_mask1.scatter(1, ylen.unsqueeze(1)-1, 0).cumprod(1)
-        tgt_mask1 = tgt_mask1.scatter(1, ylen.unsqueeze(1)-1, 1).unsqueeze(1)
-        
-        # 3. Extract Acoustic embedding and Map it to Word embedding
-        pe = self.pe.type_as(src).unsqueeze(0).repeat(bs, 1, 1)[:,:ymax,:]
-        ac_embed = self.acembed_extractor(pe, enc_h, trigger_mask)
-        pred_embed = self.embed_mapper(ac_embed, tgt_mask1)
-        tgt_mask = tgt_mask1
-
-        if args.use_src:
-            if args.src_trigger:
-                src_mask = trigger_mask
-            dec_h = self.decoder(pred_embed, enc_h, src_mask, tgt_mask)
-        else:
-            dec_h = self.decoder(pred_embed, tgt_mask)
-        att_out = self.att_generator(dec_h)
-        
-        _, seql, dim = att_out.size()
-        att_pred = att_out.argmax(-1)
-        lm_input = torch.cat([att_out.new_zeros(att_out.size(0), 1).fill_(sos).long(), att_pred[:,:-1]], 1)
-        lm_tgt_mask = tgt_mask1 & self.subsequent_mask(ymax).type_as(tgt_mask1)
-        lm_out = lm_model(lm_input, lm_tgt_mask)
-        lm_score = torch.gather(lm_out, -1, att_pred.unsqueeze(-1)).squeeze(-1)
-        lm_score = lm_score.masked_fill(tgt_mask.squeeze(1)==0, 0)
-        att_out = att_out.masked_fill(tgt_mask.transpose(1,2)==0, 0)
-        prob_sum = lm_score.sum(-1) / (lm_score != 0).sum(-1).float()
-        max_indices = prob_sum.max(-1, keepdim=True)[1]
-        att_out = torch.gather(att_out, 0, max_indices.unsqueeze(1).unsqueeze(2).repeat(1,seql,dim))
-        bs = att_out.size(0)
-        ylen = ylen.gather(0, max_indices)
-        
-        ys = torch.ones(1, 1).fill_(sos).long()
-        if args.use_gpu:
-            ys = ys.cuda()
-        
-        batch_top_seqs = [{'ys': ys, 'score': 0.0, 'hyp': [sos] } ]
-        
-        for i in range(ymax):
-            # batchify the batch and beam
-            all_seqs, ys, att_prob = [], [], []
-            
-            for seq in batch_top_seqs:
-                if i > ylen[0].item():
-                    all_seqs.append(seq)
-                    continue
-        
-                att_prob.append(att_out[0,i:i+1,:])
-                if args.lm_weight > 0:
-                    ys.append(seq['ys'])
-
-            if len(att_prob) == 0: #if no beam active, end decoding
-                break
-            # concat and get decoder out probability
-            att_prob = torch.cat(att_prob, dim=0)
-       
-            if args.lm_weight > 0:
-                ys = torch.cat(ys, dim=0)
-
-            if args.lm_weight > 0:
-                tgt_mask = (ys != args.padding_idx).unsqueeze(1)
-                tgt_mask = tgt_mask & self.subsequent_mask(ys.size(-1)).type_as(src_mask)
-                lm_prob = lm_model(ys, tgt_mask)[:,-1,:]
-                local_prob = att_prob + args.lm_weight * lm_prob
-            else:
-                local_prob = att_prob
-            
-            local_scores, indices = torch.topk(local_prob, args.beam_width, dim=-1)
-            
-            # distribute scores to corresponding sample and beam
-            s_idx = -1
-            for seq in batch_top_seqs:
-                if i > ylen[0].item():
-                   continue
-                s_idx += 1
-
-                for j in range(args.beam_width):
-                    next_token = indices[s_idx][j]
-                    token_score = local_scores[s_idx][j].item()
-                    score = seq['score'] + token_score
-
-                    if args.lm_weight > 0:
-                        ys = torch.cat([seq['ys'],next_token.view(-1,1)],dim=-1)
-                    else:
-                        ys = seq['ys']
-
-                    rs_seq = {'ys':ys, 'score': score, 'hyp': seq['hyp']+ [next_token.item()] } 
-                    all_seqs.append(rs_seq)
-
-            sort_f = lambda x:x['score'] + (len(x['hyp'])-1) * args.length_penalty \
-                        if args.length_penalty is not None else lambda x:x['score']                
-            batch_top_seqs = sorted(all_seqs, key=sort_f, reverse=True)[:args.beam_width]
-
-        return [batch_top_seqs]
 
