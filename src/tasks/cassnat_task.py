@@ -166,7 +166,7 @@ class CassNATTask(BaseTask):
             
             self.model.eval()
             with torch.no_grad():
-                args.sample_topk = 0, 0
+                args.sample_topk = 0
                 valid_loss, valid_wer, valid_ctc_wer = self.run_one_epoch(epoch, args, is_train=False)
             
             temp_lr = self.optimizer.param_groups[0]['lr'] if args.optim_type == "normal" else self.optimizer.optimizer.param_groups[0]['lr']

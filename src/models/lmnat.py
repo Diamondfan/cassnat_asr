@@ -3,6 +3,8 @@
 
 import copy
 import math
+import yaml
+import contextlib
 import editdistance as ed
 import torch
 import torch.nn as nn
@@ -17,6 +19,9 @@ from models.blocks import TrfEncoder, ConEncoder
 from models.blocks import ConSAD, Con3MAD, TrfSAD, Trf3MAD, ConAcExtra, TrfAcExtra
 from utils.loss import LabelSmoothing, KLDivLoss
 from utils.ctc_prefix import logzero, logone, CTCPrefixScore
+
+class Config():
+    name = "config"
 
 def make_model(input_size, args):
     c = copy.deepcopy
@@ -57,9 +62,22 @@ def make_model(input_size, args):
     interce_gen = Generator(args.d_model, args.vocab_size, add_norm=True) if args.interce_alpha > 0 else None
     pe = create_pe(args.d_model)
 
+    # set up text_encoder
+    with open(args.text_encoder_config) as f:
+        text_encoder_config = yaml.safe_load(f)
+
+    text_encoder_args = Config()
+    for key, val in text_encoder_config.items():
+        setattr(text_encoder_args, key, val)
+        
+    if args.text_encoder_type == "lm":        
+        text_encoder_args.vocab_size = args.text_encoder_vocab_size
+        from models.lm import make_model as make_lm_model
+        text_encoder = make_lm_model(text_encoder_args)
+            
     model = LMNAT(
                 ConvEmbedding(input_size, args.d_model, args.dropout, enc_position),
-                encoder, Extra, Sad, Mad, c(generator), c(generator), pe, interctc_gen, interce_gen, args)
+                encoder, Extra, Sad, Mad, c(generator), c(generator), text_encoder, pe, interctc_gen, interce_gen, args)
 
     if args.interce_alpha > 0:
         if args.interce_layer <= args.N_self_dec:
@@ -102,7 +120,7 @@ class Generator(nn.Module):
         return F.log_softmax(self.proj(x)/T, dim=-1)
 
 class LMNAT(nn.Module):
-    def __init__(self, src_embed, encoder, taee, sad, mad, ctc_gen, att_gen, pe, interctc_gen, interce_gen, args):
+    def __init__(self, src_embed, encoder, taee, sad, mad, ctc_gen, att_gen, text_encoder, pe, interctc_gen, interce_gen, args):
         super(LMNAT, self).__init__()
         self.src_embed = src_embed
         self.encoder = encoder
@@ -112,6 +130,7 @@ class LMNAT(nn.Module):
         self.ctc_generator = ctc_gen
         self.att_generator = att_gen
         self.pe = pe
+        self.text_encoder = text_encoder
         self.ctc_loss = torch.nn.CTCLoss(reduction='mean', zero_infinity=True)
         self.att_loss = LabelSmoothing(args.vocab_size, args.padding_idx, args.label_smooth)
 
@@ -122,7 +141,7 @@ class LMNAT(nn.Module):
             self.interce_generator = interce_gen
             self.interce_loss = LabelSmoothing(args.vocab_size, args.padding_idx, args.label_smooth)
             
-    def forward(self, src, src_mask, src_size, tgt_label, label_sizes, text_embed, text_mask, args):
+    def forward(self, src, src_mask, src_size, tgt_label, label_sizes, tokenizer, text_encoder_tokenizer, args):
         # 1. compute ctc output
         x, x_mask = self.src_embed(src, src_mask)
         enc_h = self.encoder(x, x_mask, args.interctc_alpha, args.interctc_layer)
@@ -178,6 +197,27 @@ class LMNAT(nn.Module):
             tgt_mask = tgt_mask_bidi
             true_embed = None
 
+        # 5. obtain text_embed from ctc_output
+        greedy_results, _, _ = self.best_path_align(ctc_out, x_mask, src_size, blank, 0)
+
+        #text_input = torch.zeros(greedy_results.size(0), ymax).type_as(greedy_results)
+        text_inputs = []
+        for cand in range(greedy_results.size(0)):
+            tokens = greedy_results[cand].masked_select(greedy_results[cand] != 0)
+            text = tokenizer.tokens2text(tokens.cpu().numpy())
+            new_tokens = text_encoder_tokenizer.text2tokens(text)
+            text_inputs.append(new_tokens)
+        token_max = max([len(inp) for inp in text_inputs]) + 1 #sos
+        
+        text_input = torch.zeros(bs, token_max).type_as(greedy_results)
+        text_input[:,0] = 1
+        for b in range(bs):
+            text_input[b,1:len(text_inputs[b])+1] = torch.Tensor(text_inputs[b]).type_as(greedy_results)
+
+        text_mask = (text_input != 0).unsqueeze(1)
+        with torch.no_grad() if args.freeze_text_encoder else contextlib.ExitStack():
+            text_embed, text_mask = self.text_encoder.extract_features(text_input, text_mask)
+            
         if args.src_trigger:
             x_mask = trigger_mask
         dec_h = self.mad(pred_embed, enc_h, text_embed, x_mask, text_mask, tgt_mask, args.mixce_alpha, args.interce_layer)

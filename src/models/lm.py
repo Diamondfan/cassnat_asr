@@ -55,9 +55,9 @@ class TransformerLM(nn.Module):
         return lm_out
 
     def extract_features(self, tgt, tgt_mask):
-        tgt_mask = tgt_mask & self._subsequent_mask(tgt.size(-1)).type_as(tgt_mask)
+        tgt_mask_tril = tgt_mask & self._subsequent_mask(tgt.size(-1)).type_as(tgt_mask)
         tgt = self.text_embed(tgt)
-        enc_text = self.encoder(tgt, tgt_mask)
+        enc_text = self.encoder(tgt, tgt_mask_tril)
         return enc_text, tgt_mask
 
     def _subsequent_mask(self, size):

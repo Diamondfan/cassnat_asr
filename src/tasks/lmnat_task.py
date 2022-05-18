@@ -6,16 +6,15 @@ import yaml
 import time
 import math
 import torch
-import contextlib
 from torch.distributed import ReduceOp
 
 import utils.util as util
 from tasks import BaseTask
 from data.vocab import Vocab
-from utils.optimizer import get_optim
+from data.tokenizer import SPTokenizer
+from utils.optimizer import get_optim, get_mul_optim
 from models import make_lmnat_model
 from utils.wer import ctc_greedy_wer, att_greedy_wer
-from data.speech_loader import SpeechDataset, DynamicDataset, SpeechDataLoader
 
 class Config():
     name = 'config'
@@ -25,13 +24,18 @@ class LMNATTask(BaseTask):
         super(LMNATTask, self).__init__(args)
         self.vocab = Vocab(args.vocab_file, args.rank)
         args.vocab_size = self.vocab.n_words
+        self.tokenizer = SPTokenizer(args.tokenizer, self.vocab)
+
+        if args.text_encoder_type == "lm":
+            self.text_encoder_vocab = Vocab(args.text_encoder_vocab, args.rank)
+            args.text_encoder_vocab_size = self.text_encoder_vocab.n_words
+            self.text_encoder_tokenizer = SPTokenizer(args.text_encoder_tokenizer, self.text_encoder_vocab)
 
         if mode == "train":
             self.set_model(args)
             self.set_optimizer(args)
-            self.load_model(args)
             self.set_dataloader(args)
-            self.set_text_encoder(args)
+            self.load_model(args)
 
         if mode == "test":
             args.rank = 0
@@ -40,75 +44,30 @@ class LMNATTask(BaseTask):
             args.interce_alpha = 0
             args.interce_layer = 0
             args.label_smooth = 0
-            args.text_encoder_path = ""
-            args.exp_dir="./"
-            args.freeze_text_encoder = False
             self.set_model(args)
-            self.set_text_encoder(args)
-            self.set_test_dataloader(args)
             self.load_test_model(args.resume_model)
+            self.set_test_dataloader(args)
             self.model_stats(0, False, False)
         
     def set_model(self, args):
         assert args.input_size == (args.left_ctx + args.right_ctx + 1) // args.skip_frame * args.n_features
         self.model = make_lmnat_model(args.input_size, args)
     
-    def set_text_encoder(self, args):
-        with open(args.text_encoder_config) as f:
-            text_encoder_config = yaml.safe_load(f)
-        text_encoder_args = Config()
-        for key, val in text_encoder_config.items():
-            setattr(text_encoder_args, key, val)
-        
-        last_checkpoint = os.path.join(args.exp_dir, 'model.last.mdl')
-        if os.path.exists(last_checkpoint) or args.text_encoder_path:
-            if args.rank == 0:
-                print("Loading pretrained text encoder model from {}".format(args.text_encoder_path))
-            last_checkpoint = last_checkpoint if os.path.exists(last_checkpoint) else args.text_encoder_path
-            checkpoint = torch.load(last_checkpoint, map_location='cpu')
-        else:
-            checkpoint = None
-
-        if args.text_encoder_type == "lm":        
-            #text_encoder_args.vocab_size = self.vocab.n_words        
-            from models.lm import make_model as make_lm_model
-            text_encoder = make_lm_model(text_encoder_args)
-            
-            if checkpoint:
-                try:
-                    model_state = checkpoint["state_dict"]
-                except:
-                    model_state = checkpoint["text_encoder_state"]
-
-        if args.freeze_text_encoder or checkpoint:   
-            for name, param in text_encoder.named_parameters():
-                if args.freeze_text_encoder:
-                    param.data.requires_grad = False
-
-                if checkpoint:
-                    if name not in model_state:
-                        name = "module." + name
-                    param.data.copy_(model_state[name])
-
-        if args.use_gpu:
-            text_encoder = text_encoder.cuda()
-
-        self.text_encoder = text_encoder
-
     def load_model(self, args):
         last_checkpoint = os.path.join(args.exp_dir, 'model.last.mdl')
         if os.path.exists(last_checkpoint):
             self.load_checkpoint(last_checkpoint, args.rank, args.use_gpu)
         else:
-            self.load_pretrained_model(args.resume_model, args.rank, args.init_encoder, args.fix_encoder)
+            self.load_pretrained_model(args)
     
         self.model_stats(args.rank, args.use_slurm, args.distributed)
             
-    def load_pretrained_model(self, resume_model, rank, init_encoder, fix_encoder): 
-        if init_encoder and resume_model:
-            if rank == 0:
-                print("Loading model from {}".format(resume_model))
-            checkpoint = torch.load(resume_model, map_location='cpu')['model_state']
+    def load_pretrained_model(self, args):
+        if args.init_encoder and args.resume_model:
+            if args.rank == 0:
+                print("Loading pretrained encoder from {}".format(args.resume_model))
+            checkpoint = torch.load(args.resume_model, map_location='cpu')['model_state']
+            
             for name, param in self.model.named_parameters():
                 if name.split('.')[0] in ['src_embed', 'encoder', 'ctc_generator', 'interctc_generator']:
                     try:
@@ -120,8 +79,29 @@ class LMNATTask(BaseTask):
                         if rank == 0:
                             print("No param of {} in resume model".format(name))
 
-                    if fix_encoder:
+                    if args.fix_encoder:
                         param.requires_grad = False
+
+        if args.text_encoder_path:
+            if args.rank == 0:
+                print("Loading pretrained text encoder from {}".format(args.text_encoder_path))
+            
+            if args.text_encoder_type == "lm":
+                checkpoint = torch.load(args.text_encoder_path, map_location='cpu')['state_dict']
+
+            for name, param in self.model.named_parameters():
+                name = name.split('.')
+                if name[0] == "text_encoder":
+
+                    name = '.'.join(name[1:])
+                    if name in checkpoint:
+                        para.data.copy_(checkpoint[name])
+                    else:
+                        param.data.copy_(checkpoint['module.'+name])
+
+                    if args.freeze_text_encoder:
+                        param.requires_grad = False
+        
         self.start_epoch = 0
 
     def load_test_model(self, resume_model):
@@ -129,16 +109,10 @@ class LMNATTask(BaseTask):
             print("Loading model from {}".format(resume_model))
             checkpoint = torch.load(resume_model, map_location='cpu')
             model_state = checkpoint["model_state"]
-            text_encoder_state = checkpoint["text_encoder_state"]
             for name, param in self.model.named_parameters():
                 if name not in model_state:
                     name = "module." + name
                 param.data.copy_(model_state[name])
-
-            for name, param in self.text_encoder.named_parameters():
-                if name not in text_encoder_state:
-                    name = "module." + name
-                param.data.copy_(text_encoder_state[name])
 
     def load_lm_model(self, args):
         if args.lm_weight > 0 or args.ctc_lm_weight > 0:
@@ -179,42 +153,23 @@ class LMNATTask(BaseTask):
 
         self.lm_model = lm_model
 
-    def set_dataloader(self, args):
-        dataset_types = {"SpeechDataset": (SpeechDataset, args.batch_size), "DynamicDataset": (DynamicDataset, 1)}
-        Dataset, actual_bs = dataset_types[args.dataset_type]
-
-        trainset = Dataset(self.vocab, args.train_paths, args)
-        if args.use_cmvn:
-            trainset._load_cmvn(args.global_cmvn)
-        train_loader = SpeechDataLoader(trainset, actual_bs, args.padding_idx, num_workers=args.load_data_workers, 
-                                       distributed=args.distributed, shuffle=True)
-        if args.rank == 0:
-            print("Finish Loading training files. Number batches: {}".format(len(train_loader)))
-
-        args.use_specaug = False  # specaug cannot be applied to valid
-        validset = Dataset(self.vocab, args.dev_paths, args)
-        if args.use_cmvn:
-            validset._load_cmvn(args.global_cmvn)
-        valid_loader = SpeechDataLoader(validset, actual_bs, args.padding_idx, num_workers=args.load_data_workers, 
-                                        distributed=False, shuffle=False)
-        if args.rank == 0:
-            print("Finish Loading dev files. Number batches: {}".format(len(valid_loader)))
-
-        self.train_loader = train_loader
-        self.valid_loader = valid_loader
-
-    def set_test_dataloader(self, args):
-        args.use_specaug = False
-        args.specaug_conf = None
-        testset = SpeechDataset(self.vocab, args.test_paths, args)
-        if args.use_cmvn:
-            testset._load_cmvn(args.global_cmvn)
-        test_loader = SpeechDataLoader(testset, args.batch_size, args.padding_idx, num_workers=args.load_data_workers, shuffle=False)
-        print("Finish Loading test files. Number batches: {}".format(len(test_loader)))
-        self.test_loader = test_loader
-
     def set_optimizer(self, args):
-        self.optimizer = get_optim(args.optim_type, self.model, args) 
+        def func(module):
+            return filter(lambda p: p.requires_grad, module.parameters())
+    
+        pretrained_encoders = [list(func(self.model.src_embed)), list(func(self.model.encoder)),
+            list(func(self.model.ctc_generator))]
+        if args.interctc_alpha > 0:
+            pretrained_encoders[-1] += list(func(self.model.interctc_generator))
+
+        decoder_params = list(func(self.model.taee)) + list(func(self.model.sad)) \
+                            + list(func(self.model.mad)) + list(func(self.model.att_generator))
+        if args.interce_alpha > 0:
+            decoder_params += list(func(self.model.interce_generator))
+
+        pretrained_encoders.extend([decoder_params, list(func(self.model.text_encoder))])
+        update_param_groups = pretrained_encoders
+        self.optimizer = get_mul_optim(args.optim_type, update_param_groups, args) 
         
     def run(self, args):
         best_epoch = 0
@@ -225,7 +180,6 @@ class LMNATTask(BaseTask):
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='min', factor=args.anneal_lr_ratio, 
                                                                     patience=args.patience, min_lr=args.min_lr)
         
-        sample_dist = args.sample_dist
         sample_topk = args.sample_topk
 
         for epoch in range(self.start_epoch, args.epochs):
@@ -234,15 +188,12 @@ class LMNATTask(BaseTask):
         
             self.train_loader.dataset.use_specaug = (epoch >= args.specaug_start_epoch)    
             self.model.train()
-            self.text_encoder.train()
-            args.sample_dist = sample_dist
             args.sample_topk = sample_topk
             train_loss, train_wer, train_ctc_wer = self.run_one_epoch(epoch, args, is_train=True)
             
             self.model.eval()
-            self.text_encoder.eval()
             with torch.no_grad():
-                args.sample_dist, args.sample_topk = 0, 0
+                args.sample_topk = 0
                 valid_loss, valid_wer, valid_ctc_wer = self.run_one_epoch(epoch, args, is_train=False)
             
             temp_lr = self.optimizer.param_groups[0]['lr'] if args.optim_type == "normal" else self.optimizer.optimizer.param_groups[0]['lr']
@@ -262,7 +213,6 @@ class LMNATTask(BaseTask):
                 checkpoint = {'epoch': epoch, 
                               'optimizer': self.optimizer.state_dict(),
                               'model_state': self.model.state_dict(),
-                              'text_encoder_state': self.text_encoder.state_dict(),
                             }                
                 last_output_file = args.exp_dir + '/model.last.mdl'
                 torch.save(checkpoint, last_output_file)
@@ -279,7 +229,6 @@ class LMNATTask(BaseTask):
                     checkpoint = {'epoch': epoch, 
                                     'optimizer': self.optimizer.state_dict(),
                                     'model_state': self.model.state_dict(),
-                                    'text_encoder_state': self.text_encoder.state_dict(),
                                 }
                     torch.save(checkpoint, output_file)
             
@@ -318,20 +267,15 @@ class LMNATTask(BaseTask):
             start = time.time()
             utt_list, feats, labels, feat_sizes, label_sizes = data
             src, src_mask = feats, (feats[:,:,0] != args.padding_idx).unsqueeze(1)
-            tgt, tgt_label = labels[:,:-1], labels[:,1:]
-            tgt_mask = (tgt != args.padding_idx).unsqueeze(1)
+            tgt_label = labels[:,1:]
             tokens = (tgt_label != args.padding_idx).sum().item()
             
             if args.use_gpu:
                 src, src_mask = src.cuda(), src_mask.cuda()
-                tgt, tgt_label = tgt.cuda(), tgt_label.cuda()
-                tgt_mask = tgt_mask.cuda()
+                tgt_label = tgt_label.cuda()
                 feat_sizes, label_sizes = feat_sizes.cuda(), label_sizes.cuda()
             
-            with torch.no_grad() if args.freeze_text_encoder else contextlib.ExitStack():
-                text_embed, text_mask = self.text_encoder.extract_features(tgt, tgt_mask)
-            
-            ctc_out, att_out, loss, ctc_loss, att_loss = self.model(src, src_mask, feat_sizes, tgt_label, label_sizes, text_embed, text_mask, args)
+            ctc_out, att_out, loss, ctc_loss, att_loss = self.model(src, src_mask, feat_sizes, tgt_label, label_sizes, self.tokenizer, self.text_encoder_tokenizer, args)
             bs, max_feat_size, _ = ctc_out.size()
             feat_sizes = (feat_sizes * max_feat_size).long()
             

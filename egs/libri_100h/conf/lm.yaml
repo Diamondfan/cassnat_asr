@@ -4,7 +4,7 @@ d_model: 512
 d_ff: 2048
 n_head: 8
 dropout: 0
-vocab_size: 4990
+vocab_size: 5003
 max_len: 120
 
 noam_factor: 10.0
