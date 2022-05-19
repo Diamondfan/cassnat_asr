@@ -198,9 +198,8 @@ class LMNAT(nn.Module):
             true_embed = None
 
         # 5. obtain text_embed from ctc_output
-        greedy_results, _, _ = self.best_path_align(ctc_out, x_mask, src_size, blank, 0)
-
-        #text_input = torch.zeros(greedy_results.size(0), ymax).type_as(greedy_results)
+        #greedy_results, _, _ = self.best_path_align(ctc_out, x_mask, src_size, blank, 0)
+        greedy_results = aligned_seq_shift  # using transcript
         text_inputs = []
         for cand in range(greedy_results.size(0)):
             tokens = greedy_results[cand].masked_select(greedy_results[cand] != 0)
@@ -375,12 +374,13 @@ class LMNAT(nn.Module):
         ret = torch.ones(size, size, dtype=torch.uint8)
         return torch.tril(ret, out=ret).unsqueeze(0)
     
-    def beam_decode(self, src, x_mask, src_size, vocab, args, lm_model=None, text_encoder=None, ctc_top_seqs=None, labels=None, label_sizes=None):
+    def beam_decode(self, src, x_mask, src_size, args, lm_model, tokenizer, text_encoder_tokenizer, ctc_top_seqs=None, labels=None, label_sizes=None):
         """att decoding with rnnlm and ctc out probability
 
         args.rnnlm: path of rnnlm model
         args.ctc_weight: use ctc out probability for joint decoding when >0.
         """
+        vocab = tokenizer.vocab
         bs = src.size(0)
         sos = vocab.word2index['sos']
         eos = vocab.word2index['eos']
@@ -450,14 +450,21 @@ class LMNAT(nn.Module):
             src_mask = trigger_mask
 
         # 5. obtain text_embed from ctc_output
-        text_input = torch.zeros(aligned_seq_shift.size(0), ymax).type_as(aligned_seq_shift)
+        text_inputs = []
+        for cand in range(aligned_seq_shift.size(0)):
+            tokens = aligned_seq_shift[cand].masked_select(aligned_seq_shift[cand] != 0)
+            text = tokenizer.tokens2text(tokens.cpu().numpy())
+            new_tokens = text_encoder_tokenizer.text2tokens(text)
+            text_inputs.append(new_tokens)
+        token_max = max([len(inp) for inp in text_inputs]) + 1 #sos
+
+        text_input = torch.zeros(aligned_seq_shift.size(0), token_max).type_as(aligned_seq_shift)
         text_input[:,0] = sos
         for cand in range(aligned_seq_shift.size(0)):
-            text = aligned_seq_shift[cand].masked_select(aligned_seq_shift[cand] != 0)
-            text_input[cand,1:text.size(0)+1] = text
+            text_input[cand,1:len(text_inputs[cand])+1] = torch.Tensor(text_inputs[cand]).type_as(aligned_seq_shift)
 
         text_mask = (text_input != 0).unsqueeze(1)
-        text_embed, text_mask = text_encoder.extract_features(text_input, text_mask)
+        text_embed, text_mask = self.text_encoder.extract_features(text_input, text_mask)
         
         dec_h = self.mad(pred_embed, enc_h, text_embed, src_mask, text_mask, tgt_mask)
         att_out = self.att_generator(dec_h)

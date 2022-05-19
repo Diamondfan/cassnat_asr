@@ -323,7 +323,7 @@ class LMNATTask(BaseTask):
         args.length_correct, args.length_total = 0, 0
         with torch.no_grad():
             self.model.eval()
-            self.text_encoder.eval()
+
             if self.lm_model is not None and args.rank_model != "n-gram":
                 self.lm_model.eval()
 
@@ -339,7 +339,7 @@ class LMNATTask(BaseTask):
                 if args.decode_type == 'ctc_only':
                     recog_results = ctc_beam_decode(self.model, src, src_mask, feat_sizes, self.vocab, args, self.lm_model)
                 else:
-                    recog_results, args = self.model.beam_decode(src, src_mask, feat_sizes, self.vocab, args, self.lm_model, self.text_encoder, labels=labels, label_sizes=label_sizes)
+                    recog_results, args = self.model.beam_decode(src, src_mask, feat_sizes, args, self.lm_model, self.tokenizer, self.text_encoder_tokenizer, labels, label_sizes)
                 
                 for j in range(len(utt_list)):
                     hyp = []

@@ -18,7 +18,8 @@ class SPTokenizer(object):
 
     def text2tokens(self, text):
         words = self.sp.EncodeAsPieces(text)
-        tokens = [self.vocab.word2index[w] for w in words]
+        tokens = [self.vocab.word2index[w] if w in self.vocab.word2index else
+                    self.vocab.word2index['unk'] for w in words]
         return tokens
 
     def tokens2text(self, tokens):
