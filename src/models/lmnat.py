@@ -63,21 +63,28 @@ def make_model(input_size, args):
     pe = create_pe(args.d_model)
 
     # set up text_encoder
-    with open(args.text_encoder_config) as f:
-        text_encoder_config = yaml.safe_load(f)
-
-    text_encoder_args = Config()
-    for key, val in text_encoder_config.items():
-        setattr(text_encoder_args, key, val)
-        
     if args.text_encoder_type == "lm":        
+        with open(args.text_encoder_config) as f:
+            text_encoder_config = yaml.safe_load(f)
+
+        text_encoder_args = Config()
+        for key, val in text_encoder_config.items():
+            setattr(text_encoder_args, key, val)
+        
         text_encoder_args.vocab_size = args.text_encoder_vocab_size
         from models.lm import make_model as make_lm_model
         text_encoder = make_lm_model(text_encoder_args)
-            
+
+    elif args.text_encoder_type == 'gpt2':
+        from models.gpt2 import make_gpt2_model
+        text_encoder = make_gpt2_model(args.text_encoder_path, args.gpt2_name)
+
+    dim_map = nn.Linear(text_encoder.dim, args.d_model)
+
     model = LMNAT(
                 ConvEmbedding(input_size, args.d_model, args.dropout, enc_position),
-                encoder, Extra, Sad, Mad, c(generator), c(generator), text_encoder, pe, interctc_gen, interce_gen, args)
+                encoder, Extra, Sad, Mad, c(generator), c(generator), text_encoder, dim_map,
+                pe, interctc_gen, interce_gen, args)
 
     if args.interce_alpha > 0:
         if args.interce_layer <= args.N_self_dec:
@@ -120,7 +127,7 @@ class Generator(nn.Module):
         return F.log_softmax(self.proj(x)/T, dim=-1)
 
 class LMNAT(nn.Module):
-    def __init__(self, src_embed, encoder, taee, sad, mad, ctc_gen, att_gen, text_encoder, pe, interctc_gen, interce_gen, args):
+    def __init__(self, src_embed, encoder, taee, sad, mad, ctc_gen, att_gen, text_encoder, dim_map, pe, interctc_gen, interce_gen, args):
         super(LMNAT, self).__init__()
         self.src_embed = src_embed
         self.encoder = encoder
@@ -131,6 +138,7 @@ class LMNAT(nn.Module):
         self.att_generator = att_gen
         self.pe = pe
         self.text_encoder = text_encoder
+        self.dim_map = dim_map
         self.ctc_loss = torch.nn.CTCLoss(reduction='mean', zero_infinity=True)
         self.att_loss = LabelSmoothing(args.vocab_size, args.padding_idx, args.label_smooth)
 
@@ -198,25 +206,29 @@ class LMNAT(nn.Module):
             true_embed = None
 
         # 5. obtain text_embed from ctc_output
-        #greedy_results, _, _ = self.best_path_align(ctc_out, x_mask, src_size, blank, 0)
-        greedy_results = aligned_seq_shift  # using transcript
+        greedy_results, _, _ = self.best_path_align(ctc_out, x_mask, src_size, blank, 0)
+        #greedy_results = aligned_seq_shift  # using transcript
         text_inputs = []
         for cand in range(greedy_results.size(0)):
             tokens = greedy_results[cand].masked_select(greedy_results[cand] != 0)
             text = tokenizer.tokens2text(tokens.cpu().numpy())
             new_tokens = text_encoder_tokenizer.text2tokens(text)
             text_inputs.append(new_tokens)
-        token_max = max([len(inp) for inp in text_inputs]) + 1 #sos
+        token_max = max([len(inp) for inp in text_inputs])
         
         text_input = torch.zeros(bs, token_max).type_as(greedy_results)
-        text_input[:,0] = 1
         for b in range(bs):
-            text_input[b,1:len(text_inputs[b])+1] = torch.Tensor(text_inputs[b]).type_as(greedy_results)
+            text_input[b,:len(text_inputs[b])] = torch.Tensor(text_inputs[b]).type_as(greedy_results)
 
         text_mask = (text_input != 0).unsqueeze(1)
         with torch.no_grad() if args.freeze_text_encoder else contextlib.ExitStack():
-            text_embed, text_mask = self.text_encoder.extract_features(text_input, text_mask)
-            
+            if args.text_encoder_type == "lm":
+                text_embed, text_mask = self.text_encoder.extract_features(text_input, text_mask)
+            elif args.text_encoder_type == "gpt2":
+                text_embed, _ = self.text_encoder.extract_features(text_input)               
+
+        # 6. decoder with acoustic and text ouputs
+        text_embed = self.dim_map(text_embed)
         if args.src_trigger:
             x_mask = trigger_mask
         dec_h = self.mad(pred_embed, enc_h, text_embed, x_mask, text_mask, tgt_mask, args.mixce_alpha, args.interce_layer)

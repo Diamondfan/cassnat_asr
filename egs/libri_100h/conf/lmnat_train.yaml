@@ -22,12 +22,21 @@ init_encoder: True
 fix_encoder: False
 tokenizer: "data/dict/bpemodel_unigram_1024.model"
 
-text_encoder_type: 'lm'
-text_encoder_path: "exp/libri_tfunilm16x512_4card_cosineanneal_ep20_maxlen120/averaged.mdl"
-text_encoder_config: "conf/lm.yaml"
-text_encoder_vocab: "data/dict/vocab_wp_libri_lm.txt"
-text_encoder_tokenizer: "data/dict/bpemodel_unigram_5000.model"
+# load gpt2 model
+text_encoder_type: 'gpt2'
+gpt2_name: "124M"
+text_encoder_path: "/data/ruchao/workdir/language_model/gpt-2/models/"
+init_text_encoder: True
 freeze_text_encoder: True
+
+# load lm model
+#text_encoder_type: 'lm'
+#text_encoder_path: "exp/libri_tfunilm16x512_4card_cosineanneal_ep20_maxlen120/averaged.mdl"
+#text_encoder_config: "conf/lm.yaml"
+#text_encoder_vocab: "data/dict/vocab_wp_libri_lm.txt"
+#text_encoder_tokenizer: "data/dict/bpemodel_unigram_5000.model"
+#init_text_encoder: True
+#freeze_text_encoder: True
 
 #conformer related conf
 use_conv_enc: True
@@ -59,7 +68,7 @@ skip_frame: 1
 
 #noam warm up
 warmup_type: "noam_warmup"  # noam_warmup, custom_exp, custom_linear
-noam_factor: [0.0004, 0.0004, 0.0004, 0.001, 0.001]       #[src_embed, encoder, ctc_gen and interctc gen,  decoders, text_encoder]  # learning rate for noam_wamup, factor for custom_exp
+noam_factor: [0.001, 0.001, 0.001, 0.001, 0.001]       #[src_embed, encoder, ctc_gen and interctc gen,  decoders, text_encoder]  # learning rate for noam_wamup, factor for custom_exp
 warmup_steps: [15000, 15000, 15000, 15000, 15000]
 freeze_steps: [0, 0, 0, 0, 0]
 total_steps: [250000, 250000, 250000, 250000, 250000]           # for custom_linear

@@ -21,7 +21,7 @@ def make_model(args):
     generator = Generator(args.d_model, args.vocab_size)
     
     model = TransformerLM(
-        nn.Sequential(TextEmbedding(args.d_model, args.vocab_size), c(position)), 
+        args.d_model, nn.Sequential(TextEmbedding(args.d_model, args.vocab_size), c(position)), 
         Encoder(args.d_model, c(attn), c(ff), args.dropout, args.N),
         c(generator))
         
@@ -42,8 +42,9 @@ class Generator(nn.Module):
         return F.log_softmax(self.proj(x)/T, dim=-1)
 
 class TransformerLM(nn.Module):
-    def __init__(self, text_embed, encoder, out_gen):
+    def __init__(self, hidden_size, text_embed, encoder, out_gen):
         super(TransformerLM, self).__init__()
+        self.dim = hidden_size
         self.text_embed = text_embed
         self.encoder = encoder
         self.out_generator = out_gen

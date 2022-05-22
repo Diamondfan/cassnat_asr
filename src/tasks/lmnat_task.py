@@ -31,6 +31,12 @@ class LMNATTask(BaseTask):
             args.text_encoder_vocab_size = self.text_encoder_vocab.n_words
             self.text_encoder_tokenizer = SPTokenizer(args.text_encoder_tokenizer, self.text_encoder_vocab)
 
+        elif args.text_encoder_type == "gpt2":
+            from models.gpt2.encoder import get_encoder
+            model_name = args.gpt2_name
+            models_dir = args.text_encoder_path
+            self.text_encoder_tokenizer = get_encoder(model_name, models_dir)
+
         if mode == "train":
             self.set_model(args)
             self.set_optimizer(args)
@@ -82,18 +88,14 @@ class LMNATTask(BaseTask):
                     if args.fix_encoder:
                         param.requires_grad = False
 
-        if args.text_encoder_path:
+        if args.init_text_encoder and args.text_encoder_path:
             if args.rank == 0:
                 print("Loading pretrained text encoder from {}".format(args.text_encoder_path))
             
             if args.text_encoder_type == "lm":
                 checkpoint = torch.load(args.text_encoder_path, map_location='cpu')['state_dict']
 
-            for name, param in self.model.named_parameters():
-                name = name.split('.')
-                if name[0] == "text_encoder":
-
-                    name = '.'.join(name[1:])
+                for name, param in self.model.text_encoder.named_parameters():
                     if name in checkpoint:
                         para.data.copy_(checkpoint[name])
                     else:
@@ -101,6 +103,16 @@ class LMNATTask(BaseTask):
 
                     if args.freeze_text_encoder:
                         param.requires_grad = False
+
+            elif args.text_encoder_type == "gpt2":
+                from models.gpt2.load_tf_weight import load_tf_weights_in_gpt2
+                gpt2_checkpoint = os.path.join(args.text_encoder_path, args.gpt2_name)
+                self.model.text_encoder.transformer = load_tf_weights_in_gpt2(self.model.text_encoder.transformer, gpt2_checkpoint)
+                self.model.text_encoder.set_tied()
+
+                for name, param in self.model.text_encoder.named_parameters():
+                    if args.freeze_text_encoder:
+                        param.requires_grad = False   
         
         self.start_epoch = 0
 
@@ -163,7 +175,8 @@ class LMNATTask(BaseTask):
             pretrained_encoders[-1] += list(func(self.model.interctc_generator))
 
         decoder_params = list(func(self.model.taee)) + list(func(self.model.sad)) \
-                            + list(func(self.model.mad)) + list(func(self.model.att_generator))
+                            + list(func(self.model.mad)) + list(func(self.model.att_generator)) \
+                            + list(func(self.model.dim_map))
         if args.interce_alpha > 0:
             decoder_params += list(func(self.model.interce_generator))
 
