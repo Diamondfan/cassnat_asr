@@ -17,8 +17,8 @@ interce_alpha: 0.01
 interce_layer: 6
 label_smooth: 0.1
 disable_ls: False
-resume_model: "exp/100h_wp_cfmer_interctc05_layer6_noam_warmup15k_lrpk1e-3_epoch60_2gpus/averaged.mdl"
-init_encoder: True
+resume_model: "" #"exp/100h_wp_cfmer_interctc05_layer6_noam_warmup15k_lrpk1e-3_epoch60_2gpus/averaged.mdl"
+init_encoder: False #True
 fix_encoder: False
 tokenizer: "data/dict/bpemodel_unigram_1024.model"
 
@@ -28,6 +28,11 @@ gpt2_name: "124M"
 text_encoder_path: "/data/ruchao/workdir/language_model/gpt-2/models/"
 init_text_encoder: True
 freeze_text_encoder: True
+text_encoder_sample_greedy: False
+mix_type: "token"
+mix_gt_prob_max: 1
+mix_gt_prob_min: 0
+mix_gt_steps: 15000
 
 # load lm model
 #text_encoder_type: 'lm'

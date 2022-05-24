@@ -79,6 +79,8 @@ def make_model(input_size, args):
         from models.gpt2 import make_gpt2_model
         text_encoder = make_gpt2_model(args.text_encoder_path, args.gpt2_name)
 
+    text_encoder.remove_unused_module()
+
     dim_map = nn.Linear(text_encoder.dim, args.d_model)
 
     model = LMNAT(
@@ -206,13 +208,15 @@ class LMNAT(nn.Module):
             true_embed = None
 
         # 5. obtain text_embed from ctc_output
-        greedy_results, _, _ = self.best_path_align(ctc_out, x_mask, src_size, blank, 0)
-        #greedy_results = aligned_seq_shift  # using transcript
+        sample_num = 1 if args.text_encoder_sample_greedy else 0
+        greedy_results, _, _ = self.best_path_align(ctc_out, x_mask, src_size, blank, sample_num, include_best=False)
+        greedy_results = self.mix_text_encoder_input(greedy_results, aligned_seq_shift, args.mix_type, args.mix_gt_prob)
+        
         text_inputs = []
         for cand in range(greedy_results.size(0)):
             tokens = greedy_results[cand].masked_select(greedy_results[cand] != 0)
             text = tokenizer.tokens2text(tokens.cpu().numpy())
-            new_tokens = text_encoder_tokenizer.text2tokens(text)
+            new_tokens = text_encoder_tokenizer.text2tokens(text, addsos=True)
             text_inputs.append(new_tokens)
         token_max = max([len(inp) for inp in text_inputs])
         
@@ -262,6 +266,18 @@ class LMNAT(nn.Module):
             loss += args.interce_alpha * interce_loss
 
         return ctc_out, att_out, loss, ctc_loss, att_loss
+
+    def mix_text_encoder_input(self, greedy_results, ground_truth, mix_type, mix_gt_prob):
+        mixed_output = greedy_results
+        bs, seq_len = greedy_results.size()
+        if mix_type == "utterance":
+            rand_num = torch.rand(bs).cuda().unsqueeze(-1).repeat(1,seq_len)
+        if mix_type == "token":
+            rand_num = torch.rand(bs, seq_len).cuda()
+
+        mix_gt = (rand_num < mix_gt_prob)
+        mixed_output[mix_gt] = ground_truth[mix_gt]
+        return mixed_output
 
     def expand_trigger_mask(self, trigger_mask, left_trigger, right_trigger):
         if right_trigger > 0:
@@ -361,7 +377,7 @@ class LMNAT(nn.Module):
     def best_path_align(self, ctc_out, src_mask, src_size, blank, sample_num=0, threshold=0.9, include_best=True):
         "This is used for decoding, forced alignment is needed for training"
         bs, xmax, _ = ctc_out.size()
-        if sample_num > 1:
+        if sample_num >= 1:
             mask = (ctc_out.max(-1)[0].exp() < threshold).unsqueeze(-1)
             topk = ctc_out.topk(2, -1)[1]
             select = torch.randint(0, 2, (topk.size(0), topk.size(1), 1)).type_as(topk).masked_fill(mask==0, 0)
@@ -417,6 +433,8 @@ class LMNAT(nn.Module):
             if args.decode_type == 'oracle_att':
                 aligned_seq_shift, ylen, ymax = self.viterbi_align(ctc_out, src_mask, src_size, labels[:,1:-1], label_sizes, blank, 0)
             else:             
+                if args.decode_type == "bpa_att":
+                    assert args.sample_num == 0
                 aligned_seq_shift, ylen, ymax = self.best_path_align(ctc_out, src_mask, src_size, blank, args.sample_num, args.threshold)
             
             if args.test_hitrate and args.sample_num < 2:
@@ -466,14 +484,13 @@ class LMNAT(nn.Module):
         for cand in range(aligned_seq_shift.size(0)):
             tokens = aligned_seq_shift[cand].masked_select(aligned_seq_shift[cand] != 0)
             text = tokenizer.tokens2text(tokens.cpu().numpy())
-            new_tokens = text_encoder_tokenizer.text2tokens(text)
+            new_tokens = text_encoder_tokenizer.text2tokens(text, addsos=True)
             text_inputs.append(new_tokens)
-        token_max = max([len(inp) for inp in text_inputs]) + 1 #sos
+        token_max = max([len(inp) for inp in text_inputs])
 
         text_input = torch.zeros(aligned_seq_shift.size(0), token_max).type_as(aligned_seq_shift)
-        text_input[:,0] = sos
         for cand in range(aligned_seq_shift.size(0)):
-            text_input[cand,1:len(text_inputs[cand])+1] = torch.Tensor(text_inputs[cand]).type_as(aligned_seq_shift)
+            text_input[cand,:len(text_inputs[cand])] = torch.Tensor(text_inputs[cand]).type_as(aligned_seq_shift)
 
         text_mask = (text_input != 0).unsqueeze(1)
         text_embed, text_mask = self.text_encoder.extract_features(text_input, text_mask)

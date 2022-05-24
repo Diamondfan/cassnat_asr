@@ -223,6 +223,9 @@ class GPT2LMHeadModel(nn.Module):
         hidden_states, presents = self.transformer(input_ids, position_ids, token_type_ids, past)
         return hidden_states, presents
 
+    def remove_unused_module(self):
+        self.lm_head = None
+
 
 
 

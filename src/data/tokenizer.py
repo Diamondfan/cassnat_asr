@@ -16,10 +16,12 @@ class SPTokenizer(object):
         self.sp = spm.SentencePieceProcessor()
         self.sp.load(self.model)
 
-    def text2tokens(self, text):
+    def text2tokens(self, text, addsos=False):
         words = self.sp.EncodeAsPieces(text)
         tokens = [self.vocab.word2index[w] if w in self.vocab.word2index else
                     self.vocab.word2index['unk'] for w in words]
+        if addsos:
+            tokens.insert(0, self.vocab.word2index['sos'])
         return tokens
 
     def tokens2text(self, tokens):

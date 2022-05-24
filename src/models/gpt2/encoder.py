@@ -95,11 +95,13 @@ class Encoder:
         self.cache[token] = word
         return word
 
-    def text2tokens(self, text):
+    def text2tokens(self, text, addsos=False):
         bpe_tokens = []
         for token in re.findall(self.pat, text):
             token = ''.join(self.byte_encoder[b] for b in token.encode('utf-8'))
             bpe_tokens.extend(self.encoder[bpe_token] for bpe_token in self.bpe(token).split(' '))
+        if addsos:
+            bpe_tokens.insert(0, self.encoder['<|endoftext|>'])
         return bpe_tokens
 
     def tokens2text(self, tokens):

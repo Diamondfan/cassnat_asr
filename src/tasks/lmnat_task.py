@@ -38,6 +38,7 @@ class LMNATTask(BaseTask):
             self.text_encoder_tokenizer = get_encoder(model_name, models_dir)
 
         if mode == "train":
+            self._num_updates = 0
             self.set_model(args)
             self.set_optimizer(args)
             self.set_dataloader(args)
@@ -108,7 +109,7 @@ class LMNATTask(BaseTask):
                 from models.gpt2.load_tf_weight import load_tf_weights_in_gpt2
                 gpt2_checkpoint = os.path.join(args.text_encoder_path, args.gpt2_name)
                 self.model.text_encoder.transformer = load_tf_weights_in_gpt2(self.model.text_encoder.transformer, gpt2_checkpoint)
-                self.model.text_encoder.set_tied()
+                #self.model.text_encoder.set_tied()
 
                 for name, param in self.model.text_encoder.named_parameters():
                     if args.freeze_text_encoder:
@@ -287,6 +288,8 @@ class LMNATTask(BaseTask):
                 src, src_mask = src.cuda(), src_mask.cuda()
                 tgt_label = tgt_label.cuda()
                 feat_sizes, label_sizes = feat_sizes.cuda(), label_sizes.cuda()
+
+            args.mix_gt_prob = args.mix_gt_prob_max - self._num_updates * (args.mix_gt_prob_max - args.mix_gt_prob_min) / args.mix_gt_steps 
             
             ctc_out, att_out, loss, ctc_loss, att_loss = self.model(src, src_mask, feat_sizes, tgt_label, label_sizes, self.tokenizer, self.text_encoder_tokenizer, args)
             bs, max_feat_size, _ = ctc_out.size()
@@ -312,6 +315,7 @@ class LMNATTask(BaseTask):
                     self.optimizer.step()
                     self.optimizer.zero_grad()
                     updates += 1
+                    self._num_updates += 1
                     
                     if updates % args.print_freq == 0 and args.rank == 0:
                         progress.print(updates)

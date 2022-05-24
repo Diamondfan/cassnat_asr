@@ -84,6 +84,7 @@ class TransformerLM(nn.Module):
         state_list = [[ states[i][b] for i in range(layers)] for b in range(bs)]
         return logp, state_list
 
-
+    def remove_unused_module(self):
+        self.out_generator = None
 
 

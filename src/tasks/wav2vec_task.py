@@ -237,8 +237,6 @@ class Wav2vecTask(BaseTask):
                     
                     if updates % args.print_freq == 0 and args.rank == 0:
                         progress.print(updates)
-
-                    self._num_updates += 1
             else:
                 updates += 1
                 if updates % args.print_freq == 0 and args.rank == 0:
