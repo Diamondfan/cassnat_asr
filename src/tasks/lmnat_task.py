@@ -37,6 +37,10 @@ class LMNATTask(BaseTask):
             models_dir = args.text_encoder_path
             self.text_encoder_tokenizer = get_encoder(model_name, models_dir)
 
+        elif args.text_encoder_type == "bert":
+            from models.bert.tokenization import get_tokenizer
+            self.text_encoder_tokenizer = get_tokenizer(args.bert_name, args.text_encoder_path)
+
         if mode == "train":
             self._num_updates = 0
             self.set_model(args)
@@ -102,19 +106,21 @@ class LMNATTask(BaseTask):
                     else:
                         param.data.copy_(checkpoint['module.'+name])
 
-                    if args.freeze_text_encoder:
-                        param.requires_grad = False
-
             elif args.text_encoder_type == "gpt2":
                 from models.gpt2.load_tf_weight import load_tf_weights_in_gpt2
                 gpt2_checkpoint = os.path.join(args.text_encoder_path, args.gpt2_name)
                 self.model.text_encoder.transformer = load_tf_weights_in_gpt2(self.model.text_encoder.transformer, gpt2_checkpoint)
                 #self.model.text_encoder.set_tied()
 
-                for name, param in self.model.text_encoder.named_parameters():
-                    if args.freeze_text_encoder:
-                        param.requires_grad = False   
-        
+            elif args.text_encoder_type == "bert":
+                from models.bert.load_tf_weight import load_tf_weights_in_bert
+                bert_checkpoint = os.path.join(args.text_encoder_path, args.bert_name, "bert_model.ckpt")
+                self.model.text_encoder = load_tf_weights_in_bert(self.model.text_encoder, bert_checkpoint)
+           
+            for name, param in self.model.text_encoder.named_parameters():
+                if args.freeze_text_encoder:
+                    param.requires_grad = False   
+
         self.start_epoch = 0
 
     def load_test_model(self, resume_model):
@@ -265,6 +271,7 @@ class LMNATTask(BaseTask):
         ctc_wers = util.AverageMeter('CtcWer', ':.4f')
         att_wers = util.AverageMeter('AttWer', ':.4f')
         token_speed = util.AverageMeter('TokenSpeed', ":.2f")
+        mix_prob = util.AverageMeter('GTMixProb', ":.2f")
         
         if is_train:
             num_updates = math.ceil(len(dataloader) / args.accum_grad)
@@ -272,7 +279,7 @@ class LMNATTask(BaseTask):
             num_updates = len(dataloader)
 
         progress = util.ProgressMeter(num_updates, batch_time, losses, ctc_losses, att_losses, ctc_wers, \
-                                        att_wers, token_speed, prefix="Epoch: [{}]".format(epoch))
+                                        att_wers, token_speed, mix_prob, prefix="Epoch: [{}]".format(epoch))
         
         end = time.time()
         updates = -1
@@ -288,9 +295,12 @@ class LMNATTask(BaseTask):
                 src, src_mask = src.cuda(), src_mask.cuda()
                 tgt_label = tgt_label.cuda()
                 feat_sizes, label_sizes = feat_sizes.cuda(), label_sizes.cuda()
-
-            args.mix_gt_prob = args.mix_gt_prob_max - self._num_updates * (args.mix_gt_prob_max - args.mix_gt_prob_min) / args.mix_gt_steps 
             
+            if is_train:
+                args.mix_gt_prob = args.mix_gt_prob_max - self._num_updates * (args.mix_gt_prob_max - args.mix_gt_prob_min) / args.mix_gt_steps 
+            else:
+                args.mix_gt_prob = 0       
+     
             ctc_out, att_out, loss, ctc_loss, att_loss = self.model(src, src_mask, feat_sizes, tgt_label, label_sizes, self.tokenizer, self.text_encoder_tokenizer, args)
             bs, max_feat_size, _ = ctc_out.size()
             feat_sizes = (feat_sizes * max_feat_size).long()
@@ -306,6 +316,7 @@ class LMNATTask(BaseTask):
             att_losses.update(att_loss.item(), tokens)
             batch_time.update(time.time() - end)
             token_speed.update(tokens/(time.time()-start))
+            mix_prob.update(args.mix_gt_prob, 1)
 
             if is_train:
                 loss = loss / args.accum_grad

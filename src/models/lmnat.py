@@ -79,6 +79,10 @@ def make_model(input_size, args):
         from models.gpt2 import make_gpt2_model
         text_encoder = make_gpt2_model(args.text_encoder_path, args.gpt2_name)
 
+    elif args.text_encoder_type == 'bert':
+        from models.bert import make_bert_model
+        text_encoder = make_bert_model(args.text_encoder_path, args.bert_name)
+
     text_encoder.remove_unused_module()
 
     dim_map = nn.Linear(text_encoder.dim, args.d_model)
@@ -216,7 +220,11 @@ class LMNAT(nn.Module):
         for cand in range(greedy_results.size(0)):
             tokens = greedy_results[cand].masked_select(greedy_results[cand] != 0)
             text = tokenizer.tokens2text(tokens.cpu().numpy())
-            new_tokens = text_encoder_tokenizer.text2tokens(text, addsos=True)
+            if args.text_encoder_type != 'bert':
+                new_tokens = text_encoder_tokenizer.text2tokens(text, addsos=True)
+            else:
+                new_tokens = text_encoder_tokenizer.text2tokens(text)
+
             text_inputs.append(new_tokens)
         token_max = max([len(inp) for inp in text_inputs])
         
@@ -228,7 +236,7 @@ class LMNAT(nn.Module):
         with torch.no_grad() if args.freeze_text_encoder else contextlib.ExitStack():
             if args.text_encoder_type == "lm":
                 text_embed, text_mask = self.text_encoder.extract_features(text_input, text_mask)
-            elif args.text_encoder_type == "gpt2":
+            elif args.text_encoder_type in ["gpt2", "bert"]:
                 text_embed, _ = self.text_encoder.extract_features(text_input)               
 
         # 6. decoder with acoustic and text ouputs
@@ -484,6 +492,11 @@ class LMNAT(nn.Module):
         for cand in range(aligned_seq_shift.size(0)):
             tokens = aligned_seq_shift[cand].masked_select(aligned_seq_shift[cand] != 0)
             text = tokenizer.tokens2text(tokens.cpu().numpy())
+            if args.text_encoder_type != 'bert':
+                new_tokens = text_encoder_tokenizer.text2tokens(text, addsos=True)
+            else:
+                new_tokens = text_encoder_tokenizer.text2tokens(text)
+
             new_tokens = text_encoder_tokenizer.text2tokens(text, addsos=True)
             text_inputs.append(new_tokens)
         token_max = max([len(inp) for inp in text_inputs])
