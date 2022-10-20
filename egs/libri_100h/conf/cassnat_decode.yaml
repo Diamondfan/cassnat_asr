@@ -1,6 +1,10 @@
 vocab_file: data/dict/vocab_wp.txt
 global_cmvn: data/fbank/cmvn_sp.ark
 use_cmvn: True
+use_BERT_tokenizer: False
+tokenizer: "data/dict/bpemodel_unigram_1024.model"
+bert_name: "bert-base-uncased"
+bert_path: "/data/ruchao/workdir/language_model/bert/" 
 
 #model configuration
 model_type: "conformer"
@@ -50,13 +54,11 @@ T: 1.0
 
 #nat related conf
 use_trigger: True
-use_src: True
 src_trigger: False
 use_unimask: False
 left_trigger: 1
 right_trigger: 1
 use_best_path: False
-sample_dist: 0
 sample_num: 50
 threshold: 0.9
 

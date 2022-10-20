@@ -37,6 +37,7 @@ class DecodeParser(object):
         parser.add_argument("--lm_config")
         parser.add_argument("--data_path")
         parser.add_argument("--text_label", default="", type=str, help='text label')
+        parser.add_argument("--utt2num_frames", default="", type=str, help='utt2frames to filter too long utterances')
         parser.add_argument("--task", default="art", type=str, help="the task for training, art, cassnat, ctc")
         parser.add_argument("--batch_size", default=32, type=int, help="Training minibatch size")
         parser.add_argument("--load_data_workers", default=1, type=int, help="Number of parallel data loaders")

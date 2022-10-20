@@ -95,7 +95,7 @@ class MixAttLayer(nn.Module):
 
 class Mix3AttLayer(nn.Module):
     "Attention block with self-attn, src-attn, and feed forward (defined below)"
-    def __init__(self, size, feed_forward1, self_attn, conv_module, src_attn_audio, src_attn_txt, feed_forward2, dropout, pos_type, share_ff=False, ff_scale=0.5):
+    def __init__(self, size, feed_forward1, self_attn, conv_module, src_attn_audio, src_attn_txt, feed_forward2, dropout, pos_type, share_ff=False, ff_scale=0.5, audio_first=True):
         super(Mix3AttLayer, self).__init__()
         self.size = size
         self.src_attn_audio = src_attn_audio
@@ -112,6 +112,7 @@ class Mix3AttLayer(nn.Module):
         self.size = size
         self.pos_type = pos_type
         self.ff_scale = ff_scale
+        self.audio_first = audio_first
 
     def forward(self, x, memory_audio, memory_text, src_mask_audio, src_mask_text, self_mask, pos_embed):
         x = self.sublayer[0](x, self.feed_forward1, self.ff_scale)
@@ -124,8 +125,12 @@ class Mix3AttLayer(nn.Module):
             x = self.sublayer[1](x, self.conv_module)
 
         ma, mt = memory_audio, memory_text
-        x = self.sublayer[3](x, lambda x: self.src_attn_audio(x, ma, ma, src_mask_audio))
-        x = self.sublayer[4](x, lambda x: self.src_attn_txt(x, mt, mt, src_mask_text))
+        if self.audio_first:
+            x = self.sublayer[3](x, lambda x: self.src_attn_audio(x, ma, ma, src_mask_audio))
+            x = self.sublayer[4](x, lambda x: self.src_attn_txt(x, mt, mt, src_mask_text))
+        else:
+            x = self.sublayer[4](x, lambda x: self.src_attn_txt(x, mt, mt, src_mask_text))
+            x = self.sublayer[3](x, lambda x: self.src_attn_audio(x, ma, ma, src_mask_audio))
         x = self.sublayer[5](x, self.feed_forward2, self.ff_scale)
         return x
 
@@ -207,7 +212,7 @@ class MixAttDecoder(nn.Module):
         self.pos_type = pos_type
         self.norm = LayerNorm(layer.size)
         
-    def forward(self, x, memory, src_mask, tgt_mask, interce_alpha=0, interce_layer=0):
+    def forward(self, x, memory, src_mask, tgt_mask, interce_alpha=0, interce_layer=0, is_last=True):
         if self.pos_type == "relative":
             x, pos_embed = x[0], x[1]
         elif self.pos_type == "absolute":
@@ -220,21 +225,25 @@ class MixAttDecoder(nn.Module):
                 interce_out = x
             n_layer += 1
 
-        if interce_alpha > 0:
+        if interce_alpha > 0 and is_last:
             return (self.norm(x), interce_out)
-        else:
+        elif interce_alpha > 0 and not is_last:
+            return (self.norm(x), pos_embed, interce_out)
+        elif interce_alpha <= 0 and is_last:
             return self.norm(x)
+        else:
+            return (self.norm(x), pos_embed)
 
 class Mix3AttDecoder(nn.Module):
     "Generic N layer decoder with masking."
-    def __init__(self, size, feed_forward1, self_attn, conv_module, src_attn_audio, src_attn_text, feed_forward2, dropout, N, pos_type, share_ff=False, ff_scale=0.5):
+    def __init__(self, size, feed_forward1, self_attn, conv_module, src_attn_audio, src_attn_text, feed_forward2, dropout, N, pos_type, share_ff=False, audio_first=True, ff_scale=0.5):
         super(Mix3AttDecoder, self).__init__()
-        layer = Mix3AttLayer(size, feed_forward1, self_attn, conv_module, src_attn_audio, src_attn_text, feed_forward2, dropout, pos_type, share_ff, ff_scale)
+        layer = Mix3AttLayer(size, feed_forward1, self_attn, conv_module, src_attn_audio, src_attn_text, feed_forward2, dropout, pos_type, share_ff, ff_scale, audio_first)
         self.layers = clones(layer, N)
         self.pos_type = pos_type
         self.norm = LayerNorm(layer.size)
         
-    def forward(self, x, memory_audio, memory_text, src_mask_audio, src_mask_text, tgt_mask, interce_alpha=0, interce_layer=0):
+    def forward(self, x, memory_audio, memory_text, src_mask_audio, src_mask_text, tgt_mask, interce_alpha=0, interce_layer=0, is_last=True):
         if self.pos_type == "relative":
             x, pos_embed = x[0], x[1]
         elif self.pos_type == "absolute":
@@ -247,9 +256,13 @@ class Mix3AttDecoder(nn.Module):
                 interce_out = x
             n_layer += 1
 
-        if interce_alpha > 0:
+        if interce_alpha > 0 and is_last:
             return (self.norm(x), interce_out)
-        else:
+        elif interce_alpha > 0 and not is_last:
+            return (self.norm(x), pos_embed, interce_out)
+        elif interce_alpha <= 0 and is_last:
             return self.norm(x)
+        else:
+            return (self.norm(x), pos_embed)
 
 

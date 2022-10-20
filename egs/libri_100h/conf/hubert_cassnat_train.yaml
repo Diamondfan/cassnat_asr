@@ -1,0 +1,144 @@
+model_type: "conformer"
+input_size: 80
+N_extra: 1
+N_self_dec: 5
+N_mix_dec: 2
+d_model: 512
+d_ff: 2048          
+n_head: 8
+dropout: 0.1
+ctc_alpha: 0.5
+interctc_alpha: 0.5
+interctc_layer: 6
+att_alpha: 1
+interce_alpha: 0.01
+interce_layer: 6
+label_smooth: 0.1
+disable_ls: False
+resume_model: "hubert_base_ls960.pt"
+init_encoder: True
+fix_encoder: False
+use_BERT_tokenizer: False #True
+tokenizer: "data/dict/bpemodel_unigram_1024.model"
+bert_name: "bert-base-uncased"
+bert_path: "/data/ruchao/workdir/language_model/bert/"
+
+#hubert layers
+layer_type: "transformer"
+encoder_ffn_embed_dim: 3072
+encoder_attention_heads: 12
+attention_dropout: 0.1
+activation_dropout: 0.0
+activation_fn: 'gelu'
+layer_norm_first: False
+depthwise_conv_kernel_size: 31
+attn_type: ''
+dropout: 0.1
+encoder_embed_dim: 768
+required_seq_len_multiple: 2
+# pos_conv_depth: 1
+conv_pos: 128
+conv_pos_groups: 16
+encoder_layers: 12
+layer_norm_first: False
+encoder_layerdrop: 0
+conv_feature_layers: '[(512,10,5)] + [(512,3,2)] * 4 + [(512,2,2)] * 2'
+
+mask_prob: 0.65
+mask_selection: 'static'
+mask_other: 0.0
+mask_length: 10
+no_mask_overlap: False
+mask_min_space: 1
+mask_channel_prob: 0.0
+mask_channel_selection: 'static'
+mask_channel_other: 0.0
+mask_channel_length: 10
+no_mask_channel_overlap: False
+mask_channel_min_space: 1
+dropout_input: 0.1
+feature_grad_mult: 0
+
+#conformer related conf
+share_ff: False
+d_decff: 1024 #2048
+pos_type: "relative"
+use_conv_dec: True
+dec_max_relative_len: 8
+dec_kernel_size: 3
+
+#nat related conf
+use_trigger: True
+src_trigger: False
+use_unimask: False
+left_trigger: 1
+right_trigger: 1
+use_best_path: False
+sample_topk: 0 #4
+sample_num: 0
+save_embedding: False
+
+n_features: 80
+vocab_size: 4999
+left_ctx: 0
+right_ctx: 0
+skip_frame: 1
+
+multi_optim: True
+warmup_type: "noam_warmup"  # noam_warmup, custom_exp, custom_linear
+noam_factor: [0.00005, 0.001, 0.001]       #[src_embed, encoder, ctc_gen and interctc gen,  decoders, text_encoder]  # learning rate for noam_wamup, factor for custom_exp
+warmup_steps: [15000, 15000, 15000]
+freeze_steps: [0, 0, 0]
+total_steps: [25000, 250000, 25000]         # for custom_linear
+
+
+decay_rate: 0.01
+s_warm: 1000
+s_decay: 40000
+s_keep: 160000
+
+cosine_total: 100000
+cosine_warmup: 1000
+
+#normal
+learning_rate: 0.02
+min_lr: 0.000002
+patience: 2
+anneal_lr_ratio: 0.5
+
+# dataloader
+dataset_type: "HubertDataset"   #"SpeechDataset, DynamicDataset"
+max_len: 5000
+batch_size: 4
+sample_rate: 16000
+normalize: False
+
+batch_type: "utterance"
+max_frmlen: 800 
+max_lablen: 100 
+filter_max: 5000
+filter_min: 0
+
+max_samplen: 500000  #392400
+
+padding_idx: -1
+text_padding_idx: 0
+accum_grad: 4
+grad_clip: 5
+weight_decay: 0
+
+use_gpu: True
+use_fp16: False
+
+use_specaug: False
+specaug_start_epoch: 100000
+spec_aug:
+  use_time_warp: False
+  resize_mode: "PIL"
+  max_time_warp: 5
+  max_freq_width: 27
+  n_freq_mask: 2
+  max_time_width: 0.05
+  n_time_mask: 10
+  inplace: True
+  replace_with_zero: False

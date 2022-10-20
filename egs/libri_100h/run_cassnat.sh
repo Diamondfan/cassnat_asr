@@ -9,11 +9,11 @@
 . cmd.sh
 . path.sh
 
-stage=1
-end_stage=1
+stage=3
+end_stage=3
 lm_model=exp/libri_tfunilm16x512_4card_cosineanneal_ep20_maxlen120/averaged.mdl
 
-asr_exp=exp/cassnat_noam15k_initart_interctc05_ly6_interce01_ly6/
+asr_exp=exp/100h_sptokenizer_cassnat_noam15k_initrand_interctc05_ly6_interce01_ly6_a4000_lr1e-3/
 
 if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
 
@@ -25,14 +25,14 @@ if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
     --task "cassnat" \
     --exp_dir $asr_exp \
     --train_config conf/cassnat_train.yaml \
-    --data_config conf/data_wp.yaml \
+    --data_config conf/data_raw.yaml \
     --optim_type "noam" \
     --epochs 60 \
     --start_saving_epoch 10 \
     --end_patience 10 \
     --seed 1234 \
     --print_freq 100 \
-    --port 18765 #>> $asr_exp/train.log 2>&1 &
+    --port 18111 > $asr_exp/train.log 2>&1 &
     
   echo "[Stage 1] ASR Training Finished."
 fi
@@ -40,7 +40,7 @@ fi
 
 out_name='averaged.mdl'
 if [ $stage -le 2 ] && [ $end_stage -ge 2 ]; then
-  last_epoch=52  # need to be modified
+  last_epoch=59  # need to be modified
   
   average_checkpoints.py \
     --exp_dir $asr_exp \
@@ -58,7 +58,7 @@ if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
   bpemodel=data/dict/bpemodel_unigram_1024
   rank_model="at_baseline" #"lm", "at_baseline"
   #rnnlm_model=$lm_model
-  rnnlm_model=exp/100h_wp_cfmer_interctc05_layer6_noam_warmup15k_lrpk1e-3_epoch60_2gpus/averaged.mdl
+  rnnlm_model=exp/100h_sptokenizer_cfmer_interctc05_layer6_noam_warmup15k_lrpk1e-3_epoch60_2gpus/averaged.mdl
   rank_yaml=conf/rank_model.yaml
   test_model=$asr_exp/$out_name
   decode_type='esa_att'
@@ -71,7 +71,7 @@ if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
   threshold=0.9
   s_dist=0
   lp=0
-  nj=4
+  nj=2
   batch_size=1
   test_set="test_clean test_other dev_clean dev_other"
 
@@ -96,7 +96,7 @@ if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
         --lm_config $rank_yaml \
         --rank_model $rank_model \
         --data_path $desdir/feats.JOB.scp \
-        --text_label data/$tset/token_wp.scp \
+        --text_label data/$tset/text \
         --resume_model $test_model \
         --result_file $desdir/token_results.JOB.txt \
         --batch_size $batch_size \

@@ -61,6 +61,10 @@ class TransformerLM(nn.Module):
         enc_text = self.encoder(tgt, tgt_mask_tril)
         return enc_text, tgt_mask
 
+    def forward_backbone(self, input_embed, tgt_mask):
+        out_embed = self.encoder(input_embed, tgt_mask)
+        return out_embed, tgt_mask
+
     def _subsequent_mask(self, size):
         ret = torch.ones(size, size, dtype=torch.uint8)
         return torch.tril(ret, out=ret).unsqueeze(0)
@@ -87,4 +91,7 @@ class TransformerLM(nn.Module):
     def remove_unused_module(self):
         self.out_generator = None
 
+    def remove_unused_module_aggresive(self):
+        self.text_embed = None
+        self.out_generator = None
 

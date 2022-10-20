@@ -49,13 +49,13 @@ def make_model(input_size, args):
         dec_ff_original = PositionwiseFeedForward(args.d_model, args.d_ff, args.dropout, activation=Swish())
         Extra = ConAcExtra(args.d_model, c(dec_src_attn), dec_ff_original, dec_position, args.pos_type, args.dropout, args.N_extra)
         Sad = ConSAD(args.d_model, c(dec_ff), c(dec_self_attn), c(dec_conv_module), c(dec_ff), args.dropout, args.N_self_dec, args.pos_type, args.share_ff)
-        Mad = Con3MAD(args.d_model, c(dec_ff), c(dec_self_attn), c(dec_conv_module), c(dec_src_attn), c(dec_src_attn), c(dec_ff), args.dropout, args.N_mix_dec, args.pos_type, args.share_ff)
+        Mad = Con3MAD(args.d_model, c(dec_ff), c(dec_self_attn), c(dec_conv_module), c(dec_src_attn), c(dec_src_attn), c(dec_ff), args.dropout, args.N_mix_dec, args.pos_type, args.share_ff, args.audio_first)
     else:
         dec_ff = PositionwiseFeedForward(args.d_model, args.d_decff, args.dropout)
         dec_attn = MultiHeadedAttention(args.n_head, args.d_model, args.dropout)
         Extra = TrfAcExtra(args.d_model, c(dec_attn), c(dec_ff), args.dropout, args.N_extra)
         Sad = TrfSAD(args.d_model, c(dec_attn), c(dec_ff), args.dropout, args.N_self_dec)
-        Mad = Trf3MAD(args.d_model, c(dec_attn), c(dec_attn), c(dec_attn), c(dec_ff), args.dropout, args.N_mix_dec)
+        Mad = Trf3MAD(args.d_model, c(dec_attn), c(dec_attn), c(dec_attn), c(dec_ff), args.dropout, args.N_mix_dec, args.audio_first)
     
     generator = Generator(args.d_model, args.vocab_size)
     interctc_gen = Generator(args.d_model, args.vocab_size, add_norm=True) if args.interctc_alpha > 0 else None
@@ -82,8 +82,6 @@ def make_model(input_size, args):
     elif args.text_encoder_type == 'bert':
         from models.bert import make_bert_model
         text_encoder = make_bert_model(args.text_encoder_path, args.bert_name)
-
-    text_encoder.remove_unused_module()
 
     dim_map = nn.Linear(text_encoder.dim, args.d_model)
 
@@ -214,7 +212,9 @@ class LMNAT(nn.Module):
         # 5. obtain text_embed from ctc_output
         sample_num = 1 if args.text_encoder_sample_greedy else 0
         greedy_results, _, _ = self.best_path_align(ctc_out, x_mask, src_size, blank, sample_num, include_best=False)
-        greedy_results = self.mix_text_encoder_input(greedy_results, aligned_seq_shift, args.mix_type, args.mix_gt_prob)
+        
+        if args.mix_type != "none":
+            greedy_results = self.mix_text_encoder_input(greedy_results, aligned_seq_shift, args.mix_type, args.mix_gt_prob)
         
         text_inputs = []
         for cand in range(greedy_results.size(0)):
@@ -236,8 +236,10 @@ class LMNAT(nn.Module):
         with torch.no_grad() if args.freeze_text_encoder else contextlib.ExitStack():
             if args.text_encoder_type == "lm":
                 text_embed, text_mask = self.text_encoder.extract_features(text_input, text_mask)
-            elif args.text_encoder_type in ["gpt2", "bert"]:
-                text_embed, _ = self.text_encoder.extract_features(text_input)               
+            elif args.text_encoder_type == "gpt2":
+                text_embed, _ = self.text_encoder.extract_features(text_input)    
+            elif args.text_encoder_type == "bert":
+                text_embed, _ = self.text_encoder.extract_features(text_input, attention_mask=text_mask.squeeze(1))
 
         # 6. decoder with acoustic and text ouputs
         text_embed = self.dim_map(text_embed)
@@ -487,9 +489,14 @@ class LMNAT(nn.Module):
         if args.src_trigger:
             src_mask = trigger_mask
 
-        # 5. obtain text_embed from ctc_output
+        # 5. obtain text_embed from ctc_output, we use greedy results as text encoder input without ESA
         text_inputs = []
-        for cand in range(aligned_seq_shift.size(0)):
+        if args.use_esa_for_text_encoder:
+            interval = 1
+        else:
+            interval = args.sample_num if args.sample_num > 1 else 1
+        
+        for cand in range(0, aligned_seq_shift.size(0), interval):
             tokens = aligned_seq_shift[cand].masked_select(aligned_seq_shift[cand] != 0)
             text = tokenizer.tokens2text(tokens.cpu().numpy())
             if args.text_encoder_type != 'bert':
@@ -497,17 +504,26 @@ class LMNAT(nn.Module):
             else:
                 new_tokens = text_encoder_tokenizer.text2tokens(text)
 
-            new_tokens = text_encoder_tokenizer.text2tokens(text, addsos=True)
             text_inputs.append(new_tokens)
         token_max = max([len(inp) for inp in text_inputs])
 
-        text_input = torch.zeros(aligned_seq_shift.size(0), token_max).type_as(aligned_seq_shift)
-        for cand in range(aligned_seq_shift.size(0)):
+        text_input = torch.zeros(len(text_inputs), token_max).type_as(aligned_seq_shift)
+        for cand in range(text_input.size(0)):
             text_input[cand,:len(text_inputs[cand])] = torch.Tensor(text_inputs[cand]).type_as(aligned_seq_shift)
 
         text_mask = (text_input != 0).unsqueeze(1)
-        text_embed, text_mask = self.text_encoder.extract_features(text_input, text_mask)
-        
+        if args.text_encoder_type == "lm":
+            text_embed, text_mask = self.text_encoder.extract_features(text_input, text_mask)
+        elif args.text_encoder_type == "gpt2":
+            text_embed, _ = self.text_encoder.extract_features(text_input)   
+        elif args.text_encoder_type == "bert":
+            text_embed, _ = self.text_encoder.extract_features(text_input, attention_mask=text_mask.squeeze(1))    
+    
+        text_embed = self.dim_map(text_embed)
+        if not args.use_esa_for_text_encoder and args.sample_num > 1:
+            text_embed = text_embed.unsqueeze(1).repeat(1, args.sample_num, 1, 1).reshape(-1, text_embed.size(1), text_embed.size(2))
+            text_mask = text_mask.unsqueeze(1).repeat(1, args.sample_num, 1, 1).reshape(-1, text_mask.size(1), text_mask.size(2))
+
         dec_h = self.mad(pred_embed, enc_h, text_embed, src_mask, text_mask, tgt_mask)
         att_out = self.att_generator(dec_h)
         

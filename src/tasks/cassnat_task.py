@@ -10,7 +10,7 @@ from torch.distributed import ReduceOp
 
 import utils.util as util
 from tasks import BaseTask
-from data.vocab import Vocab
+from data.tokenizer import SPTokenizer
 from utils.optimizer import get_mul_optim, get_optim
 from models import make_cassnat_model
 from utils.wer import ctc_greedy_wer, att_greedy_wer
@@ -21,13 +21,19 @@ class Config():
 
 class CassNATTask(BaseTask):
     def __init__(self, mode, args):
+        if args.use_BERT_tokenizer:
+            from models.bert.tokenization import get_tokenizer
+            self.tokenizer = get_tokenizer(args.bert_name, args.bert_path)
+        else:
+            self.tokenizer = SPTokenizer(args.tokenizer, args.vocab_file)
+        args.vocab_size = len(self.tokenizer.vocab)
+
         super(CassNATTask, self).__init__(args)
-        self.vocab = Vocab(args.vocab_file, args.rank)
-        args.vocab_size = self.vocab.n_words
 
         if mode == "train":
             self.set_model(args)
-            self.set_optimizer(args)
+            self.set_optimizer(args) 
+            args.find_unused_parameters = False
             self.load_model(args)
             self.set_dataloader(args)
 
@@ -93,7 +99,7 @@ class CassNATTask(BaseTask):
                 for key, val in lm_config.items():
                     setattr(lm_args, key, val)
                 
-                lm_args.vocab_size = self.vocab.n_words
+                lm_args.vocab_size = len(self.tokenizer.vocab)
 
                 if args.rank_model == 'lm':
                     from models.lm import make_model as make_lm_model
@@ -309,24 +315,28 @@ class CassNATTask(BaseTask):
                     feat_sizes = feat_sizes.cuda()
                     labels, label_sizes = labels.cuda(), label_sizes.cuda()
 
-                if args.decode_type == 'ctc_only':
-                    recog_results = ctc_beam_decode(self.model, src, src_mask, feat_sizes, self.vocab, args, self.lm_model)
-                
-                elif args.decode_type == 'ctc_att':
-                    batch_top_seqs = ctc_beam_decode(self.model, src, src_mask, feat_sizes, self.vocab, args, self.lm_model)
-                    recog_results, args = self.model.beam_decode(src, src_mask, feat_sizes, self.vocab, args, self.lm_model, batch_top_seqs, labels=labels, label_sizes=label_sizes)
-                
-                else:
-                    recog_results, args = self.model.beam_decode(src, src_mask, feat_sizes, self.vocab, args, self.lm_model, labels=labels, label_sizes=label_sizes)
+                try:
+                    if args.decode_type == 'ctc_only':
+                        recog_results = ctc_beam_decode(self.model, src, src_mask, feat_sizes, self.tokenizer, args, self.lm_model)
+                    
+                    elif args.decode_type == 'ctc_att':
+                        batch_top_seqs = ctc_beam_decode(self.model, src, src_mask, feat_sizes, self.tokenizer, args, self.lm_model)
+                        recog_results, args = self.model.beam_decode(src, src_mask, feat_sizes, self.tokenizer, args, self.lm_model, batch_top_seqs, labels=labels, label_sizes=label_sizes)
+                    
+                    else:
+                        recog_results, args = self.model.beam_decode(src, src_mask, feat_sizes, self.tokenizer, args, self.lm_model, labels=labels, label_sizes=label_sizes)
+                except RuntimeError as err:
+                    print("{}!, Skip batch, cuda out of memory".format(err))
+                    continue
                 
                 for j in range(len(utt_list)):
                     hyp = []
                     for idx in recog_results[j][0]['hyp']:
-                        if idx == self.vocab.word2index['sos'] or idx == args.padding_idx:
+                        if idx == self.tokenizer.vocab['sos'] or idx == args.padding_idx:
                             continue
-                        if idx == self.vocab.word2index['eos']:
+                        if idx == self.tokenizer.vocab['eos']:
                             break
-                        hyp.append(self.vocab.index2word[idx])
+                        hyp.append(self.tokenizer.ids_to_tokens[idx])
 
                     print(utt_list[j]+' '+' '.join(hyp), flush=True, file=out_file)
 

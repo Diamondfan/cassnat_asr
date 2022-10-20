@@ -10,7 +10,7 @@ from torch.distributed import ReduceOp
 
 import utils.util as util
 from tasks import BaseTask
-from data.vocab import Vocab
+from data.tokenizer import SPTokenizer
 from utils.optimizer import get_optim
 from models import make_transformer, make_conformer
 from utils.wer import ctc_greedy_wer, att_greedy_wer
@@ -21,13 +21,19 @@ class Config():
 
 class ArtTask(BaseTask):
     def __init__(self, mode, args):
+        if args.use_BERT_tokenizer:
+            from models.bert.tokenization import get_tokenizer
+            self.tokenizer = get_tokenizer(args.bert_name, args.bert_path)
+        else:
+            self.tokenizer = SPTokenizer(args.tokenizer, args.vocab_file)
+        args.vocab_size = len(self.tokenizer.vocab)
+
         super(ArtTask, self).__init__(args)
-        self.vocab = Vocab(args.vocab_file, args.rank)
-        args.vocab_size = self.vocab.n_words
 
         if mode == "train":
             self.set_model(args)
             self.set_optimizer(args)
+            args.find_unused_parameters = False
             self.load_model(args)
             self.set_dataloader(args)
         if mode == "test":
@@ -254,18 +260,18 @@ class ArtTask(BaseTask):
                 elif args.decode_type == 'ctc_correct':
                     recog_results = self.model.fast_decode_with_ctc(src, src_mask, self.vocab, args, self.lm_model)
                 elif args.decode_type == "ctc_att":
-                    recog_results = self.model.beam_decode(src, src_mask, self.vocab, args, self.lm_model)
+                    recog_results = self.model.beam_decode(src, src_mask, self.tokenizer.vocab, args, self.lm_model)
                 else:
                     raise NotImplementedError
 
                 for j in range(len(utt_list)):
                     hyp = []
                     for idx in recog_results[j][0]['hyp']:
-                        if idx == self.vocab.word2index['sos'] or idx == args.padding_idx:
+                        if idx == self.tokenizer.vocab['sos'] or idx == args.padding_idx:
                             continue
-                        if idx == self.vocab.word2index['eos']:
+                        if idx == self.tokenizer.vocab['eos']:
                             break
-                        hyp.append(self.vocab.index2word[idx])
+                        hyp.append(self.tokenizer.ids_to_tokens[idx])
                     #print(utt_list[j]+' '+' '.join(hyp))
                     print(utt_list[j]+' '+' '.join(hyp), flush=True, file=out_file)
     

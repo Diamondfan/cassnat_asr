@@ -367,16 +367,16 @@ class CassNAT(nn.Module):
         ret = torch.ones(size, size, dtype=torch.uint8)
         return torch.tril(ret, out=ret).unsqueeze(0)
     
-    def beam_decode(self, src, x_mask, src_size, vocab, args, lm_model=None, ctc_top_seqs=None, labels=None, label_sizes=None):
+    def beam_decode(self, src, x_mask, src_size, tokenizer, args, lm_model=None, ctc_top_seqs=None, labels=None, label_sizes=None):
         """att decoding with rnnlm and ctc out probability
 
         args.rnnlm: path of rnnlm model
         args.ctc_weight: use ctc out probability for joint decoding when >0.
         """
         bs = src.size(0)
-        sos = vocab.word2index['sos']
-        eos = vocab.word2index['eos']
-        blank = vocab.word2index['blank']
+        sos = tokenizer.vocab['sos']
+        eos = tokenizer.vocab['eos']
+        blank = tokenizer.vocab['blank']
 
         x, src_mask = self.src_embed(src, x_mask)
         enc_h = self.encoder(x, src_mask)
@@ -476,7 +476,7 @@ class CassNAT(nn.Module):
                     for j in range(tgt_len[i]):
                         index = att_pred[i][j].item()
                         if index != 2:
-                            sentence.append(vocab.index2word[index])
+                            sentence.append(tokenizer.ids_to_tokens[index])
                     score = lm_model.score(''.join(sentence).replace('▁', ' ').strip())
                     prob_sum[i] = score / tgt_len[i]
                 max_indices = prob_sum.reshape(-1, args.sample_num).max(-1, keepdim=True)[1]

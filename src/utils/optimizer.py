@@ -47,7 +47,7 @@ class MulBaseOpt(object):
             self.optimizer.param_groups[i]['initial_lr'] = self.optimizer.param_groups[i]['lr']
         self.freeze_steps = freeze_steps
 
-    def step(self):
+    def step(self, step_optimizer=True):
         self._step += 1
         rate = self.rate()
 
@@ -59,7 +59,8 @@ class MulBaseOpt(object):
         for i in range(len(self.optimizer.param_groups)):
             self.optimizer.param_groups[i]['lr'] = self.optimizer.param_groups[i]['initial_lr'] * rate[i]
 
-        self.optimizer.step()
+        if step_optimizer:
+            self.optimizer.step()
 
     def rate(self, step=None):
         raise NotImplementedError

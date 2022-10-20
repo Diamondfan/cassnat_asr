@@ -181,6 +181,30 @@ class GPT2Model(nn.Module):
         output_shape = input_shape + (hidden_states.size(-1),)
         return hidden_states.view(*output_shape), presents
 
+    def forward_backbone(self, inputs_embeds, position_ids=None, token_type_ids=None, past=None):
+        if past is None:
+            past_length = 0
+            past = [None] * len(self.h)
+        else:
+            past_length = past[0][0].size(-2)
+        if position_ids is None:
+            position_ids = torch.arange(past_length, inputs_embeds.size(1) + past_length, dtype=torch.long,
+                                        device=inputs_embeds.device)
+            position_ids = position_ids.unsqueeze(0).repeat(inputs_embeds.size(0), 1)
+
+        position_ids = position_ids.view(-1, position_ids.size(-1))
+        position_embeds = self.wpe(position_ids)
+        hidden_states = inputs_embeds + position_embeds
+        presents = []
+        for block, layer_past in zip(self.h, past):
+            hidden_states, present = block(hidden_states, layer_past)
+            presents.append(present)
+        hidden_states = self.ln_f(hidden_states)
+        return hidden_states, presents
+
+    def remove_unused_module(self):
+        self.wte = None
+
 class GPT2LMHead(nn.Module):
     def __init__(self, model_embeddings_weights, config):
         super(GPT2LMHead, self).__init__()
@@ -223,9 +247,15 @@ class GPT2LMHeadModel(nn.Module):
         hidden_states, presents = self.transformer(input_ids, position_ids, token_type_ids, past)
         return hidden_states, presents
 
+    def forward_backbone(self, input_embed):
+        hidden_states, presents = self.transformer.forward_backbone(input_embed)
+        return hidden_states, presents
+
     def remove_unused_module(self):
         self.lm_head = None
 
-
+    def remove_unused_module_aggressive(self):
+        self.lm_head = None
+        self.transformer.remove_unused_module()
 
 

@@ -18,8 +18,7 @@ class BaseTask(object):
             self.load_checkpoint(last_checkpoint, args.rank, args.use_gpu)
         else:
             self.load_pretrained_model(args.resume_model, args.rank)
-    
-        self.model_stats(args.rank, args.use_slurm, args.distributed)
+        self.model_stats(args.rank, args.use_slurm, args.distributed, find_unused_parameters=args.find_unused_parameters)
 
     def load_checkpoint(self, checkpoint, rank, use_cuda):
         if rank == 0:
@@ -46,7 +45,7 @@ class BaseTask(object):
                     name = "module." + name
                 param.data.copy_(model_state[name])
     
-    def model_stats(self, rank, use_slurm, distributed):
+    def model_stats(self, rank, use_slurm, distributed, find_unused_parameters=True):
         if rank == 0:
             #print(self.model)
             num_params, updated_params = 0, 0
@@ -71,13 +70,13 @@ class BaseTask(object):
             self.model = self.model.cuda(local_rank)
 
         if distributed:        
-            self.model = torch.nn.parallel.DistributedDataParallel(self.model, device_ids=[local_rank])
+            self.model = torch.nn.parallel.DistributedDataParallel(self.model, device_ids=[local_rank], find_unused_parameters=find_unused_parameters)
 
     def set_dataloader(self, args):
         dataset_types = {"SpeechDataset": (SpeechDataset, args.batch_size), "DynamicDataset": (DynamicDataset, 1)}
         Dataset, actual_bs = dataset_types[args.dataset_type]
 
-        trainset = Dataset(self.vocab, args.train_paths, args)
+        trainset = Dataset(self.tokenizer, args.train_paths, args)
         if args.use_cmvn:
             trainset._load_cmvn(args.global_cmvn)
         train_loader = SpeechDataLoader(trainset, actual_bs, args.padding_idx, num_workers=args.load_data_workers, 
@@ -86,7 +85,7 @@ class BaseTask(object):
             print("Finish Loading training files. Number batches: {}".format(len(train_loader)))
 
         args.use_specaug = False  # specaug cannot be applied to valid
-        validset = Dataset(self.vocab, args.dev_paths, args)
+        validset = Dataset(self.tokenizer, args.dev_paths, args)
         if args.use_cmvn:
             validset._load_cmvn(args.global_cmvn)
         valid_loader = SpeechDataLoader(validset, actual_bs, args.padding_idx, num_workers=args.load_data_workers, 
@@ -100,7 +99,7 @@ class BaseTask(object):
     def set_test_dataloader(self, args):
         args.use_specaug = False
         args.specaug_conf = None
-        testset = SpeechDataset(self.vocab, args.test_paths, args)
+        testset = SpeechDataset(self.tokenizer, args.test_paths, args)
         if args.use_cmvn:
             testset._load_cmvn(args.global_cmvn)
         test_loader = SpeechDataLoader(testset, args.batch_size, args.padding_idx, num_workers=args.load_data_workers, shuffle=False)

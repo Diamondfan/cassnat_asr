@@ -35,7 +35,11 @@ VOCAB_NAME = 'vocab.txt'
 def load_vocab(vocab_file):
     """Loads a vocabulary file into a dictionary."""
     vocab = collections.OrderedDict()
-    index = 0
+    vocab["blank"] = 0
+    vocab["sos"] = 1
+    vocab["eos"] = 2
+    vocab["unk"] = 3
+    index = 4
     with open(vocab_file, "r", encoding="utf-8") as reader:
         while True:
             token = reader.readline()
@@ -76,10 +80,9 @@ class BertTokenizer(object):
                 split_tokens.append(sub_token)
         return split_tokens
 
-    def text2tokens(self, text, addsos=False):
+    def text2tokens(self, text):
         """Converts a sequence of tokens into ids using the vocab."""
         tokens = self.tokenize(text)
-        assert addsos == False
         ids = []
         for token in tokens:
             ids.append(self.vocab[token])

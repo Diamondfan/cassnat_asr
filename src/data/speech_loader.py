@@ -11,9 +11,9 @@ from data.feat_op import skip_feat, context_feat
 from data.spec_augment import spec_aug
 
 class SingleSet(object):
-    def __init__(self, vocab, data_path, rank, filter_max, filter_min):
+    def __init__(self, tokenizer, data_path, rank, filter_max, filter_min):
         self.name = data_path['name']
-        self.vocab = vocab
+        self.tokenizer = tokenizer
         self.rank = rank
         scp_path = data_path['scp_path']
         ark_dict = self._load_feature(scp_path)
@@ -37,9 +37,9 @@ class SingleSet(object):
                 num_frames = nframes_dict[utt][0]
             else:
                 num_frames = None
-
+            
             if num_frames is not None:
-                if num_frames > filter_max and num_frames < filter_min:
+                if num_frames > filter_max or num_frames < filter_min:
                     continue
             self.items.append((utt, ark_path, text, num_frames))
         
@@ -65,10 +65,11 @@ class SingleSet(object):
             while line:
                 utt, label = line.strip().split(' ', 1)
                 if is_text:
-                    label_dict[utt] = [self.vocab.word2index[word] if word in self.vocab.word2index else
-                                        self.vocab.word2index['unk'] for word in label.split(' ')]
-                    label_dict[utt].insert(0, self.vocab.word2index['sos'])
-                    label_dict[utt].append(self.vocab.word2index['eos'])
+                    label = self.tokenizer.tokenize(label)
+                    label_dict[utt] = [self.tokenizer.vocab[word] if word in self.tokenizer.vocab else
+                                        self.tokenizer.vocab['unk'] for word in label]
+                    label_dict[utt].insert(0, self.tokenizer.vocab['sos'])
+                    label_dict[utt].append(self.tokenizer.vocab['eos'])
                 else:
                     label_dict[utt] = [int(l) for l in label.split(' ')]
                 line = fin.readline()
@@ -77,8 +78,8 @@ class SingleSet(object):
         return label_dict
 
 class SpeechDataset(Dataset):
-    def __init__(self, vocab, data_paths, args):
-        self.vocab = vocab
+    def __init__(self, tokenizer, data_paths, args):
+        self.tokenizer = tokenizer
         self.rank = args.rank
         self.left_context = args.left_ctx
         self.right_context = args.right_ctx
@@ -105,7 +106,7 @@ class SpeechDataset(Dataset):
     def _load_streams(self, data_paths):
         data_streams = []
         for i in range(len(data_paths)):
-            stream = SingleSet(self.vocab, data_paths[i], self.rank, self.filter_max, self.filter_min)
+            stream = SingleSet(self.tokenizer, data_paths[i], self.rank, self.filter_max, self.filter_min)
             data_streams.append(stream)
         return data_streams
                     
@@ -145,8 +146,8 @@ class SpeechDataset(Dataset):
         return sum(self.data_stream_sizes)
 
 class DynamicDataset(Dataset):
-    def __init__(self, vocab, data_paths, args):
-        self.vocab = vocab
+    def __init__(self, tokenizer, data_paths, args):
+        self.tokenizer = tokenizer
         self.seed = args.seed
         self.rank = args.rank
         self.max_len = args.max_len
@@ -186,7 +187,7 @@ class DynamicDataset(Dataset):
     def _load_streams(self, data_paths):
         data_streams = []
         for i in range(len(data_paths)):
-            stream = SingleSet(self.vocab, data_paths[i], self.rank, self.filter_max, self.filter_min)
+            stream = SingleSet(self.tokenizer, data_paths[i], self.rank, self.filter_max, self.filter_min)
             data_streams.append(stream)
         return data_streams
            

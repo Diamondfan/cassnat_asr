@@ -1,0 +1,34 @@
+#model configuration
+model_type: "conformer"
+input_size: 80
+N_enc: 12
+N_dec: 6
+d_model: 512 #256
+d_ff: 2048          
+n_head: 8 #4
+dropout: 0.1
+ctc_alpha: 1.0
+interctc_alpha: 0
+interctc_layer: 0
+label_smooth: 0
+disable_ls: False
+resume_model: ""
+
+#conformer related conf
+use_conv_enc: True
+share_ff: False
+d_encff: 1024
+d_decff: 2048
+pos_type: "relative"
+enc_max_relative_len: 20
+enc_kernel_size: 31
+
+n_features: 80
+vocab_size: 4990
+left_ctx: 0
+right_ctx: 0
+skip_frame: 1
+
+padding_idx: 0
+
+

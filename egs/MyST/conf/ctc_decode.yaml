@@ -1,0 +1,37 @@
+vocab_file: data/dict/vocab_char.txt
+use_cmvn: True
+global_cmvn: data/fbank/cmvn.ark
+
+#model configuration
+model_type: "transformer"
+input_size: 240
+N_enc: 12
+d_model: 512 #256
+d_ff: 2048
+n_head: 8 #4
+dropout: 0
+causal: False
+forward: True
+
+#conformer related
+share_ff: False
+d_encff: 1024
+d_decff: 2048
+pos_type: "relative"
+max_relative_len: 20
+kernel_size: 31
+
+n_features: 80
+vocab_size: 4990
+left_ctx: 0
+right_ctx: 2
+skip_frame: 1
+padding_idx: 0
+
+use_gpu: True
+
+#For CTC decoding
+decode_type: "greedy"
+ctc_pruning: 1 #33
+ctc_beam: 1 #20
+ctc_lp: 0 #2.0

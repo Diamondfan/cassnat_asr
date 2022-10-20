@@ -13,6 +13,10 @@ interctc_layer: 6
 label_smooth: 0.1
 disable_ls: False
 resume_model: ""
+use_BERT_tokenizer: True
+tokenizer: "data/dict/bpemodel_unigram_1024.model"
+bert_name: "bert-base-uncased"
+bert_path: "/data/ruchao/workdir/language_model/bert/" 
 
 #conformer related conf
 use_conv_enc: True
@@ -31,7 +35,7 @@ skip_frame: 1
 
 #noam warm up
 warmup_type: "noam_warmup"  # noam_warmup, custom_exp, custom_linear
-noam_factor: 0.001               # learning rate for noam_wamup, factor for custom_exp
+noam_factor: 0.002               # learning rate for noam_wamup, factor for custom_exp
 warmup_steps: 15000
 total_steps: 250000           # for custom_linear
 

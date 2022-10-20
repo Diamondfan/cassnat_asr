@@ -17,32 +17,32 @@ bpemode=unigram #bpe or unigram
 . ./path.sh
 . parse_options.sh
 
-asr_exp=exp/100h_wp_cfmer_interctc05_layer6_noam_warmup15k_lrpk1e-3_epoch60_2gpus/
-#asr_exp=exp/100h_wp_tsfm_multistep2k50k200k_lrpk1e-3_epoch100_2gpus/
+asr_exp=exp/100h_sptokenizer_cfmer_interctc05_layer6_noam_warmup15k_lrpk1e-3_epoch60_2gpus/
+#asr_exp=exp/100h_berttokenizer_cfmer_interctc05_layer6_noam_warmup15k_lrpk2e-3_epoch60_2gpu
 
 if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
 
   [ ! -d $asr_exp ] && mkdir -p $asr_exp
 
-  CUDA_VISIBLE_DEVICES="0,1" train_asr.py \
+  CUDA_VISIBLE_DEVICES="2,3" train_asr.py \
     --task "art" \
     --exp_dir $asr_exp \
     --train_config conf/transformer.yaml \
-    --data_config conf/data_wp.yaml \
+    --data_config conf/data_raw.yaml \
     --optim_type "noam" \
     --epochs 60 \
     --start_saving_epoch 30 \
     --end_patience 10 \
     --seed 1234 \
     --print_freq 100 \
-    --port 18372 >> $asr_exp/train.log 2>&1 &
+    --port 13456 > $asr_exp/train.log 2>&1 &
     
   echo "[Stage 1] ASR Training Finished."
 fi
 
 out_name='averaged.mdl'
 if [ $stage -le 2 ] && [ $end_stage -ge 2 ]; then
-  last_epoch=40  # Need to be modified according to the convergence
+  last_epoch=44  # Need to be modified according to the convergence
   
   average_checkpoints.py \
     --exp_dir $asr_exp \
@@ -57,7 +57,6 @@ fi
 if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
   exp=$asr_exp
   lm_exp=
-
   test_model=$exp/$out_name
   rnnlm_model=$lm_exp/averaged.mdl
   bpemodel=data/dict/bpemodel_${bpemode}_${nbpe}
@@ -69,7 +68,7 @@ if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
   lmwt=0
   nj=1
   batch_size=1
-  test_set="dev_clean dev_other"
+  test_set="dev_clean dev_other test_clean test_other"
   
   for tset in $test_set; do
     echo "Decoding $tset..."
@@ -86,7 +85,7 @@ if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
     utils/split_scp.pl data/$tset/feats.scp $split_scps || exit 1;
     
     $cmd JOB=1:$nj $desdir/log/decode.JOB.log \
-      CUDA_VISIBLE_DEVICES=3 decode_asr.py \
+      CUDA_VISIBLE_DEVICES=$nj decode_asr.py \
         --task "art" \
         --test_config conf/decode.yaml \
         --lm_config conf/lm.yaml \

@@ -20,7 +20,7 @@ def make_model(input_size, args):
     c = copy.deepcopy
     attn = MultiHeadedAttention(args.n_head, args.d_model, args.dropout)
     ff = PositionwiseFeedForward(args.d_model, args.d_ff, args.dropout)
-    position = PositionalEncoding(args.d_model, args.dropout)
+    position = PositionalEncoding(args.d_model, args.dropout, args.max_len)
     generator = Generator(args.d_model, args.vocab_size)
     
     interctc_gen = Generator(args.d_model, args.vocab_size, add_norm=True) if args.interctc_alpha > 0 else None
@@ -126,9 +126,9 @@ class Transformer(nn.Module):
         args.ctc_weight: use ctc out probability for joint decoding when >0.
         """
         bs = src.size(0)
-        sos = vocab.word2index['sos']
-        eos = vocab.word2index['eos']
-        blank = vocab.word2index['blank']
+        sos = vocab['sos']
+        eos = vocab['eos']
+        blank = vocab['blank']
 
         x, src_mask = self.src_embed(src, src_mask)
         enc_h = self.encoder(x, src_mask)
@@ -246,9 +246,9 @@ class Transformer(nn.Module):
         a correction model.
         """
         bs = src.size(0)
-        sos = vocab.word2index['sos']
-        eos = vocab.word2index['eos']
-        blank = vocab.word2index['blank']
+        sos = vocab['sos']
+        eos = vocab['eos']
+        blank = vocab['blank']
 
         x, src_mask = self.src_embed(src, src_mask)
         enc_h = self.encoder(x, src_mask)

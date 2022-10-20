@@ -9,7 +9,7 @@ import torch
 import numpy as np
 
 sys.path.append(os.environ['E2EASR']+'/src')
-from tasks import CTCTask, ArtTask, CassNATTask, LMNATTask
+from tasks import CTCTask, ArtTask, CassNATTask, CASSNAT2Task, HubertArtTask, HubertCASSNATTask
 from utils.parser import DecodeParser
 
 class Config():
@@ -18,12 +18,16 @@ class Config():
 def main():
     args = DecodeParser().get_args()
    
-    os.environ['CUDA_VISIBLE_DEVICES'] = str(int(os.environ['CUDA_VISIBLE_DEVICES']) % 4)
+    #os.environ['CUDA_VISIBLE_DEVICES'] = str(int(os.environ['CUDA_VISIBLE_DEVICES']) % 2)
     with open(args.test_config) as f:
         config = yaml.safe_load(f)
     
-    if hasattr(args, 'text_label') and args.text_label:
+    if args.text_label and args.utt2num_frames:
+        config['test_paths'] = [{'name': 'test', 'scp_path': args.data_path, 'text_label': args.text_label, 'utt2num_frames': args.utt2num_frames}]
+    elif hasattr(args, 'text_label') and args.text_label:
         config['test_paths'] = [{'name': 'test', 'scp_path': args.data_path, 'text_label': args.text_label}]
+    elif not args.text_label and hasattr(args, 'utt2num_frames') and args.utt2num_frames:
+        config['test_paths'] = [{'name': 'test', 'scp_path': args.data_path, 'utt2num_frames': args.utt2num_frames} ]
     else:
         config['test_paths'] = [{'name': 'test', 'scp_path': args.data_path} ]
 
@@ -40,7 +44,8 @@ def main():
         torch.cuda.manual_seed(args.seed)
     args.rank = 0
 
-    task_dict = {"art": ArtTask, "cassnat": CassNATTask, "lmnat": LMNATTask, "ctc": CTCTask}
+    task_dict = {"art": ArtTask, "cassnat": CassNATTask, "ctc": CTCTask, "cassnat2": CASSNAT2Task, "hubert_cassnat": HubertCASSNATTask,
+                    "hubert_art": HubertArtTask}
     if args.task in task_dict:
         task = task_dict[args.task]("test", args)
     else:

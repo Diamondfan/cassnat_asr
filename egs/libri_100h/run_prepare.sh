@@ -5,11 +5,11 @@
 # The data are already downloaded in the corresponding dir
 data=/data/Databases/LibriSpeech/Librispeech
 
-stage=3
-end_stage=3
+stage=1
+end_stage=1
 featdir=data/fbank
 
-unit=char         #word piece
+unit=wp         #word piece
 nbpe=1024
 bpemode=unigram #bpe or unigram
 
@@ -19,7 +19,7 @@ bpemode=unigram #bpe or unigram
 
 if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
   # format the data as Kaldi data directories
-  for part in dev-clean test-clean dev-other test-other train-clean-100; do
+  for part in dev-clean; do #test-clean dev-other test-other train-clean-100; do
     # use underscore-separated names in data directories.
     local/data_prep.sh $data/$part data/$(echo $part | sed s/-/_/g)
   done

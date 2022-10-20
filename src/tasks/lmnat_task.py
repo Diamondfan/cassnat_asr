@@ -67,11 +67,30 @@ class LMNATTask(BaseTask):
     def load_model(self, args):
         last_checkpoint = os.path.join(args.exp_dir, 'model.last.mdl')
         if os.path.exists(last_checkpoint):
-            self.load_checkpoint(last_checkpoint, args.rank, args.use_gpu)
+            self.load_checkpoint(last_checkpoint, args.rank, args.use_gpu, args.freeze_text_encoder)
         else:
             self.load_pretrained_model(args)
     
         self.model_stats(args.rank, args.use_slurm, args.distributed)
+
+    def load_checkpoint(self, checkpoint, rank, use_cuda, freeze_text_encoder):
+        if rank == 0:
+            print("Loading checkpoint from {}".format(checkpoint))
+        checkpoint = torch.load(checkpoint, map_location='cpu')
+        model_state = checkpoint["model_state"]
+        
+        for name, param in self.model.named_parameters():
+            if name not in model_state:
+                name = "module." + name
+            param.data.copy_(model_state[name])
+
+        if freeze_text_encoder:
+            for name, param in self.model.text_encoder.named_parameters():
+                param.requires_grad = False
+        
+        self.optimizer.load_state_dict(checkpoint['optimizer'], rank, use_cuda)
+        self._num_updates = self.optimizer._step
+        self.start_epoch = checkpoint['epoch'] + 1
             
     def load_pretrained_model(self, args):
         if args.init_encoder and args.resume_model:
@@ -121,6 +140,8 @@ class LMNATTask(BaseTask):
                 if args.freeze_text_encoder:
                     param.requires_grad = False   
 
+            self.model.text_encoder.remove_unused_module()
+
         self.start_epoch = 0
 
     def load_test_model(self, resume_model):
@@ -131,6 +152,8 @@ class LMNATTask(BaseTask):
             for name, param in self.model.named_parameters():
                 if name not in model_state:
                     name = "module." + name
+                if name not in model_state:
+                    continue
                 param.data.copy_(model_state[name])
 
     def load_lm_model(self, args):
@@ -201,6 +224,7 @@ class LMNATTask(BaseTask):
                                                                     patience=args.patience, min_lr=args.min_lr)
         
         sample_topk = args.sample_topk
+        sample_greedy = args.text_encoder_sample_greedy
 
         for epoch in range(self.start_epoch, args.epochs):
             if args.distributed:
@@ -209,11 +233,13 @@ class LMNATTask(BaseTask):
             self.train_loader.dataset.use_specaug = (epoch >= args.specaug_start_epoch)    
             self.model.train()
             args.sample_topk = sample_topk
+            args.text_encoder_sample_greedy = sample_greedy
             train_loss, train_wer, train_ctc_wer = self.run_one_epoch(epoch, args, is_train=True)
             
             self.model.eval()
             with torch.no_grad():
                 args.sample_topk = 0
+                args.text_encoder_sample_greedy = False
                 valid_loss, valid_wer, valid_ctc_wer = self.run_one_epoch(epoch, args, is_train=False)
             
             temp_lr = self.optimizer.param_groups[0]['lr'] if args.optim_type == "normal" else self.optimizer.optimizer.param_groups[0]['lr']
@@ -297,7 +323,11 @@ class LMNATTask(BaseTask):
                 feat_sizes, label_sizes = feat_sizes.cuda(), label_sizes.cuda()
             
             if is_train:
-                args.mix_gt_prob = args.mix_gt_prob_max - self._num_updates * (args.mix_gt_prob_max - args.mix_gt_prob_min) / args.mix_gt_steps 
+                if args.mix_type != "none" and self._num_updates < args.mix_gt_start_steps:
+                    args.mix_gt_prob = 1
+                else:
+                    prob_temp = args.mix_gt_prob_max - (self._num_updates - args.mix_gt_start_steps) * (args.mix_gt_prob_max - args.mix_gt_prob_min) / args.mix_gt_steps 
+                    args.mix_gt_prob = max(args.mix_gt_prob_min, prob_temp)
             else:
                 args.mix_gt_prob = 0       
      
