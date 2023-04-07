@@ -53,7 +53,7 @@ class MulBaseOpt(object):
 
         assert len(rate) == len(self.freeze_steps)
         for i in range(len(self.freeze_steps)):
-            if self._step < self.freeze_steps[i]:
+            if self._step <= self.freeze_steps[i]:
                 rate[i] = 0
 
         for i in range(len(self.optimizer.param_groups)):
@@ -144,18 +144,24 @@ class MulNoamOpt(MulBaseOpt):
         rates = []
         for i in range(self.n_groups):
             rates.append(0)
+            if self.freeze_steps[i] > 0 and step > self.freeze_steps[i]:
+                cur_step = step - self.freeze_steps[i]
+            elif self.freeze_steps[i] > 0 and step <= self.freeze_steps[i]:
+                continue
+            else:
+                cur_step = step
             if self.warmup_type == "noam_warmup":
-                rates[i] = (self.warmup_steps[i] ** 0.5 * min(step ** (-0.5), step * self.warmup_steps[i] ** (-1.5)))
+                rates[i] = (self.warmup_steps[i] ** 0.5 * min(cur_step ** (-0.5), cur_step * self.warmup_steps[i] ** (-1.5)))
             else:
                 c = self.model_size ** (-0.5)
-                if step <= self.warmup_steps[i]:
-                    rates[i] = c * step * self.warmup_steps[i] ** (-1.5)
+                if cur_step <= self.warmup_steps[i]:
+                    rates[i] = c * cur_step * self.warmup_steps[i] ** (-1.5)
                 else:
                     if self.warmup_type == "custom_exp":
-                        rates[i] = c * step ** (-0.5)
+                        rates[i] = c * cur_step ** (-0.5)
                     elif self.warmup_type == "custom_linear":
                         base_rate = c * self.warmup_steps[i] ** (-0.5)
-                        decay_num = 1 - (step - self.warmup_steps[i]) / (self.total_steps - self.warmup_steps[i])
+                        decay_num = 1 - (cur_step - self.warmup_steps[i]) / (self.total_steps - self.warmup_steps[i])
                         rates[i] = base_rate * max(decay_num, 0)
         return rates
 

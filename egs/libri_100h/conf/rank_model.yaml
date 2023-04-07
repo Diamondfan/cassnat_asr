@@ -28,7 +28,9 @@ vocab_size: 4990
 left_ctx: 0
 right_ctx: 0
 skip_frame: 1
+max_len: 5000
 
 padding_idx: 0
+text_padding_idx: 0
 
 

@@ -17,6 +17,9 @@ d_model: 512 #256
 d_ff: 2048
 n_head: 8 #4
 dropout: 0
+use_mlm: False
+apply_mask: False
+use_mask_embed: True
 
 #conformer related conf
 use_conv_enc: True
@@ -36,8 +39,10 @@ left_ctx: 0
 right_ctx: 0
 skip_frame: 1
 padding_idx: 0
+text_padding_idx: 0
 
 use_gpu: True
+max_len: 5000
 filter_max: 5000
 filter_min: 0
 

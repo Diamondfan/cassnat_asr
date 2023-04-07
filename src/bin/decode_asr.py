@@ -9,7 +9,7 @@ import torch
 import numpy as np
 
 sys.path.append(os.environ['E2EASR']+'/src')
-from tasks import CTCTask, ArtTask, CassNATTask, CASSNAT2Task, HubertArtTask, HubertCASSNATTask
+from tasks import CTCTask, ArtTask, CassNATTask #, CASSNAT2Task, HubertCASSNATTask
 from utils.parser import DecodeParser
 
 class Config():
@@ -44,8 +44,7 @@ def main():
         torch.cuda.manual_seed(args.seed)
     args.rank = 0
 
-    task_dict = {"art": ArtTask, "cassnat": CassNATTask, "ctc": CTCTask, "cassnat2": CASSNAT2Task, "hubert_cassnat": HubertCASSNATTask,
-                    "hubert_art": HubertArtTask}
+    task_dict = {"ctc": CTCTask, "art": ArtTask, "cassnat": CassNATTask} #, "cassnat2": CASSNAT2Task, "hubert_cassnat": HubertCASSNATTask
     if args.task in task_dict:
         task = task_dict[args.task]("test", args)
     else:

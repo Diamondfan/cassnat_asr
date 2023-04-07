@@ -1,48 +1,56 @@
 #!/usr/bin/env bash
 
 # 2020 (Ruchao Fan)
-# 2022 (Ruchao Fan)
+# 2022, 2023 (Ruchao Fan)
+# SPAPL
 
-stage=3
-end_stage=3
+stage=1
+end_stage=1
 featdir=data/fbank
 
 unit=wp         #word piece
 nbpe=1024
 bpemode=unigram #bpe or unigram
 
-
-
 . ./cmd.sh
 . ./path.sh
 . parse_options.sh
 
+# art training
+train_config=conf/art_train.yaml
+data_config=conf/data_raw.yaml
+start_saving_epoch=30
+
+# art with hubert encoder training
+#train_config=conf/hubert_art_train.yaml
+#data_config=conf/data_hubert.yaml
+#start_saving_epoch=1
+
 asr_exp=exp/100h_sptokenizer_cfmer_interctc05_layer6_noam_warmup15k_lrpk1e-3_epoch60_2gpus/
-#asr_exp=exp/100h_berttokenizer_cfmer_interctc05_layer6_noam_warmup15k_lrpk2e-3_epoch60_2gpu
 
 if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
-
+  # transformer and conformer encoder training
   [ ! -d $asr_exp ] && mkdir -p $asr_exp
 
-  CUDA_VISIBLE_DEVICES="2,3" train_asr.py \
+  CUDA_VISIBLE_DEVICES="0,1" train_asr.py \
     --task "art" \
     --exp_dir $asr_exp \
-    --train_config conf/transformer.yaml \
-    --data_config conf/data_raw.yaml \
+    --train_config $train_config \
+    --data_config $data_config \
     --optim_type "noam" \
     --epochs 60 \
-    --start_saving_epoch 30 \
+    --start_saving_epoch $start_saving_epoch \
     --end_patience 10 \
     --seed 1234 \
     --print_freq 100 \
-    --port 13456 > $asr_exp/train.log 2>&1 &
+    --port 42516 > $asr_exp/train.log 2>&1 &
     
   echo "[Stage 1] ASR Training Finished."
 fi
 
 out_name='averaged.mdl'
 if [ $stage -le 2 ] && [ $end_stage -ge 2 ]; then
-  last_epoch=44  # Need to be modified according to the convergence
+  last_epoch=23  # Need to be modified according to the convergence
   
   average_checkpoints.py \
     --exp_dir $asr_exp \
@@ -70,6 +78,14 @@ if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
   batch_size=1
   test_set="dev_clean dev_other test_clean test_other"
   
+  # decode art model
+  decode_config=conf/art_decode.yaml
+  data_prefix=feats
+
+  # decode art model with hubert encoder
+  #decode_config=conf/hubert_art_decode.yaml
+  #data_prefix=wav_s
+
   for tset in $test_set; do
     echo "Decoding $tset..."
     desdir=$exp/${decode_type}_decode_ctc${ctcwt}_attbm_${attbeam}_ctcbm_${ctcbeam}_lp${lp}_lmwt${lmwt}/$tset/
@@ -80,16 +96,16 @@ if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
     
     split_scps=
     for n in $(seq $nj); do
-      split_scps="$split_scps $desdir/feats.$n.scp"
+      split_scps="$split_scps $desdir/${data_prefix}.$n.scp"
     done
-    utils/split_scp.pl data/$tset/feats.scp $split_scps || exit 1;
+    utils/split_scp.pl data/$tset/${data_prefix}.scp $split_scps || exit 1;
     
     $cmd JOB=1:$nj $desdir/log/decode.JOB.log \
-      CUDA_VISIBLE_DEVICES=$nj decode_asr.py \
+      CUDA_VISIBLE_DEVICES="2" decode_asr.py \
         --task "art" \
-        --test_config conf/decode.yaml \
+        --test_config $decode_config \
         --lm_config conf/lm.yaml \
-        --data_path $desdir/feats.JOB.scp \
+        --data_path $desdir/${data_prefix}.JOB.scp \
         --resume_model $test_model \
         --result_file $desdir/token_results.JOB.txt \
         --batch_size $batch_size \
@@ -107,7 +123,7 @@ if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
             sed -e "s/(/ (/g" > $desdir/ref.wrd.trn
     sclite -r $desdir/ref.wrd.trn -h $desdir/hyp.wrd.trn -i rm -o all stdout > $desdir/result.wrd.txt
   done
-  echo "[Stage 7] Decoding Finished."
+  echo "[Stage 3] Decoding Finished."
 fi
 
 

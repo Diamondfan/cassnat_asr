@@ -1,4 +1,4 @@
-model_type: "conformer"
+model_type: "hubert"
 input_size: 80
 N_dec: 6
 d_model: 512 #256
@@ -11,7 +11,7 @@ interctc_alpha: 0.5
 interctc_layer: 6
 label_smooth: 0.1
 disable_ls: False
-resume_model: "hubert_base_ls960.pt"
+resume_model: "../../../pretrained_models/hubert/hubert_base_ls960.pt"
 init_encoder: True
 fix_encoder: False
 use_BERT_tokenizer: False #True
@@ -49,7 +49,7 @@ mask_min_space: 1
 mask_channel_prob: 0.0
 mask_channel_selection: 'static'
 mask_channel_other: 0.0
-mask_channel_length: 10
+mask_channel_length: 64 #10
 no_mask_channel_overlap: False
 mask_channel_min_space: 1
 dropout_input: 0.1

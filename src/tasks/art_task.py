@@ -10,9 +10,9 @@ from torch.distributed import ReduceOp
 
 import utils.util as util
 from tasks import BaseTask
-from data.tokenizer import SPTokenizer
-from utils.optimizer import get_optim
-from models import make_transformer, make_conformer
+from data.tokenizer import SPTokenizer, CharTokenizer
+from utils.optimizer import get_optim, get_mul_optim
+from models import make_art_model
 from utils.wer import ctc_greedy_wer, att_greedy_wer
 from utils.beam_decode import ctc_beam_decode
 
@@ -21,11 +21,14 @@ class Config():
 
 class ArtTask(BaseTask):
     def __init__(self, mode, args):
+        self.model_type = args.model_type
         if args.use_BERT_tokenizer:
             from models.bert.tokenization import get_tokenizer
             self.tokenizer = get_tokenizer(args.bert_name, args.bert_path)
-        else:
+        elif args.tokenizer:
             self.tokenizer = SPTokenizer(args.tokenizer, args.vocab_file)
+        else:
+            self.tokenizer = CharTokenizer(args.vocab_file)
         args.vocab_size = len(self.tokenizer.vocab)
 
         super(ArtTask, self).__init__(args)
@@ -33,7 +36,7 @@ class ArtTask(BaseTask):
         if mode == "train":
             self.set_model(args)
             self.set_optimizer(args)
-            args.find_unused_parameters = False
+            args.find_unused_parameters = False if self.model_type != "hubert" else True
             self.load_model(args)
             self.set_dataloader(args)
         if mode == "test":
@@ -49,25 +52,52 @@ class ArtTask(BaseTask):
         
     def set_model(self, args):
         assert args.input_size == (args.left_ctx + args.right_ctx + 1) // args.skip_frame * args.n_features
-        if args.model_type == "transformer":
-            model = make_transformer(args.input_size, args)
-        elif args.model_type == "conformer":
-            model = make_conformer(args.input_size, args)
+        if args.model_type in ["transformer", "conformer", "hubert"]:
+            self.model = make_art_model(args.input_size, args)
         else:
             raise NotImplementedError
 
-        self.model = model
-            
-    def load_pretrained_model(self, resume_model, rank): 
-        if resume_model:
+    def load_model(self, args):
+        #Either load from checkpoint, or load model defined in config file
+        last_checkpoint = os.path.join(args.exp_dir, 'model.last.mdl')
+        if os.path.exists(last_checkpoint):
+            self.load_checkpoint(last_checkpoint, args.rank, args.use_gpu) #load checkpoint from baseclass
+        else:
+            self.load_pretrained_model(args.resume_model, args.rank, args.init_encoder, args.fix_encoder)
+    
+        self.model_stats(args.rank, args.use_slurm, args.distributed, args.find_unused_parameters)
+
+    def load_pretrained_model(self, resume_model, rank, init_encoder, fix_encoder): 
+        if init_encoder and resume_model:
             if rank == 0:
                 print("Loading model from {}".format(resume_model))
             checkpoint = torch.load(resume_model, map_location='cpu')
-            model_state = checkpoint["model_state"]
-            for name, param in self.model.named_parameters():
-                if name not in model_state:
-                    name = "module." + name
-                param.data.copy_(model_state[name])
+
+            if self.model_type != "hubert":
+                model_state = checkpoint["model_state"]
+
+                for name, param in self.model.named_parameters():
+                    if name not in model_state:
+                        name = "module." + name
+                    param.data.copy_(model_state[name])
+
+            else:
+                model_state = checkpoint["model"]
+                for name, param in self.model.named_parameters(): #decoder is trained from scratch
+                    if name.split('.')[0] == "module":
+                        name = '.'.join(name.split('.')[1:]).strip()
+                    
+                    if name.split('.')[0] == "encoder":
+                        name_sp = '.'.join(name.split('.')[1:]).strip()
+                        try:
+                            param.data.copy_(model_state[name_sp])
+                        except:
+                            if rank == 0:
+                                print("No param of {} in resume model".format(name))
+                        
+                        if fix_encoder:
+                            param.requires_grad = False
+
         self.start_epoch = 0
 
     def load_lm_model(self, args):
@@ -96,8 +126,26 @@ class ArtTask(BaseTask):
         self.lm_model = lm_model
 
     def set_optimizer(self, args):
-        self.optimizer = get_optim(args.optim_type, self.model, args) 
-        
+        #if not multi optimiser, we directly set optimiser, else 
+        if not args.multi_optim:
+            self.optimizer = get_optim(args.optim_type, self.model, args)
+        else:
+            #obtain all params that need updating (requires_grad) and pass them to multi_opt
+            def func(module):
+                return filter(lambda p: p.requires_grad, module.parameters())
+           
+            pretrained_encoders = [list(func(self.model.encoder))]
+            generators = list(func(self.model.ctc_generator)) + list(func(self.model.projection_layer))
+            if args.interctc_alpha > 0:
+                generators += list(func(self.model.interctc_generator)) + list(func(self.model.interctc_projection_layer))
+
+            decoder_params = list(func(self.model.tgt_embed)) + list(func(self.model.decoder)) + list(func(self.model.att_generator))
+
+            pretrained_encoders.extend([generators])
+            pretrained_encoders.extend([decoder_params])
+            update_param_groups = pretrained_encoders
+            self.optimizer = get_mul_optim(args.optim_type, update_param_groups, args)
+
     def run(self, args):
         best_epoch = 0
         best_wer = 100
@@ -105,18 +153,27 @@ class ArtTask(BaseTask):
 
         if args.optim_type == 'normal':
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='min', factor=args.anneal_lr_ratio, 
-                                                                    patience=args.patience, min_lr=args.min_lr)
+                                                                        patience=args.patience, min_lr=args.min_lr)
+
+        if args.use_fp16:
+            scaler = torch.cuda.amp.GradScaler()
+        else:
+            scaler = None                                                         
     
+        mask_prob = args.mask_prob
         for epoch in range(self.start_epoch, args.epochs):
             if args.distributed:
                 self.train_loader.set_epoch(epoch)
             
             self.model.train()
-            train_loss, train_wer, train_ctc_wer = self.run_one_epoch(epoch, args, is_train=True)
+            args.mask_prob = mask_prob
+            train_loss, train_wer, train_ctc_wer = self.run_one_epoch(epoch, scaler, args, is_train=True)
             #train_loss, train_wer, train_ctc_wer = 0, 0, 0
+            
             self.model.eval()
             with torch.no_grad():
-                valid_loss, valid_wer, valid_ctc_wer = self.run_one_epoch(epoch, args, is_train=False)
+                args.mask_prob = 0
+                valid_loss, valid_wer, valid_ctc_wer = self.run_one_epoch(epoch, scaler, args, is_train=False)
                 #valid_loss, valid_wer, valid_ctc_wer = 0, 0, 0
             temp_lr = self.optimizer.param_groups[0]['lr'] if args.optim_type == "normal" else self.optimizer.optimizer.param_groups[0]['lr']
             if args.distributed:
@@ -161,7 +218,7 @@ class ArtTask(BaseTask):
         ret = torch.ones(size, size, dtype=torch.uint8)
         return torch.tril(ret, out=ret).unsqueeze(0)
 
-    def run_one_epoch(self, epoch, args, is_train=True):
+    def run_one_epoch(self, epoch, scaler, args, is_train=True):
         dataloader = self.train_loader if is_train else self.valid_loader
     
         batch_time = util.AverageMeter('Time', ':6.3f')
@@ -183,10 +240,17 @@ class ArtTask(BaseTask):
         updates = -1       
         for i, data in enumerate(dataloader):
             start = time.time()
-            utt_list, feats, labels, feat_sizes, label_sizes = data
-            src, src_mask = feats, (feats[:,:,0] != args.padding_idx).unsqueeze(1)
+            
+            if args.model_type != "hubert":
+                utt_list, feats, labels, feat_sizes, label_sizes = data
+                src, src_mask = feats, (feats[:,:,0] != args.text_padding_idx).unsqueeze(1)
+            else:
+                utt_list, feats, labels, feat_sizes, label_sizes = data
+                src, src_mask = feats, (feats == args.padding_idx) #all audio except files which are masked
+                src_mask = src_mask.sum(-1) / src.size(-1)
+
             tgt, tgt_label = labels[:,:-1], labels[:,1:]
-            tgt_mask = (tgt != args.padding_idx).unsqueeze(1) 
+            tgt_mask = (tgt != args.text_padding_idx).unsqueeze(1) 
             tgt_mask = tgt_mask & self.subsequent_mask(tgt.size(-1)).type_as(tgt_mask)
             tokens = (tgt_label != args.padding_idx).sum().item()
             
@@ -196,7 +260,54 @@ class ArtTask(BaseTask):
                 feat_sizes = feat_sizes.cuda()
                 label_sizes = label_sizes.cuda()
             
-            ctc_out, att_out, loss, att_loss, ctc_loss, feat_sizes = self.model(src, tgt, src_mask, tgt_mask, feat_sizes, label_sizes, tgt_label)
+            try:
+                if scaler is not None:
+                    with torch.cuda.amp.autocast(dtype=torch.float16):
+                        ctc_out, att_out, loss, att_loss, ctc_loss, feat_sizes = self.model(src, tgt, src_mask, tgt_mask, feat_sizes, label_sizes, tgt_label, args.mask_prob)
+                else:
+                    ctc_out, att_out, loss, att_loss, ctc_loss, feat_sizes = self.model(src, tgt, src_mask, tgt_mask, feat_sizes, label_sizes, tgt_label, args.mask_prob)
+
+                if is_train:
+                    if scaler is not None:
+                        with torch.cuda.amp.autocast(dtype=torch.float16):
+                            loss = loss / args.accum_grad
+                        scaler.scale(loss).backward()
+                        if (i+1) % args.accum_grad == 0 or i == (len(dataloader) - 1):
+                            scaler.unscale_(self.optimizer.optimizer)
+                            grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), args.grad_clip)
+                            self.optimizer.step(step_optimizer=False)
+                            scaler.step(self.optimizer.optimizer)
+                            scaler.update()
+                            if args.disable_ls and self.optimizer._step == self.optimizer.s_decay:
+                                if args.rank == 0:
+                                    print("Disable label smoothing from here.")
+                                self.model.att_loss.set_smoothing(0.0)
+                            self.optimizer.zero_grad()
+                            updates += 1
+                            if updates % args.print_freq == 0 and args.rank == 0:
+                                progress.print(updates)
+                    else:
+                        loss = loss / args.accum_grad
+                        loss.backward()
+                        if (i+1) % args.accum_grad == 0 or i == (len(dataloader) - 1):
+                            grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), args.grad_clip)
+                            self.optimizer.step()
+                            if args.disable_ls and self.optimizer._step == self.optimizer.s_decay:
+                                if args.rank == 0:
+                                    print("Disable label smoothing from here.")
+                                self.model.att_loss.set_smoothing(0.0)
+                            self.optimizer.zero_grad()
+                            updates += 1
+                            
+                            if updates % args.print_freq == 0 and args.rank == 0:
+                                progress.print(updates)
+                else:
+                    updates += 1
+                    if updates % args.print_freq == 0 and args.rank == 0:
+                        progress.print(updates)
+            except RuntimeError as err:
+                print("{}!, Skip batch, cuda out of memory".format(err))
+                continue
 
             if args.ctc_alpha > 0:
                 ctc_errs, all_tokens = ctc_greedy_wer(ctc_out, tgt_label.cpu().numpy(), feat_sizes.cpu().numpy(), args.padding_idx)
@@ -211,29 +322,8 @@ class ArtTask(BaseTask):
             ctc_losses.update(ctc_loss.item(), tokens)
             att_losses.update(att_loss.item(), tokens)
             batch_time.update(time.time() - end)
-            token_speed.update(tokens/(time.time()-start))
-            
-            if is_train:
-                loss = loss / args.accum_grad
-                loss.backward()
-                if (i+1) % args.accum_grad == 0 or (i == (len(dataloader) - 1)):
-                    grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), args.grad_clip)
-                    self.optimizer.step()
+            token_speed.update(tokens/(time.time()-start))  
 
-                    if args.disable_ls and self.optimizer._step == self.optimizer.s_decay:
-                        if args.rank == 0:
-                            print("Disable label smoothing from here.")
-                        self.model.att_loss.set_smoothing(0.0)
-                    
-                    self.optimizer.zero_grad()
-                    updates += 1
-                    if updates % args.print_freq == 0 and args.rank == 0:
-                        progress.print(updates)
-            else:
-                updates += 1
-                if updates % args.print_freq == 0 and args.rank == 0:
-                    progress.print(updates)
-            
         return losses.avg, att_wers.avg, ctc_wers.avg
 
     def decode(self, args):    
@@ -248,19 +338,24 @@ class ArtTask(BaseTask):
                 self.lm_model.eval()
 
             for i, data in enumerate(self.test_loader):
-                utt_list, feats, _, feat_sizes, _ = data
-                src, src_mask = feats, (feats[:,:,0] != args.padding_idx).unsqueeze(1)
-        
+                if self.model_type != "hubert":
+                    utt_list, feats, _, feat_sizes, _ = data
+                    src, src_mask = feats, (feats[:,:,0] != args.text_padding_idx).unsqueeze(1)
+                else:
+                    utt_list, feats, _, feat_sizes, _ = data
+                    src, src_mask = feats, (feats == args.padding_idx)
+                    src_mask = src_mask.sum(-1) / src.size(-1)
+
                 if args.use_gpu:
                     src, src_mask = src.cuda(), src_mask.cuda()
                     feat_sizes = feat_sizes.cuda()
 
                 if args.decode_type == 'ctc_only':
-                    recog_results = ctc_beam_decode(self.model, src, src_mask, feat_sizes, self.vocab, args, self.lm_model)
+                    recog_results = ctc_beam_decode(self.model, src, src_mask, feat_sizes, self.tokenizer.vocab, args, self.lm_model)
                 elif args.decode_type == 'ctc_correct':
-                    recog_results = self.model.fast_decode_with_ctc(src, src_mask, self.vocab, args, self.lm_model)
+                    recog_results = self.model.fast_decode_with_ctc(src, src_mask, self.tokenizer, args, self.lm_model)
                 elif args.decode_type == "ctc_att":
-                    recog_results = self.model.beam_decode(src, src_mask, self.tokenizer.vocab, args, self.lm_model)
+                    recog_results = self.model.beam_decode(src, src_mask, self.tokenizer, args, self.lm_model)
                 else:
                     raise NotImplementedError
 

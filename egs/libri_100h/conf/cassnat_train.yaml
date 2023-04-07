@@ -25,7 +25,6 @@ tokenizer: "data/dict/bpemodel_unigram_1024.model"
 bert_name: "bert-base-uncased"
 bert_path: "/data/ruchao/workdir/language_model/bert/" 
 
-
 #conformer related conf
 use_conv_enc: True
 share_ff: False
@@ -58,10 +57,10 @@ skip_frame: 1
 #noam warm up
 multi_optim: True
 warmup_type: "noam_warmup"  # noam_warmup, custom_exp, custom_linear
-noam_factor: [0.001, 0.001, 0.001, 0.001]      # src_embed, encoder, ctc_generator and interctc, decoder related, #learning rate for noam_wamup, factor for custom_exp
-warmup_steps: [15000, 15000, 15000, 15000]
-freeze_steps: [0, 0, 0, 0]
-total_steps: [250000, 250000, 250000, 250000]           # for custom_linear
+noam_factor: [0.001, 0.001, 0.001]      # pretrained_encoder, encoder_generator, decoders, #learning rate for noam_wamup, factor for custom_exp
+warmup_steps: [15000, 15000, 15000]
+freeze_steps: [0, 0, 0]
+total_steps: [250000, 250000, 250000]           # for custom_linear
 
 # multistep
 decay_rate: 0.01
@@ -90,12 +89,15 @@ filter_max: 5000
 filter_min: 0
 
 padding_idx: 0
+text_padding_idx: 0
 accum_grad: 2
 grad_clip: 5
 weight_decay: 0
 
 use_gpu: True
 use_cmvn: True
+use_fp16: False
+
 use_specaug: True
 specaug_start_epoch: 0
 spec_aug:
@@ -108,4 +110,20 @@ spec_aug:
   n_time_mask: 10
   inplace: True
   replace_with_zero: False
+
+# mask strategy
+use_mlm: False #True
+apply_mask: False #True
+use_mask_embed: False #True
+mlm_alpha: 0.1 #1.0
+mask_prob: 0.15
+mask_selection: 'uniform' 
+min_masks: 1
+mask_other: 1
+mask_length: 3
+mask_min_space: 1
+mask_dropout: 0.0
+require_same_masks: False #True
+no_mask_overlap: False
+ 
 

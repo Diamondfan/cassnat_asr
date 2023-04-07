@@ -375,7 +375,7 @@ class HubertModel(nn.Module):
                 min_space=self.mask_min_space,
             )
             mask_indices = torch.from_numpy(mask_indices).to(x.device)
-            x[mask_indices] = self.mask_emb
+            x[mask_indices] = self.mask_emb.type_as(x)
         else:
             mask_indices = None
 
@@ -440,3 +440,36 @@ class HubertModel(nn.Module):
         )
 
         return x, padding_mask, layer_results
+
+    def forward_features(self, wav, padding_mask=None, mask_prob=0):
+        if self.feature_grad_mult > 0:
+            features = self.feature_extractor(wav)
+            if self.feature_grad_mult != 1.0:
+                features = GradMultiply.apply(features, self.feature_grad_mult)
+        else:
+            with torch.no_grad():
+                features = self.feature_extractor(wav)
+
+        features = features.transpose(1, 2)
+        features = self.layer_norm(features)
+        # unmasked_features = features.clone().detach()
+
+        padding_mask = self.forward_padding_mask(features, padding_mask)
+
+        if self.post_extract_proj is not None:
+            features = self.post_extract_proj(features)
+
+        features = self.dropout_input(features)
+        x, mask_indices = self.apply_mask(features, padding_mask, mask_prob)
+        return x, padding_mask
+
+    def forward_encoder(self, x, padding_mask):  
+        # for cassnat2, x is concatenation of conv features and tae
+        x, layer_results = self.encoder(
+            x,
+            padding_mask=padding_mask,
+            layer=None
+        )
+        return x, padding_mask, layer_results
+
+

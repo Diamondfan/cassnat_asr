@@ -31,8 +31,10 @@ left_ctx: 0
 right_ctx: 0
 skip_frame: 1
 padding_idx: 0
+text_padding_idx: 0
 
 use_gpu: True
+max_len: 5000
 filter_max: 5000
 filter_min: 0
 

@@ -4,6 +4,7 @@
 import os
 import torch
 from data.speech_loader import SpeechDataset, DynamicDataset, SpeechDataLoader
+from data.audio_loader import HubertDataset, HubertLoader
 
 class BaseTask(object):
     def __init__(self, args):
@@ -73,23 +74,35 @@ class BaseTask(object):
             self.model = torch.nn.parallel.DistributedDataParallel(self.model, device_ids=[local_rank], find_unused_parameters=find_unused_parameters)
 
     def set_dataloader(self, args):
-        dataset_types = {"SpeechDataset": (SpeechDataset, args.batch_size), "DynamicDataset": (DynamicDataset, 1)}
-        Dataset, actual_bs = dataset_types[args.dataset_type]
+        if args.model_type != "hubert":
+            dataset_types = {"SpeechDataset": (SpeechDataset, args.batch_size), "DynamicDataset": (DynamicDataset, 1)}
+            Dataset, actual_bs = dataset_types[args.dataset_type]
 
-        trainset = Dataset(self.tokenizer, args.train_paths, args)
-        if args.use_cmvn:
-            trainset._load_cmvn(args.global_cmvn)
-        train_loader = SpeechDataLoader(trainset, actual_bs, args.padding_idx, num_workers=args.load_data_workers, 
-                                       distributed=args.distributed, shuffle=True)
+            trainset = Dataset(self.tokenizer, args.train_paths, args)
+            if args.use_cmvn:
+                trainset._load_cmvn(args.global_cmvn)
+            train_loader = SpeechDataLoader(trainset, actual_bs, args.text_padding_idx, num_workers=args.load_data_workers, 
+                                        distributed=args.distributed, shuffle=True)
+        else:
+            trainset = HubertDataset(self.tokenizer, args.train_paths, args)
+            train_loader = HubertLoader(trainset, 1, args.text_padding_idx, args.padding_idx, num_workers=args.load_data_workers, 
+                                        distributed=args.distributed, shuffle=True)
+
         if args.rank == 0:
             print("Finish Loading training files. Number batches: {}".format(len(train_loader)))
 
-        args.use_specaug = False  # specaug cannot be applied to valid
-        validset = Dataset(self.tokenizer, args.dev_paths, args)
-        if args.use_cmvn:
-            validset._load_cmvn(args.global_cmvn)
-        valid_loader = SpeechDataLoader(validset, actual_bs, args.padding_idx, num_workers=args.load_data_workers, 
+        if args.model_type != "hubert":
+            args.use_specaug = False  # specaug cannot be applied to valid
+            validset = Dataset(self.tokenizer, args.dev_paths, args)
+            if args.use_cmvn:
+                validset._load_cmvn(args.global_cmvn)
+            valid_loader = SpeechDataLoader(validset, actual_bs, args.text_padding_idx, num_workers=args.load_data_workers, 
+                                            distributed=False, shuffle=False)
+        else:
+            validset = HubertDataset(self.tokenizer, args.dev_paths, args)
+            valid_loader = HubertLoader(validset, 1, args.text_padding_idx, args.padding_idx, num_workers=args.load_data_workers, 
                                         distributed=False, shuffle=False)
+        
         if args.rank == 0:
             print("Finish Loading dev files. Number batches: {}".format(len(valid_loader)))
 
@@ -99,12 +112,16 @@ class BaseTask(object):
     def set_test_dataloader(self, args):
         args.use_specaug = False
         args.specaug_conf = None
-        testset = SpeechDataset(self.tokenizer, args.test_paths, args)
-        if args.use_cmvn:
-            testset._load_cmvn(args.global_cmvn)
-        test_loader = SpeechDataLoader(testset, args.batch_size, args.padding_idx, num_workers=args.load_data_workers, shuffle=False)
-        print("Finish Loading test files. Number batches: {}".format(len(test_loader)))
+        if self.model_type != "hubert":
+            testset = SpeechDataset(self.tokenizer, args.test_paths, args)
+            if args.use_cmvn:
+                testset._load_cmvn(args.global_cmvn)
+            test_loader = SpeechDataLoader(testset, args.batch_size, args.text_padding_idx, num_workers=args.load_data_workers, shuffle=False)
+        else:
+            testset = HubertDataset(self.tokenizer, args.test_paths, args)
+            test_loader = HubertLoader(testset, 1, args.text_padding_idx, args.padding_idx, num_workers=args.load_data_workers, shuffle=False)
 
+        print("Finish Loading test files. Number batches: {}".format(len(test_loader)))
         self.test_loader = test_loader 
 
     def set_optimizer(self, args):

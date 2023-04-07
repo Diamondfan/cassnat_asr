@@ -21,17 +21,18 @@ class Config():
 class Wav2vecTask(BaseTask):
     def __init__(self, mode, args):
         super(Wav2vecTask, self).__init__(args)
-        self.vocab = None
+        self.tokenizer = None
         
         self._num_updates = 0
         self.set_model(args)
         self.set_optimizer(args)
+        args.find_unused_parameters = False
         self.load_model(args)
         self.set_dataloader(args)
         self.loss = Wav2vecLoss(args.infonce, args.loss_weights, args.log_keys)
         
     def set_model(self, args):
-        assert args.input_size == args.n_features
+        assert args.input_size == (args.left_ctx + args.right_ctx + 1) // args.skip_frame * args.n_features
         self.model = make_model(args.input_size, args)
 
     def load_model(self, args):
@@ -39,9 +40,10 @@ class Wav2vecTask(BaseTask):
         if os.path.exists(last_checkpoint):
             self.load_checkpoint(last_checkpoint, args.rank, args.use_gpu)
         else:
-            self.load_pretrained_model(args.resume_model, args.rank)
+            model_path = os.path.join(args.resume_model)
+            self.load_pretrained_model(model_path, args.rank)
     
-        self.model_stats(args.rank, args.use_slurm, args.distributed)
+        self.model_stats(args.rank, args.use_slurm, args.distributed, find_unused_parameters=args.find_unused_parameters)
             
     def load_pretrained_model(self, resume_model, rank): 
         if resume_model:
@@ -60,7 +62,7 @@ class Wav2vecTask(BaseTask):
         dataset_types = {"SpeechDataset": (SpeechDataset, args.batch_size), "DynamicDataset": (DynamicDataset, 1)}
         Dataset, actual_bs = dataset_types[args.dataset_type]
 
-        trainset = Dataset(self.vocab, args.train_paths, args)
+        trainset = Dataset(self.tokenizer, args.train_paths, args)
         if args.use_cmvn:
             trainset._load_cmvn(args.global_cmvn)
         train_loader = SSLDataLoader(trainset, actual_bs, args.padding_idx, num_workers=args.load_data_workers, 
@@ -69,7 +71,7 @@ class Wav2vecTask(BaseTask):
             print("Finish Loading training files. Number batches: {}".format(len(train_loader)))
 
         args.use_specaug = False  # specaug cannot be applied to valid
-        validset = Dataset(self.vocab, args.dev_paths, args)
+        validset = Dataset(self.tokenizer, args.dev_paths, args)
         if args.use_cmvn:
             validset._load_cmvn(args.global_cmvn)
         valid_loader = SSLDataLoader(validset, actual_bs, args.padding_idx, num_workers=args.load_data_workers, 

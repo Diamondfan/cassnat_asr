@@ -8,7 +8,7 @@ stage=3
 end_stage=3
 featdir=data/fbank
 
-unit=wp         #character
+unit=char #wp         #character
 nbpe=500
 bpemode=unigram #bpe or unigram
 
@@ -90,7 +90,7 @@ if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
     done
   elif [ $unit == char ]; then
     for part in $train_set $test_set; do
-        python local/prepare_dict.py $dict $all_text data/$part/text > data/$part/token_char.scp
+        python local/prepare_dict_char.py $dict $all_text data/$part/text > data/$part/token_char.scp
     done
   else
     echo "Not ImplementedError"; exit 1

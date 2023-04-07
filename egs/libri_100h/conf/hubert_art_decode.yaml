@@ -7,7 +7,7 @@ bert_name: "bert-base-uncased"
 bert_path: "/data/ruchao/workdir/language_model/bert/" 
 
 #model configuration
-model_type: "conformer"
+model_type: "hubert"
 input_size: 80
 N_dec: 6
 d_model: 512

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# 2021 Ruchao Fan
+# 2021, 2022 Ruchao Fan
 # SPAPL
 # For self-supervised learning training
 
@@ -13,7 +13,7 @@ import torch.distributed as dist
 import torch.backends.cudnn as cudnn
 
 sys.path.append(os.environ['E2EASR']+'/src')
-from tasks import Wav2vecTask
+from tasks import Wav2vecTask #, HuBertTask
 from utils.parser import BaseParser
 
 class Config():
@@ -82,7 +82,7 @@ def main_worker(rank, world_size, args, backend='nccl'):
     if use_cuda:
         torch.cuda.manual_seed(args.seed)
 
-    task_dict = {"wav2vec": Wav2vecTask}
+    task_dict = {"wav2vec": Wav2vecTask} #, "hubert": HuBertTask}
     if args.task in task_dict:
         task = task_dict[args.task]("train", args)
     else:

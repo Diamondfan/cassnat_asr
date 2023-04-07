@@ -1,4 +1,4 @@
-# 2022 Ruchao Fan
+# 2022-2023 Ruchao Fan
 # SPAPL
 
 import os
@@ -10,9 +10,10 @@ from torch.distributed import ReduceOp
 
 import utils.util as util
 from tasks import BaseTask
-from data.tokenizer import SPTokenizer
+from data.tokenizer import SPTokenizer, CharTokenizer
 from utils.optimizer import get_mul_optim, get_optim
 from models import make_cassnat_model
+from utils.beam_decode import ctc_beam_decode
 from utils.wer import ctc_greedy_wer, att_greedy_wer
 
 
@@ -21,11 +22,14 @@ class Config():
 
 class CassNATTask(BaseTask):
     def __init__(self, mode, args):
+        self.model_type = args.model_type
         if args.use_BERT_tokenizer:
             from models.bert.tokenization import get_tokenizer
             self.tokenizer = get_tokenizer(args.bert_name, args.bert_path)
-        else:
+        elif args.tokenizer:
             self.tokenizer = SPTokenizer(args.tokenizer, args.vocab_file)
+        else:
+            self.tokenizer = CharTokenizer(args.vocab_file)
         args.vocab_size = len(self.tokenizer.vocab)
 
         super(CassNATTask, self).__init__(args)
@@ -33,7 +37,7 @@ class CassNATTask(BaseTask):
         if mode == "train":
             self.set_model(args)
             self.set_optimizer(args) 
-            args.find_unused_parameters = False
+            args.find_unused_parameters = False if self.model_type != "hubert" else True
             self.load_model(args)
             self.set_dataloader(args)
 
@@ -51,35 +55,61 @@ class CassNATTask(BaseTask):
         
     def set_model(self, args):
         assert args.input_size == (args.left_ctx + args.right_ctx + 1) // args.skip_frame * args.n_features
-        self.model = make_cassnat_model(args.input_size, args)
+        if args.model_type in ["transformer", "conformer", "hubert"]:
+            self.model = make_cassnat_model(args.input_size, args)
+        else:
+            raise NotImplementedError
 
     def load_model(self, args):
         last_checkpoint = os.path.join(args.exp_dir, 'model.last.mdl')
         if os.path.exists(last_checkpoint):
             self.load_checkpoint(last_checkpoint, args.rank, args.use_gpu)
         else:
-            self.load_pretrained_model(args.resume_model, args.rank, args.init_encoder, args.fix_encoder)
+            model_path = os.path.join(args.resume_model)
+            self.load_pretrained_model(model_path, args.rank, args.init_encoder, args.fix_encoder)
     
-        self.model_stats(args.rank, args.use_slurm, args.distributed)
+        self.model_stats(args.rank, args.use_slurm, args.distributed, find_unused_parameters=args.find_unused_parameters)
 
     def load_pretrained_model(self, resume_model, rank, init_encoder, fix_encoder): 
         if init_encoder and resume_model:
             if rank == 0:
                 print("Loading model from {}".format(resume_model))
-            checkpoint = torch.load(resume_model, map_location='cpu')['model_state']
-            for name, param in self.model.named_parameters():
-                if name.split('.')[0] in ['src_embed', 'encoder', 'ctc_generator', 'interctc_generator']:
-                    try:
-                        if name in checkpoint:
-                            param.data.copy_(checkpoint[name])
-                        else:
-                            param.data.copy_(checkpoint['module.'+name])
-                    except:
-                        if rank == 0:
-                            print("No param of {} in resume model".format(name))
+            checkpoint = torch.load(resume_model, map_location='cpu')
+            
+            if self.model_type != "hubert":
+                model_state = checkpoint["model_state"]
 
-                    if fix_encoder:
-                        param.requires_grad = False
+                for name, param in self.model.named_parameters():
+                    if name.split('.')[0] in ['src_embed', 'encoder', 'ctc_generator', 'interctc_generator']:
+                        try:
+                            if name in model_state:
+                                param.data.copy_(model_state[name])
+                            else:
+                                param.data.copy_(model_state['module.'+name])
+                        except:
+                            if rank == 0:
+                                print("No param of {} in resume model".format(name))
+
+                        if fix_encoder:
+                            param.requires_grad = False
+
+            else:
+                model_state = checkpoint["model"]
+
+                for name, param in self.model.named_parameters(): #decoder is trained from scratch
+                    if name.split('.')[0] == "module":
+                        name = '.'.join(name.split('.')[1:]).strip()
+                    
+                    if name.split('.')[0] == "encoder":
+                        name_sp = '.'.join(name.split('.')[1:]).strip()
+                        try:
+                            param.data.copy_(model_state[name_sp])
+                        except:
+                            if rank == 0:
+                                print("No param of {} in resume model".format(name))
+                        
+                        if fix_encoder:
+                            param.requires_grad = False
 
         self.start_epoch = 0
 
@@ -106,11 +136,11 @@ class CassNATTask(BaseTask):
                     lm_model = make_lm_model(lm_args)
                 
                 if args.rank_model == 'at_baseline':
-                    if lm_args.model_type == 'transformer':
-                        from models.transformer import make_model as make_lm_model
-                    if lm_args.model_type == 'conformer':
-                        from models.conformer import make_model as make_lm_model
+                    from models import make_art_model as make_lm_model
+                    lm_args.ctc_alpha = 1
                     lm_args.interctc_alpha = 0
+                    lm_args.interctc_layer = 0
+                    lm_args.label_smooth = 0
                     lm_model = make_lm_model(args.input_size, lm_args)
                 
                 print("Loading language model from {}".format(args.rnnlm))
@@ -118,8 +148,13 @@ class CassNATTask(BaseTask):
                 model_state = checkpoint_lm["model_state"]
                 
                 for name, param in lm_model.named_parameters():
+                    if name not in model_state and not name.startswith('module'):
+                        # to be compatible with model trained with a legacy version
+                        name = name.replace('encoder', 'hub_base', 1)
+
                     if name not in model_state:
                         name = "module." + name
+                    
                     param.data.copy_(model_state[name])
                 
                 if args.use_gpu:
@@ -136,16 +171,25 @@ class CassNATTask(BaseTask):
             def func(module):
                 return filter(lambda p: p.requires_grad, module.parameters())
         
-            pretrained_encoders = [list(func(self.model.src_embed)), list(func(self.model.encoder)),
-                list(func(self.model.ctc_generator))]
-            if args.interctc_alpha > 0:
-                pretrained_encoders[-1] += list(func(self.model.interctc_generator))
-
-            decoder_params = list(func(self.model.acembed_extractor)) + list(func(self.model.embed_mapper)) \
-                                + list(func(self.model.decoder)) + list(func(self.model.att_generator))
+            if args.model_type != "hubert":
+                pretrained_encoders = [list(func(self.model.src_embed)) + list(func(self.model.encoder))]
+                generators = list(func(self.model.ctc_generator))
+                if args.interctc_alpha > 0:
+                    generators += list(func(self.model.interctc_generator))
+            else:
+                pretrained_encoders = [list(func(self.model.encoder))]  
+                generators = list(func(self.model.ctc_generator)) + list(func(self.model.projection_layer))
+                if args.interctc_alpha > 0:
+                    generators += list(func(self.model.interctc_generator)) + list(func(self.model.interctc_projection_layer))
+            
+            decoder_params = list(func(self.model.acembed_extractor)) + list(func(self.model.selfattn_decoder)) \
+                                + list(func(self.model.mixattn_decoder)) + list(func(self.model.att_generator))
             if args.interce_alpha > 0:
                 decoder_params += list(func(self.model.interce_generator))
+            if args.use_mlm:
+                decoder_params += list(func(self.model.mlm_generator))
 
+            pretrained_encoders.extend([generators])
             pretrained_encoders.extend([decoder_params])
             update_param_groups = pretrained_encoders
             self.optimizer = get_mul_optim(args.optim_type, update_param_groups, args) 
@@ -160,6 +204,8 @@ class CassNATTask(BaseTask):
                                                                     patience=args.patience, min_lr=args.min_lr)
         
         sample_topk = args.sample_topk
+        apply_mask = args.apply_mask
+        mask_prob = args.mask_prob
 
         for epoch in range(self.start_epoch, args.epochs):
             if args.distributed:
@@ -168,11 +214,16 @@ class CassNATTask(BaseTask):
             self.train_loader.dataset.use_specaug = (epoch >= args.specaug_start_epoch)    
             self.model.train()
             args.sample_topk = sample_topk
+            args.apply_mask = apply_mask
+            args.mask_prob = mask_prob
             train_loss, train_wer, train_ctc_wer = self.run_one_epoch(epoch, args, is_train=True)
+            #train_loss, train_wer, train_ctc_wer = 0, 0, 0
             
             self.model.eval()
             with torch.no_grad():
                 args.sample_topk = 0
+                args.apply_mask = False
+                args.mask_prob = 0
                 valid_loss, valid_wer, valid_ctc_wer = self.run_one_epoch(epoch, args, is_train=False)
             
             temp_lr = self.optimizer.param_groups[0]['lr'] if args.optim_type == "normal" else self.optimizer.optimizer.param_groups[0]['lr']
@@ -231,8 +282,10 @@ class CassNATTask(BaseTask):
         
         if is_train:
             num_updates = math.ceil(len(dataloader) / args.accum_grad)
+            scaler = torch.cuda.amp.GradScaler() if args.use_fp16 else None
         else:
             num_updates = len(dataloader)
+            scaler = None
 
         progress = util.ProgressMeter(num_updates, batch_time, losses, ctc_losses, att_losses, ctc_wers, \
                                         att_wers, token_speed, prefix="Epoch: [{}]".format(epoch))
@@ -242,11 +295,18 @@ class CassNATTask(BaseTask):
         
         for i, data in enumerate(dataloader):
             start = time.time()
-            utt_list, feats, labels, feat_sizes, label_sizes = data
-            src, src_mask = feats, (feats[:,:,0] != args.padding_idx).unsqueeze(1)
+            if args.model_type != "hubert":
+                utt_list, feats, labels, feat_sizes, label_sizes = data
+                src, src_mask = feats, (feats[:,:,0] != args.padding_idx).unsqueeze(1)
+            else:
+                utt_list, feats, labels, feat_sizes, label_sizes = data
+                src, src_mask = feats, (feats == args.padding_idx)                                                                   #check first col to see if file is masked
+                #src_mask: ratios of unmasked length
+                src_mask = src_mask.sum(-1) / src.size(-1)
+            
             tgt_label = labels[:,1:]
             tgt = labels[:,:-1]
-            tokens = (tgt_label != args.padding_idx).sum().item()
+            tokens = (tgt_label != args.text_padding_idx).sum().item()
             
             if args.use_gpu:
                 src, src_mask = src.cuda(), src_mask.cuda()
@@ -255,33 +315,46 @@ class CassNATTask(BaseTask):
                 feat_sizes = feat_sizes.cuda()
                 label_sizes = label_sizes.cuda()
             
-            ctc_out, att_out, loss, ctc_loss, att_loss = self.model(src, src_mask, feat_sizes, tgt_label, label_sizes, args)
-            bs, max_feat_size, _ = ctc_out.size()
-            feat_sizes = (feat_sizes * max_feat_size).long()
+            with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=(scaler is not None)):
+                ctc_out, att_out, loss, ctc_loss, att_loss, src_size = self.model(src, src_mask, feat_sizes, tgt_label, label_sizes, args)
+                loss = loss / args.accum_grad
             
             # unit error rate computation
-            ctc_errs, all_tokens = ctc_greedy_wer(ctc_out, tgt_label.cpu().numpy(), feat_sizes.cpu().numpy(), args.padding_idx)
+            ctc_errs, all_tokens = ctc_greedy_wer(ctc_out, tgt_label.cpu().numpy(), src_size.cpu().numpy(), args.text_padding_idx)
             ctc_wers.update(ctc_errs/all_tokens, all_tokens)
-            att_errs, all_tokens = att_greedy_wer(att_out, tgt_label.cpu().numpy(), args.padding_idx)
+            att_errs, all_tokens = att_greedy_wer(att_out, tgt_label.cpu().numpy(), args.text_padding_idx)
             att_wers.update(att_errs/all_tokens, all_tokens)
             
-            losses.update(loss.item(), tokens)
+            losses.update(loss.item() * args.accum_grad, tokens)
             ctc_losses.update(ctc_loss.item(), tokens)
             att_losses.update(att_loss.item(), tokens)
             batch_time.update(time.time() - end)
             token_speed.update(tokens/(time.time()-start))
             
             if is_train:
-                loss = loss / args.accum_grad
-                loss.backward()
-                if i % args.accum_grad == 0 or i == (len(dataloader) - 1):
-                    grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), args.grad_clip)
-                    self.optimizer.step()
-                    self.optimizer.zero_grad()
-                    updates += 1
-                    
-                    if updates % args.print_freq == 0 and args.rank == 0:
-                        progress.print(updates)
+                #loss = loss / args.accum_grad
+                if scaler is not None:
+                    scaler.scale(loss).backward()
+                    if i % args.accum_grad == 0 or i == (len(dataloader) - 1):
+                        scaler.unscale_(self.optimizer.optimizer)
+                        grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), args.grad_clip)
+                        self.optimizer.step(step_optimizer=False)
+                        scaler.step(self.optimizer.optimizer)
+                        scaler.update()
+                        self.optimizer.zero_grad()
+                        updates += 1
+                        if updates % args.print_freq == 0 and args.rank == 0:
+                            progress.print(updates)
+                else:
+                    loss.backward()
+                    if i % args.accum_grad == 0 or i == (len(dataloader) - 1):
+                        grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), args.grad_clip)
+                        self.optimizer.step()
+                        self.optimizer.zero_grad()
+                        updates += 1
+                        
+                        if updates % args.print_freq == 0 and args.rank == 0:
+                            progress.print(updates)
             else:
                 updates += 1
                 if updates % args.print_freq == 0 and args.rank == 0:
@@ -307,9 +380,15 @@ class CassNATTask(BaseTask):
                 self.lm_model.eval()
 
             for i, data in enumerate(self.test_loader):
-                utt_list, feats, labels, feat_sizes, label_sizes = data
-                src, src_mask = feats, (feats[:,:,0] != args.padding_idx).unsqueeze(1)
-            
+                if args.model_type != "hubert":
+                    utt_list, feats, labels, feat_sizes, label_sizes = data
+                    src, src_mask = feats, (feats[:,:,0] != args.padding_idx).unsqueeze(1)
+                else:
+                    utt_list, feats, labels, feat_sizes, label_sizes = data
+                    src, src_mask = feats, (feats == args.padding_idx)
+                    #src_mask: ratios of unmasked length
+                    src_mask = src_mask.sum(-1) / src.size(-1)
+
                 if args.use_gpu:
                     src, src_mask = src.cuda(), src_mask.cuda()
                     feat_sizes = feat_sizes.cuda()

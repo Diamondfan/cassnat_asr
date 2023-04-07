@@ -10,7 +10,7 @@ import torch.nn.functional as F
 from models.modules.norm import LayerNorm
 from models.modules.attention import MultiHeadedAttention, RelMultiHeadedAttention
 from models.modules.positionff import PositionwiseFeedForward
-from models.modules.embedding import PositionalEncoding, RelativePositionalEncoding, ConvEmbedding
+from models.modules.embedding import PositionalEncoding, RelativePositionalEncoding, ConvDS2Embedding
 from models.modules.conformer_related import Swish, ConvModule
 from models.blocks.conformer_blocks import Encoder as ConEncoder
 from models.blocks.transformer_blocks import Encoder as TrfEncoder
@@ -43,7 +43,7 @@ def make_model(input_size, args):
 
     final_dim = args.d_model
     model = Wav2vec2(
-        ConvEmbedding(input_size, args.d_model, args.dropout, enc_position),
+        ConvDS2Embedding(input_size, args.d_model, args.dropout, enc_position),
         encoder, args)
     
     for name, p in model.named_parameters():

@@ -1,5 +1,6 @@
 
-# 2020 Ruchao Fan
+# 2020-2023 Ruchao Fan
+# SPAPL
 
 import copy
 import math
@@ -15,25 +16,35 @@ from models.modules.embedding import PositionalEncoding, RelativePositionalEncod
 from models.modules.conformer_related import Swish, ConvModule
 from models.blocks import TrfEncoder, ConEncoder
 from models.blocks import ConSAD, ConMAD, TrfSAD, TrfMAD, ConAcExtra, TrfAcExtra
+from models.blocks.hubert_blocks import HubertModel
 from utils.ctc_prefix import logzero, logone, CTCPrefixScore
 from utils.loss import LabelSmoothing, KLDivLoss
+from models.modules.ssl_util import compute_mask_indices
 
 def make_model(input_size, args):
     c = copy.deepcopy
     # we do not make a comparison with relative and absolute in CASS_NAT
-    if args.use_conv_enc:
-        assert args.pos_type == "relative", "conformer must use relative positional encoding"
-        enc_position = RelativePositionalEncoding(args.d_model, args.dropout, args.enc_max_relative_len)     
-        enc_attn = RelMultiHeadedAttention(args.n_head, args.d_model, args.dropout)
-        enc_conv_module = ConvModule(args.d_model, args.enc_kernel_size, activation=Swish())    
-        enc_ff = PositionwiseFeedForward(args.d_model, args.d_encff, args.dropout, activation=Swish())
-        encoder = ConEncoder(args.d_model, c(enc_ff), enc_attn, enc_conv_module, c(enc_ff), args.dropout, args.N_enc, args.pos_type, args.share_ff)
+    if args.model_type != "hubert":
+        if args.use_conv_enc:
+            assert args.pos_type == "relative", "conformer must use relative positional encoding"
+            enc_position = RelativePositionalEncoding(args.d_model, args.dropout, args.enc_max_relative_len)     
+            enc_attn = RelMultiHeadedAttention(args.n_head, args.d_model, args.dropout)
+            enc_conv_module = ConvModule(args.d_model, args.enc_kernel_size, activation=Swish())    
+            enc_ff = PositionwiseFeedForward(args.d_model, args.d_encff, args.dropout, activation=Swish())
+            encoder = ConEncoder(args.d_model, c(enc_ff), enc_attn, enc_conv_module, c(enc_ff), args.dropout, args.N_enc, args.pos_type, args.share_ff)
+        else:
+            assert args.model_type == "transformer"
+            enc_attn = MultiHeadedAttention(args.n_head, args.d_model)
+            enc_ff = PositionwiseFeedForward(args.d_model, args.d_encff, args.dropout)
+            enc_position = PositionalEncoding(args.d_model, args.dropout)
+            encoder = TrfEncoder(args.d_model, enc_attn, enc_ff, args.dropout, args.N_enc)
+        src_embed = ConvEmbedding(input_size, args.d_model, args.dropout, enc_position)
+        projection_layer, interctc_projection_layer = None, None
     else:
-        assert args.model_type == "transformer"
-        attn = MultiHeadedAttention(args.n_head, args.d_model)
-        ff = PositionwiseFeedForward(args.d_model, args.d_encff, args.dropout)
-        enc_position = PositionalEncoding(args.d_model, args.dropout)
-        encoder = TrfEncoder(args.d_model, c(attn), c(ff), args.dropout, args.N_enc)
+        src_embed = None
+        encoder = HubertModel(args)
+        projection_layer = nn.Linear(args.encoder_embed_dim, args.d_model)
+        interctc_projection_layer = nn.Linear(args.encoder_embed_dim, args.d_model) if args.interctc_alpha > 0 else None
 
     if args.use_conv_dec:
         dec_self_attn = RelMultiHeadedAttention(args.n_head, args.d_model, args.dropout)
@@ -55,12 +66,14 @@ def make_model(input_size, args):
     generator = Generator(args.d_model, args.vocab_size)
     interctc_gen = Generator(args.d_model, args.vocab_size, add_norm=True) if args.interctc_alpha > 0 else None
     interce_gen = Generator(args.d_model, args.vocab_size, add_norm=True) if args.interce_alpha > 0 else None
+    mlm_gen = Generator(args.d_model, args.vocab_size) if args.use_mlm else None
     pe = create_pe(args.d_model)
 
-    model = CassNAT(
-                ConvEmbedding(input_size, args.d_model, args.dropout, enc_position),
-                encoder, Extra, Sad, Mad, c(generator), c(generator), pe, interctc_gen, interce_gen, args)
+    model = CassNAT(src_embed, encoder, projection_layer, interctc_projection_layer,
+                    Extra, Sad, Mad, c(generator), c(generator), pe, interctc_gen, interce_gen, mlm_gen, args)
 
+    # decide the interce layer to be added in SAD (selfce_alpha > 0) 
+    # or MAD (mixce_alpha > 0)
     if args.interce_alpha > 0:
         if args.interce_layer <= args.N_self_dec:
             args.selfce_alpha = args.interce_alpha
@@ -102,48 +115,78 @@ class Generator(nn.Module):
         return F.log_softmax(self.proj(x)/T, dim=-1)
 
 class CassNAT(nn.Module):
-    def __init__(self, src_embed, encoder, acembed_extractor, embed_mapper, decoder, ctc_gen, att_gen, pe, interctc_gen, interce_gen, args):
+    def __init__(self, src_embed, encoder, projection_layer, interctc_projection_layer, 
+                    acee, sad, mad, ctc_gen, att_gen, pe, interctc_gen, interce_gen, mlm_gen, args):
         super(CassNAT, self).__init__()
+        self.model_type = args.model_type
         self.src_embed = src_embed
         self.encoder = encoder
-        self.acembed_extractor = acembed_extractor
-        self.embed_mapper = embed_mapper
-        self.decoder = decoder
+        self.projection_layer = projection_layer
+        self.acembed_extractor = acee
+        self.selfattn_decoder = sad
+        self.mixattn_decoder = mad
         self.ctc_generator = ctc_gen
         self.att_generator = att_gen
         self.pe = pe
         self.ctc_loss = torch.nn.CTCLoss(reduction='mean', zero_infinity=True)
-        self.att_loss = LabelSmoothing(args.vocab_size, args.padding_idx, args.label_smooth)
+        self.att_loss = LabelSmoothing(args.vocab_size, args.text_padding_idx, args.label_smooth)
+        
+        if args.apply_mask and args.use_mask_embed:
+            self.mask_embed = nn.Parameter(torch.FloatTensor(args.d_model).uniform_())
+        
+        if args.use_mlm:    
+            self.mlm_loss = LabelSmoothing(args.vocab_size, args.text_padding_idx, 0)
+            self.mlm_generator = mlm_gen
 
         if interctc_gen is not None:
             self.interctc_generator = interctc_gen
+            self.interctc_projection_layer = interctc_projection_layer
             self.interctc_loss = torch.nn.CTCLoss(reduction='mean', zero_infinity=True)
         if interce_gen is not None:
             self.interce_generator = interce_gen
-            self.interce_loss = LabelSmoothing(args.vocab_size, args.padding_idx, args.label_smooth)
+            self.interce_loss = LabelSmoothing(args.vocab_size, args.text_padding_idx, args.label_smooth)
             
     def forward(self, src, src_mask, src_size, tgt_label, label_sizes, args):
         # 1. compute ctc output
-        x, x_mask = self.src_embed(src, src_mask)
-        enc_h = self.encoder(x, x_mask, args.interctc_alpha, args.interctc_layer)
-
-        if args.ctc_alpha > 0 and args.interctc_alpha == 0:
-            ctc_out = self.ctc_generator(enc_h)
-            interctc_out = 0
-        elif args.ctc_alpha > 0 and args.interctc_alpha > 0:
-            enc_h, inter_h = enc_h[0], enc_h[1]
-            ctc_out = self.ctc_generator(enc_h)
-            interctc_out = self.interctc_generator(inter_h)
+        if args.model_type != "hubert":
+            x, x_mask = self.src_embed(src, src_mask)
+            enc_h = self.encoder(x, x_mask, args.interctc_alpha, args.interctc_layer)
+            inter_h = enc_h[1] if args.interctc_alpha > 0 else None
+            enc_h = enc_h[0]
+            src_size = (src_size * enc_h.size(1)).long()
         else:
-            ctc_out = enc_h.new_zeros(enc_h.size())
-            interctc_out = 0
+            enc_h, x_mask, layer_results = self.encoder(src, padding_mask=src_mask, mask_prob=args.mask_prob)
+            enc_h = self.projection_layer(enc_h)
+            x_mask = x_mask.unsqueeze(1)
+            x_mask = ~x_mask
+            src_mask = x_mask
+            src_size = (x_mask != 0).squeeze(1).sum(-1)
+            if args.interctc_alpha > 0:
+                inter_h = layer_results[args.interctc_layer-1][0] 
+                inter_h = self.interctc_projection_layer(inter_h.transpose(0,1))
+            else:
+                inter_h = None
+
+        if args.ctc_alpha > 0:
+            ctc_out = self.ctc_generator(enc_h)
+            ctc_loss = self.ctc_loss(ctc_out.transpose(0,1), tgt_label, src_size, label_sizes)  
+        else:
+            ctc_loss = torch.Tensor([0])
+  
+        if args.interctc_alpha > 0:
+            interctc_out = self.interctc_generator(inter_h)
+            interctc_loss = self.interctc_loss(interctc_out.transpose(0,1), tgt_label, src_size, label_sizes)
+        else:
+            interctc_loss = torch.Tensor([0])
+
+        # get ctc related loss
+        loss = args.ctc_alpha * ctc_loss + args.interctc_alpha * interctc_loss
         
-        # 2. prepare different masks,
+        # 2. decoder: prepare different masks,
         ylen = label_sizes
         if args.use_trigger:
             assert args.ctc_alpha > 0
-            src_size = (src_size * ctc_out.size(1)).long()
-            blank = args.padding_idx
+            blank = 0
             if args.use_best_path:
                 trigger_mask, ylen, ymax = self.best_path_align(ctc_out, x_mask, src_size, blank)
             else:
@@ -165,14 +208,39 @@ class CassNAT(nn.Module):
         # 3. Extract Acoustic embedding and Map it to Word embedding
         pe = self.pe.type_as(src).unsqueeze(0).repeat(bs, 1, 1)[:,:ymax,:]
         ac_embed = self.acembed_extractor(pe, enc_h, trigger_mask)
-        pred_embed = self.embed_mapper(ac_embed, tgt_mask_bidi, args.selfce_alpha, args.interce_layer)
+
+        # mask ac_embed and use mlm loss
+        if args.apply_mask:
+            if isinstance(ac_embed, tuple):
+                ac_temp = ac_embed[0]
+            else:
+                ac_temp = ac_embed
+            B, T, _ = ac_temp.size()
+            padding_mask = (~tgt_mask_bidi.squeeze(1).bool())
+            mask_indices = compute_mask_indices((B, T), padding_mask, args.mask_prob, args.mask_length, 
+                                args.mask_selection, args.mask_other, min_masks=args.min_masks, no_overlap=args.no_mask_overlap, 
+                                min_space=args.mask_min_space, require_same_masks=args.require_same_masks, 
+                                mask_dropout=args.mask_dropout)
+            mask_indices = torch.from_numpy(mask_indices).to(ac_temp.device)
+            #import pdb; pdb.set_trace()
+            #print(mask_indices.sum() / (padding_mask.numel() - padding_mask.sum()))
+
+            if isinstance(ac_embed, tuple):
+                if args.use_mask_embed:
+                    ac_embed[0][mask_indices] = self.mask_embed
+                else:
+                    ac_embed[0][mask_indices] = ac_temp.mean(1, keepdim=True).repeat(1,ac_temp.size(1),1)[mask_indices]
+            else:
+                if args.use_mask_embed:    
+                    ac_embed[mask_indices] = self.mask_embed
+                else:
+                    ac_embed[mask_indices] = ac_temp.mean(1, keepdim=True).repeat(1,ac_temp.size(1),1)[mask_indices]
+
+        pred_embed = self.selfattn_decoder(ac_embed, tgt_mask_bidi, args.selfce_alpha, args.interce_layer)
         if args.selfce_alpha > 0:
             interce_out = self.interce_generator(pred_embed[-1])
             pred_embed = pred_embed[:-1]
 
-        if args.save_embedding:
-            args.ac_embed, args.pred_embed = ac_embed[0].cpu(), pred_embed[0].cpu()
-        
         # 4. decoder, output units generation
         if args.use_unimask:
             sos_embed = torch.zeros(pred_embed.size(0), 1, pred_embed.size(2)).type_as(pred_embed)
@@ -184,7 +252,7 @@ class CassNAT(nn.Module):
 
         if args.src_trigger:
             x_mask = trigger_mask
-        dec_h = self.decoder(pred_embed, enc_h, x_mask, tgt_mask, args.mixce_alpha, args.interce_layer)
+        dec_h = self.mixattn_decoder(pred_embed, enc_h, x_mask, tgt_mask, args.mixce_alpha, args.interce_layer)
         
         if args.mixce_alpha > 0:
             dec_h, interce_h = dec_h[0], dec_h[1]
@@ -194,40 +262,50 @@ class CassNAT(nn.Module):
         
         att_out = self.att_generator(dec_h)
         
-        loss = 0
-        if args.ctc_alpha > 0:
-            ctc_loss = self.ctc_loss(ctc_out.transpose(0,1), tgt_label, src_size, label_sizes)
-            loss += args.ctc_alpha * ctc_loss
+        if args.use_mlm and args.apply_mask:
+            mlm_out = self.mlm_generator(dec_h[mask_indices])
+            mlm_target = tgt_label[mask_indices]
+            ce_out = att_out[~mask_indices]
+            ce_label = tgt_label[~mask_indices]
         else:
-            ctc_loss = torch.Tensor([0])
+            ce_out = att_out
+            ce_label = tgt_label
 
-        if args.interctc_alpha > 0:
-            interctc_loss = self.interctc_loss(interctc_out.transpose(0,1), tgt_label, src_size, label_sizes)
-            loss += args.interctc_alpha * interctc_loss
-        
-        # loss computation
         if args.use_best_path:
-            att_loss = self.att_loss.forward_best_path(att_out, tgt_label, tgt_mask_pred)
+            att_loss = self.att_loss.forward_best_path(ce_out, ce_label, tgt_mask_pred)
         else:
-            att_loss = self.att_loss(att_out.view(-1, att_out.size(-1)), tgt_label.view(-1))
+            att_loss = self.att_loss(ce_out.view(-1, ce_out.size(-1)), ce_label.view(-1))
 
         loss += args.att_alpha * att_loss
+
+        if args.use_mlm and args.apply_mask:
+            mlm_loss = self.mlm_loss(mlm_out, mlm_target)
+            loss += args.mlm_alpha * mlm_loss
         
         if args.interce_alpha > 0:
-            interce_loss = self.interce_loss(interce_out.view(-1, interce_out.size(-1)), tgt_label.view(-1))
+            if args.use_mlm and args.apply_mask:
+                interce_out = interce_out[~mask_indices]
+
+            interce_loss = self.interce_loss(interce_out.view(-1, interce_out.size(-1)), ce_label.view(-1))
             loss += args.interce_alpha * interce_loss
 
-        return ctc_out, att_out, loss, ctc_loss, att_loss
+        return ctc_out, att_out, loss, ctc_loss, att_loss, src_size
 
     def expand_trigger_mask(self, trigger_mask, left_trigger, right_trigger):
-        if right_trigger > 0:
-            trigger_shift_right = trigger_mask.new_zeros(trigger_mask.size())
-            trigger_shift_right[:, :, 1:] = trigger_mask[:,:, :-1]
-            trigger_mask = trigger_mask | trigger_shift_right
-        if left_trigger > 0:
-            trigger_shift_left = trigger_mask.new_zeros(trigger_mask.size())
-            trigger_shift_left[:,:,:-1] = trigger_mask[:,:,1:]
-            trigger_mask = trigger_mask | trigger_shift_left
+        if isinstance(right_trigger, int):
+            if right_trigger > 0:
+                trigger_shift_right = trigger_mask.new_zeros(trigger_mask.size())
+                trigger_shift_right[:, :, 1:] = trigger_mask[:,:, :-1]
+                trigger_mask = trigger_mask | trigger_shift_right
+            if left_trigger > 0:
+                trigger_shift_left = trigger_mask.new_zeros(trigger_mask.size())
+                trigger_shift_left[:,:,:-1] = trigger_mask[:,:,1:]
+                trigger_mask = trigger_mask | trigger_shift_left
+        if isinstance(right_trigger, str):
+            trigger_shift_right = torch.cat([trigger_mask[:,1:,:], trigger_mask[:,-1:,:]], dim=1)        
+            trigger_shift_left = torch.cat([trigger_mask[:,:1,:], trigger_mask[:,:-1,:]], dim=1)
+            trigger_mask = trigger_mask | trigger_shift_right | trigger_shift_left
+
         return trigger_mask
 
     def viterbi_align(self, ctc_out, src_mask, src_size, ys, ylens, blank, sample_topk):
@@ -378,12 +456,20 @@ class CassNAT(nn.Module):
         eos = tokenizer.vocab['eos']
         blank = tokenizer.vocab['blank']
 
-        x, src_mask = self.src_embed(src, x_mask)
-        enc_h = self.encoder(x, src_mask)
+        if self.model_type != "hubert":
+            x, src_mask = self.src_embed(src, x_mask)
+            enc_h = self.encoder(x, src_mask)
+            src_size = (src_size * enc_h.size(1)).long()
+        else:
+            enc_h, src_mask, layer_results = self.encoder(src, padding_mask=x_mask, mask_prob=args.mask_prob)
+            enc_h = self.projection_layer(enc_h)
+            src_mask = src_mask.unsqueeze(1)
+            src_mask = ~src_mask
+            src_size = (src_mask != 0).squeeze(1).sum(-1)
+
         ctc_out = self.ctc_generator(enc_h)
 
-        if args.use_trigger:
-            src_size = (src_size * ctc_out.size(1)).long()
+        if args.use_trigger:    
             #used to include oracle path in sampe path
             if args.test_hitrate:
                 aligned_seq_shift1, ylen1, ymax1 = self.viterbi_align(ctc_out, src_mask, src_size, labels[:,1:-1], label_sizes, blank, 0)
@@ -418,7 +504,6 @@ class CassNAT(nn.Module):
             trigger_mask = trigger_mask & src_mask
         else:
             trigger_mask = src_mask
-            src_size = (src_size * ctc_out.size(1)).long()
             _, ylen, ymax = self.best_path_align(ctc_out, src_mask, src_size, blank)
             ymax = ylen.max().item()
 
@@ -430,7 +515,7 @@ class CassNAT(nn.Module):
         # 3. Extract Acoustic embedding and Map it to Word embedding
         pe = self.pe.type_as(src).unsqueeze(0).repeat(bs, 1, 1)[:,:ymax,:]
         ac_embed = self.acembed_extractor(pe, enc_h, trigger_mask)
-        pred_embed = self.embed_mapper(ac_embed, tgt_mask1)
+        pred_embed = self.selfattn_decoder(ac_embed, tgt_mask1)
 
         # 4. decoder, output units generation
         if args.use_unimask:
@@ -442,7 +527,7 @@ class CassNAT(nn.Module):
 
         if args.src_trigger:
             src_mask = trigger_mask
-        dec_h = self.decoder(pred_embed, enc_h, src_mask, tgt_mask)
+        dec_h = self.mixattn_decoder(pred_embed, enc_h, src_mask, tgt_mask)
 
         att_out = self.att_generator(dec_h)
         
@@ -458,11 +543,20 @@ class CassNAT(nn.Module):
                     lm_out = lm_model(lm_input, lm_tgt_mask)
                 if args.rank_model == 'at_baseline':
                     # this part use ast baseline to do the score part
-                    x, src_mask = lm_model.src_embed(src, x_mask)
-                    enc_h = lm_model.encoder(x, src_mask)
-                    enc_h = enc_h.unsqueeze(1).repeat(1, args.sample_num, 1, 1).reshape(-1, enc_h.size(1), enc_h.size(2))
-                    src_mask = src_mask.unsqueeze(1).repeat(1, args.sample_num, 1, 1).reshape(-1, src_mask.size(1), src_mask.size(2))
-                    lm_out = lm_model.forward_decoder(enc_h, lm_input, src_mask, lm_tgt_mask)
+                    if self.model_type != "hubert":
+                        x, src_mask = lm_model.src_embed(src, x_mask)
+                        enc_h = lm_model.encoder(x, src_mask)
+                        enc_h = enc_h.unsqueeze(1).repeat(1, args.sample_num, 1, 1).reshape(-1, enc_h.size(1), enc_h.size(2))
+                        src_mask = src_mask.unsqueeze(1).repeat(1, args.sample_num, 1, 1).reshape(-1, src_mask.size(1), src_mask.size(2))
+                        lm_out = lm_model.forward_decoder(enc_h, lm_input, src_mask, lm_tgt_mask)
+                    else:
+                        enc_h, src2_mask, layer_results = lm_model.encoder(src, padding_mask=x_mask, mask_prob=args.mask_prob)
+                        enc_h = lm_model.projection_layer(enc_h)
+                        src2_mask = src2_mask.unsqueeze(1)
+                        src2_mask = ~src2_mask
+                        enc_h = enc_h.unsqueeze(1).repeat(1, args.sample_num, 1, 1).reshape(-1, enc_h.size(1), enc_h.size(2))
+                        src2_mask = src2_mask.unsqueeze(1).repeat(1, args.sample_num, 1, 1).reshape(-1, src2_mask.size(1), src2_mask.size(2))
+                        lm_out = lm_model.forward_decoder(enc_h, lm_input, src2_mask, lm_tgt_mask)
 
                 lm_score = torch.gather(lm_out, -1, att_pred.unsqueeze(-1)).squeeze(-1)
                 lm_score = lm_score.reshape(-1, args.sample_num, seql).masked_fill(tgt_mask1.reshape(-1, args.sample_num, tgt_mask1.size(-1))==0, 0)
@@ -551,7 +645,7 @@ class CassNAT(nn.Module):
                 ys = torch.cat(ys, dim=0)
 
             if args.lm_weight > 0:
-                tgt_mask = (ys != args.padding_idx).unsqueeze(1)
+                tgt_mask = (ys != args.text_padding_idx).unsqueeze(1)
                 tgt_mask = tgt_mask & self.subsequent_mask(ys.size(-1)).type_as(src_mask)
                 lm_prob = lm_model(ys, tgt_mask)[:,-1,:]
                 local_prob = att_prob + args.lm_weight * lm_prob
