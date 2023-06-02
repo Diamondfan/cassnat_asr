@@ -49,7 +49,8 @@ for speaker_dir in $(find -L $src -mindepth 1 -maxdepth 1 -type d | sort); do
       find -L $session_dir/ -iname "*.trn" | sort > $tmpdir/trn
       while read line; do
         [ -f $line ] || error_exit "Cannot find transcription file '$line'";
-        head -n1 "$line" | sed "s:<.*>::g" | sed "s:(\*)::g" | sed "s:(())::g" | sed "s:+::g" | sed "s:\*::g" | sed "s:[()]::g" | sed "s:  : :g" | sed "s:  : :g" | sed "s:^ ::g" | sed "s/\xC2\xA0/ /g"| tr '[:lower:]' '[:upper:]'
+        #head -n1 "$line" | sed "s:<.*>::g" | sed "s:(\*)::g" | sed "s:(())::g" | sed "s:+::g" | sed "s:\*::g" | sed "s:[()]::g" | sed "s:  : :g" | sed "s:  : :g" | sed "s:^ ::g" | sed "s/\xC2\xA0/ /g"| tr '[:lower:]' '[:upper:]'
+        head -n1 "$line"
       done < $tmpdir/trn > $tmpdir/trans
       paste -d" " $tmpdir/utt $tmpdir/trans | sort >> $trans
     fi

@@ -12,7 +12,7 @@ import torch.distributed as dist
 import torch.backends.cudnn as cudnn
 
 sys.path.append(os.environ['E2EASR']+'/src')
-from tasks import CTCTask, ArtTask, CassNATTask #, UECassNATTask
+from tasks import CTCTask, ArtTask, CassNATTask, UECassNATTask
 from utils.parser import BaseParser
 
 class Config():
@@ -87,7 +87,7 @@ def main_worker(rank, world_size, args, backend='nccl'):
     if use_cuda:
         torch.cuda.manual_seed(args.seed)
 
-    task_dict = {"ctc": CTCTask, "art": ArtTask, "cassnat": CassNATTask} #, "unienc_cassnat": UECassNATTask}
+    task_dict = {"ctc": CTCTask, "art": ArtTask, "cassnat": CassNATTask, "unienc_cassnat": UECassNATTask}
     if args.task in task_dict:
         task = task_dict[args.task]("train", args)
     else:

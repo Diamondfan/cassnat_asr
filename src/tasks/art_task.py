@@ -64,7 +64,7 @@ class ArtTask(BaseTask):
             self.load_checkpoint(last_checkpoint, args.rank, args.use_gpu) #load checkpoint from baseclass
         else:
             self.load_pretrained_model(args.resume_model, args.rank, args.init_encoder, args.fix_encoder)
-    
+
         self.model_stats(args.rank, args.use_slurm, args.distributed, args.find_unused_parameters)
 
     def load_pretrained_model(self, resume_model, rank, init_encoder, fix_encoder): 
@@ -243,7 +243,7 @@ class ArtTask(BaseTask):
             
             if args.model_type != "hubert":
                 utt_list, feats, labels, feat_sizes, label_sizes = data
-                src, src_mask = feats, (feats[:,:,0] != args.text_padding_idx).unsqueeze(1)
+                src, src_mask = feats, (feats[:,:,0] != args.padding_idx).unsqueeze(1)
             else:
                 utt_list, feats, labels, feat_sizes, label_sizes = data
                 src, src_mask = feats, (feats == args.padding_idx) #all audio except files which are masked
@@ -252,7 +252,7 @@ class ArtTask(BaseTask):
             tgt, tgt_label = labels[:,:-1], labels[:,1:]
             tgt_mask = (tgt != args.text_padding_idx).unsqueeze(1) 
             tgt_mask = tgt_mask & self.subsequent_mask(tgt.size(-1)).type_as(tgt_mask)
-            tokens = (tgt_label != args.padding_idx).sum().item()
+            tokens = (tgt_label != args.text_padding_idx).sum().item()
             
             if args.use_gpu:
                 src, src_mask, tgt, tgt_mask = src.cuda(), src_mask.cuda(), tgt.cuda(), tgt_mask.cuda()
@@ -307,15 +307,17 @@ class ArtTask(BaseTask):
                         progress.print(updates)
             except RuntimeError as err:
                 print("{}!, Skip batch, cuda out of memory".format(err))
+                self.optimizer.zero_grad()
+                torch.cuda.empty_cache()
                 continue
 
             if args.ctc_alpha > 0:
-                ctc_errs, all_tokens = ctc_greedy_wer(ctc_out, tgt_label.cpu().numpy(), feat_sizes.cpu().numpy(), args.padding_idx)
+                ctc_errs, all_tokens = ctc_greedy_wer(ctc_out, tgt_label.cpu().numpy(), feat_sizes.cpu().numpy(), args.text_padding_idx)
             else:
                 ctc_errs, all_tokens = 1, 1
                 
             ctc_wers.update(ctc_errs/all_tokens, all_tokens)
-            att_errs, all_tokens = att_greedy_wer(att_out, tgt_label.cpu().numpy(), args.padding_idx)
+            att_errs, all_tokens = att_greedy_wer(att_out, tgt_label.cpu().numpy(), args.text_padding_idx)
             att_wers.update(att_errs/all_tokens, all_tokens)
             
             losses.update(loss.item(), tokens)
@@ -340,7 +342,7 @@ class ArtTask(BaseTask):
             for i, data in enumerate(self.test_loader):
                 if self.model_type != "hubert":
                     utt_list, feats, _, feat_sizes, _ = data
-                    src, src_mask = feats, (feats[:,:,0] != args.text_padding_idx).unsqueeze(1)
+                    src, src_mask = feats, (feats[:,:,0] != args.padding_idx).unsqueeze(1)
                 else:
                     utt_list, feats, _, feat_sizes, _ = data
                     src, src_mask = feats, (feats == args.padding_idx)
@@ -362,7 +364,7 @@ class ArtTask(BaseTask):
                 for j in range(len(utt_list)):
                     hyp = []
                     for idx in recog_results[j][0]['hyp']:
-                        if idx == self.tokenizer.vocab['sos'] or idx == args.padding_idx:
+                        if idx == self.tokenizer.vocab['sos'] or idx == args.text_padding_idx:
                             continue
                         if idx == self.tokenizer.vocab['eos']:
                             break

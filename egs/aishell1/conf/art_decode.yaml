@@ -1,9 +1,12 @@
 vocab_file: data/dict/vocab_char.txt
+use_cmvn: True
 global_cmvn: data/fbank/cmvn.ark
+use_BERT_tokenizer: False
+tokenizer: ""
 
 #model configuration
 model_type: "conformer"
-input_size: 240
+input_size: 80
 N_enc: 12
 N_dec: 6
 d_model: 256
@@ -12,27 +15,36 @@ n_head: 4
 dropout: 0
 
 #conformer related
+use_conv_enc: True
 share_ff: False
 d_encff: 1024
 d_decff: 2048
 pos_type: "relative"
-max_relative_len: 20
-kernel_size: 15
+enc_max_relative_len: 20
+enc_kernel_size: 15
 
 n_features: 80
 vocab_size: 4990
 left_ctx: 0
-right_ctx: 2
+right_ctx: 0
 skip_frame: 1
 padding_idx: 0
+text_padding_idx: 0
 
 use_gpu: True
+max_len: 5000
+filter_max: 5000
+filter_min: 0
 
 #beam_decode
+decode_type: "ctc_att"
 beam_width: 10
 ctc_beam: 10
 length_penalty: 0
 T: 1.0
+ctc_weight: 0.4
+max_decode_ratio: 0
+
 #For CTC only decoding
 ctc_pruning: 0
 ctc_lp: 0

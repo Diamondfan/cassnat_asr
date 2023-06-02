@@ -1,21 +1,25 @@
 model_type: "hubert"
 input_size: 80
-N_dec: 6
-d_model: 512
+N_extra: 1
+N_self_dec: 5
+N_mix_dec: 2
+d_model: 256
 d_ff: 2048          
-d_decff: 2048
-n_head: 8
+n_head: 4
 dropout: 0.1
 ctc_alpha: 0.5
 interctc_alpha: 0.5
 interctc_layer: 6
+att_alpha: 1
+interce_alpha: 0.01
+interce_layer: 6
 label_smooth: 0.1
 disable_ls: False
-resume_model: "../../../pretrained_models/hubert/hubert_base_ls960.pt"
+resume_model: "../../../pretrained_models/hubert/chinese-hubert-base.pt"
 init_encoder: True
 fix_encoder: False
 use_BERT_tokenizer: False #True
-tokenizer: "data/dict/bpemodel_unigram_500.model"
+tokenizer: ""
 
 #hubert layers
 layer_type: "transformer"
@@ -38,7 +42,7 @@ layer_norm_first: False
 encoder_layerdrop: 0
 conv_feature_layers: '[(512,10,5)] + [(512,3,2)] * 4 + [(512,2,2)] * 2'
 
-mask_prob: 0.60
+mask_prob: 0.50
 mask_selection: 'static'
 mask_other: 0.0
 mask_length: 10
@@ -47,11 +51,30 @@ mask_min_space: 1
 mask_channel_prob: 0.50
 mask_channel_selection: 'static'
 mask_channel_other: 0.0
-mask_channel_length: 64
+mask_channel_length: 64 #10
 no_mask_channel_overlap: False
 mask_channel_min_space: 1
 dropout_input: 0.1
 feature_grad_mult: 0
+
+#conformer related conf
+share_ff: False
+d_decff: 1024 #2048
+pos_type: "relative"
+use_conv_dec: True
+dec_max_relative_len: 4
+dec_kernel_size: 3
+
+#nat related conf
+use_trigger: True
+src_trigger: False
+use_unimask: False
+left_trigger: 1
+right_trigger: 1
+use_best_path: False
+sample_topk: 0 #4
+sample_num: 0
+save_embedding: False
 
 n_features: 80
 vocab_size: 4999
@@ -66,16 +89,18 @@ warmup_steps: [15000, 15000, 15000]
 freeze_steps: [0, 0, 0]
 total_steps: [25000, 250000, 25000]         # for custom_linear
 
-decay_rate: 0.01
-s_warm: 1000
-s_decay: 40000
-s_keep: 160000
+# for multistep
+initial_lr: [0.00005, 0.001, 0.001] 
+decay_rate: [0.05, 0.01, 0.01]
+s_warm: [1000, 1000, 1000]
+s_decay: [30000, 30000, 30000]
+s_keep: [120000, 120000, 120000]
 
 cosine_total: 100000
 cosine_warmup: 1000
 
 #normal
-learning_rate: 0.001
+learning_rate: 0.02
 min_lr: 0.000002
 patience: 2
 anneal_lr_ratio: 0.5
@@ -83,27 +108,28 @@ anneal_lr_ratio: 0.5
 # dataloader
 dataset_type: "HubertDataset"   #"SpeechDataset, DynamicDataset"
 max_len: 5000
-batch_size: 1
+batch_size: 8
 sample_rate: 16000
 normalize: False
 
-batch_type: "samples"
-max_frmlen: 800   # in frames
-max_lablen: 150   # in frames
+batch_type: "utterance"
+max_frmlen: 800 
+max_lablen: 100 
 filter_max: 5000
-filter_min: 50
+filter_min: 0
 
-max_samplen: 800000  # in samples
+max_samplen: 500000  #392400
 
 padding_idx: -1
 text_padding_idx: 0
-accum_grad: 8
+accum_grad: 4
 grad_clip: 5
 weight_decay: 0
 
 use_gpu: True
 use_fp16: True
 
+#traditional specaug is not used for hubert encoder
 use_specaug: False
 specaug_start_epoch: 100000
 spec_aug:
@@ -116,3 +142,20 @@ spec_aug:
   n_time_mask: 10
   inplace: True
   replace_with_zero: False
+
+# mask strategy
+use_mlm: False #True
+apply_mask: False
+use_mask_embed: False #True
+mlm_alpha: 0 #0.1
+dec_mask_prob: 0.15
+dec_mask_selection: 'uniform' 
+dec_min_masks: 1
+dec_mask_other: 1
+dec_mask_length: 3
+dec_mask_min_space: 1
+dec_mask_dropout: 0.0
+dec_require_same_masks: False #True
+dec_no_mask_overlap: False
+ 
+

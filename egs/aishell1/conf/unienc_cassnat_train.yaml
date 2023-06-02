@@ -3,25 +3,23 @@ model_type: "conformer"
 input_size: 80
 N_enc: 12
 N_extra: 1
-N_self_dec: 5
-N_mix_dec: 2
-d_model: 512
-d_ff: 2048          
-n_head: 8
+d_model: 256
+d_ff: 2048
+n_head: 4
 dropout: 0.1
 ctc_alpha: 0.5
 interctc_alpha: 0.5
 interctc_layer: 6
 att_alpha: 1
-interce_alpha: 0.01
+interce_alpha: 0.1
 interce_layer: 6
 label_smooth: 0.1
 disable_ls: False
-resume_model: "exp/mystsp_sptokenizer_art_conformer_utterance_noam_warmup25k/averaged.mdl"
+resume_model: "exp/ar_conformer_baseline_interctc05_layer6_spect10m005f2m27_multistep1k30k120k/averaged.mdl"
 init_encoder: True
 fix_encoder: False
 use_BERT_tokenizer: False #True
-tokenizer: "data/dict/bpemodel_unigram_500.model"
+tokenizer: ""
 
 #conformer related conf
 use_conv_enc: True
@@ -30,9 +28,9 @@ d_encff: 1024
 d_decff: 1024 #2048
 pos_type: "relative"
 enc_max_relative_len: 20
-enc_kernel_size: 31
+enc_kernel_size: 15
 use_conv_dec: True
-dec_max_relative_len: 8
+dec_max_relative_len: 4
 dec_kernel_size: 3
 
 #nat related conf
@@ -41,8 +39,7 @@ src_trigger: False
 use_unimask: False
 left_trigger: 1
 right_trigger: 1
-use_best_path: False
-sample_topk: 0 #4
+sample_topk: 0 
 sample_num: 0
 save_embedding: False
 
@@ -53,18 +50,18 @@ right_ctx: 0
 skip_frame: 1
 
 #noam warm up
-multi_optim: True
 warmup_type: "noam_warmup"  # noam_warmup, custom_exp, custom_linear
-noam_factor: [0.001, 0.001, 0.001]      # pretrained_encoder, encoder_generator, decoders, #learning rate for noam_wamup, factor for custom_exp
-warmup_steps: [25000, 25000, 25000]
+noam_factor: [0.001, 0.001, 0.001]       #[encoder, ctc_gen and interctc gen,  decoders]  # learning rate for noam_wamup, factor for custom_exp
+warmup_steps: [15000, 15000, 15000]
 freeze_steps: [0, 0, 0]
 total_steps: [250000, 250000, 250000]           # for custom_linear
 
 # multistep
-decay_rate: 0.01
-s_warm: 1000
-s_decay: 40000
-s_keep: 160000
+initial_lr: [0.001, 0.001, 0.001] 
+decay_rate: [0.01, 0.01, 0.01]
+s_warm: [1000, 1000, 1000]
+s_decay: [30000, 30000, 30000]
+s_keep: [120000, 120000, 120000]
 
 cosine_total: 100000
 cosine_warmup: 1000
@@ -82,9 +79,9 @@ batch_size: 16
 
 batch_type: "utterance"
 max_frmlen: 1000 
-max_lablen: 100 
+max_lablen: 150 
 filter_max: 5000
-filter_min: 50
+filter_min: 0
 
 padding_idx: 0
 text_padding_idx: 0
@@ -94,7 +91,7 @@ weight_decay: 0
 
 use_gpu: True
 use_cmvn: True
-use_fp16: True
+use_fp16: False
 
 use_specaug: True
 specaug_start_epoch: 0
@@ -110,18 +107,22 @@ spec_aug:
   replace_with_zero: False
 
 # mask strategy
+multi_ctc: True
+multi_ctc_alpha: 1.0
+mask_prob: 0
 use_mlm: False #True
 apply_mask: False #True
 use_mask_embed: False #True
-mlm_alpha: 0.1 #1.0
-mask_prob: 0.15
-mask_selection: 'uniform' 
-min_masks: 1
-mask_other: 1
-mask_length: 3
-mask_min_space: 1
-mask_dropout: 0.0
-require_same_masks: False #True
-no_mask_overlap: False
+mlm_alpha: 0 #0.1
+dec_mask_prob: 0.15
+dec_mask_selection: 'uniform' 
+dec_min_masks: 1
+dec_mask_other: 1
+dec_mask_length: 3
+dec_mask_min_space: 1
+dec_mask_dropout: 0.0
+dec_require_same_masks: False #True
+dec_no_mask_overlap: False
  
+
 

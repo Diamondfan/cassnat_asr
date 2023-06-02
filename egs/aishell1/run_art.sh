@@ -1,211 +1,112 @@
 #!/usr/bin/env bash
 
 # 2020 (Ruchao Fan)
+# 2023 (Ruchao Fan) 
+# SPAPL, UCLA
 
-# The data are already downloaded in the corresponding dir
-data=/home/ruchao/Database/aishell/
-lm_data=/home/ruchao/Database/LibriSpeech/libri_lm
-
-stage=6
-end_stage=6
+stage=1
+end_stage=1
 featdir=data/fbank
 
 . ./cmd.sh
 . ./path.sh
 . parse_options.sh
 
+# art training
+#train_config=conf/art_train.yaml
+#data_config=conf/data_raw.yaml
+#start_saving_epoch=30
+
+# art with hubert encoder training
+train_config=conf/hubert_art_train.yaml
+data_config=conf/data_hubert.yaml
+start_saving_epoch=1
+
+#asr_exp=exp/ar_conformer_baseline_interctc05_layer6_spect10m005f2m27_multistep1k30k120k/
+asr_exp=exp/hubert_ar_conformer_maskt05f05_multistep1k30k120k/
+
 if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
+  [ ! -d $asr_exp ] && mkdir -p $asr_exp
 
-  local/aishell_data_prep.sh ${data}/data_aishell/wav ${data}/data_aishell/transcript
-  # remove space in text
-  for x in train dev test; do
-    cp data/${x}/text data/${x}/text.org
-    paste -d " " <(cut -f 1 -d" " data/${x}/text.org) <(cut -f 2- -d" " data/${x}/text.org | tr -d " ") \
-        > data/${x}/text
-    rm data/${x}/text.org
-  done
-  echo "[Stage 1] Data Preparation Finished."
-fi
-
-train_set=train_all
-dev_set=dev
-if [ $stage -le 2 ] && [ $end_stage -ge 2 ]; then
-  for part in train dev test; do
-    steps/make_fbank.sh --nj 16 --cmd $cmd --write_utt2num_frames true \
-      data/$part exp/make_fbank/$part $featdir/$part
-    utils/fix_data_dir.sh data/$part
-  done
-  
-  # speed-perturbed
-  utils/perturb_data_dir_speed.sh 0.9 data/train data/temp1
-  utils/perturb_data_dir_speed.sh 1.0 data/train data/temp2
-  utils/perturb_data_dir_speed.sh 1.1 data/train data/temp3
-  utils/combine_data.sh --extra-files utt2uniq data/${train_set} data/temp1 data/temp2 data/temp3
-  rm -r data/temp1 data/temp2 data/temp3
-
-  steps/make_fbank.sh --cmd $cmd --nj 32 --write_utt2num_frames true \
-    data/${train_set} exp/make_fbank/${train_set} $featdir/$part
-  utils/fix_data_dir.sh data/${train_set}
-
-  # compute global CMVN
-  compute-cmvn-stats scp:data/${train_set}/feats.scp data/fbank/cmvn.ark || exit 1;
-  echo "[Stage 2] Feature Extraction Finished"
-fi
-
-dict=data/dict/vocab_char.txt ; mkdir -p data/dict
-if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then  
-  echo "Create a dictionary..."
-  text2token.py -s 1 -n 1 data/${train_set}/text | cut -f 2- -d" " | tr " " "\n" \
-    | sort | uniq | grep -v -e '^\s*$' | awk '{print $0}' > ${dict}
-
-  for part in ${train_set} dev test; do
-    text2token.py -s 1 -n 1 data/$part/text > data/$part/token.scp
-  done
-  echo "[Stage 3] Dictionary and Transcription Finished."
-fi
-
-if [ $stage -le 4 ] && [ $end_stage -ge 4 ]; then
-  echo "stage 4: LM Preparation"
-  lmdir=data/lm_train
-  if [ ! -d $lmdir ]; then
-    mkdir -p $lmdir
-  fi
-  # use external data
-  cat data/train_text | gzip -c > $lmdir/train_text.gz
-  # combine external text and transcriptions and shuffle them with seed 777
-  zcat $lm_data/librispeech-lm-norm.txt.gz $lmdir/train_text.gz |\
-        spm_encode --model=${bpemodel}.model --output_format=piece > $lmdir/train.txt
-  
-  ( for f in $dev_set; do cat data/$f/text; done ) | sort -k1 | cut -f 2- -d" " |\
-        spm_encode --model=${bpemodel}.model --output_format=piece > $lmdir/valid.txt
-
-  echo "[Stage 4] LM Preparation Finished."
-fi
-
-if [ $stage -le 5 ] && [ $end_stage -ge 5 ]; then
-  exp=exp/libri_tflm_unigram_4card_cosineanneal_ep10/
-  if [ ! -d $exp ]; then
-    mkdir -p $exp
-  fi
-  
-  CUDA_VISIBLE_DEVICES="0,1,2,3" lm_train.py \
-    --exp_dir $exp \
-    --train_config conf/lm.yaml \
-    --data_config conf/lm_data.yaml \
-    --batch_size 64 \
-    --epochs 10 \
-    --save_epoch 3 \
-    --anneal_lr_ratio 0.5 \
-    --learning_rate 0.0001 \
-    --min_lr 0.00001 \
-    --patience 1 \
-    --end_patience 5 \
-    --opt_type "cosine" \
-    --weight_decay 0 \
-    --print_freq 200 > $exp/train.log 2>&1 &
- 
-  echo "[Stage 5] External LM Training Finished."
-fi
-
-exp=exp/ar_conformer_baseline_interctc05_layer6_spect10m005f2m27_multistep05k21k90k/
-
-if [ $stage -le 6 ] && [ $end_stage -ge 6 ]; then
-  if [ ! -d $exp ]; then
-    mkdir -p $exp
-  fi
-
-  CUDA_VISIBLE_DEVICES="0,1,2,3" asr_train.py \
-    --exp_dir $exp \
-    --train_config conf/transformer.yaml \
-    --data_config conf/data.yaml \
-    --epochs 100 \
-    --save_epoch 40 \
-    --learning_rate 0.001 \
-    --min_lr 0.00001 \
+  CUDA_VISIBLE_DEVICES="2,3" train_asr.py \
+    --task "art" \
+    --exp_dir $asr_exp \
+    --train_config $train_config \
+    --data_config $data_config \
+    --optim_type "multistep" \
+    --epochs 50 \
+    --start_saving_epoch $start_saving_epoch \
     --end_patience 10 \
-    --opt_type "multistep" \
-    --weight_decay 0 \
-    --label_smooth 0.1 \
-    --ctc_alpha 0.5 \
-    --interctc_alpha 0.5 \
-    --interctc_layer 6 \
-    --use_cmvn \
     --seed 1234 \
-    --print_freq 50 > $exp/train.log 2>&1 &
+    --print_freq 100 \
+    --port 21526 >> $asr_exp/train.log 2>&1 &
     
-  echo "[Stage 6] ASR Training Finished."
+  echo "[Stage 1] ASR Training Finished."
 fi
 
 out_name='averaged.mdl'
-if [ $stage -le 7 ] && [ $end_stage -ge 7 ]; then
-  #exp=exp/1kh_d512_multistep_ctc1_accum1_bth32_specaug
-  last_epoch=69
+if [ $stage -le 2 ] && [ $end_stage -ge 2 ]; then
+  last_epoch=30
   
   average_checkpoints.py \
-    --exp_dir $exp \
+    --exp_dir $asr_exp \
     --out_name $out_name \
     --last_epoch $last_epoch \
-    --num 12
-  
-  #lm_exp=exp/libri_tflm_unigram_4card_cosineanneal_ep10/
-  #last_epoch=9  
-  
-  #average_checkpoints.py \
-  #  --exp_dir $lm_exp \
-  #  --out_name $out_name \
-  #  --last_epoch $last_epoch \
-  #  --num 3
+    --num 10
 
-  echo "[Stage 7] Average checkpoints Finished."
+  echo "[Stage 2] Average checkpoints Finished."
 
 fi
 
-if [ $stage -le 8 ] && [ $end_stage -ge 8 ]; then
-  exp=exp/ar_convenc_e12d6_d256_multistep40k_160k_ctc1_accum1_bth32_specaugt2m40_warp/
-
+if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
+  exp=$asr_exp
+  lm_exp=
   test_model=$exp/$out_name
-  rnnlm_model=exp/averaged_lm.mdl
-  global_cmvn=data/fbank/cmvn.ark
-  decode_type='att_only'
+  rnnlm_model=$lm_exp/averaged_lm.mdl
+  decode_type='ctc_att'
   beam1=10 # check beam1 and beam2 in conf/decode.yaml, att beam
   beam2=10 #20 # ctc beam
   lp=0
   ctcwt=0.4
-  lmwt=0 #0.7
-  ctclm=0 #0.7
-  ctclp=0 #2
+  lmwt=0
+  ctclm=0
+  ctclp=0
   nj=1
   batch_size=1
-  test_set="test" #dev test"
+  test_set="dev test"
+
+  # decode art model
+  #decode_config=conf/art_decode.yaml
+  #data_prefix=feats
+
+  # decode art model with hubert encoder
+  decode_config=conf/hubert_art_decode.yaml
+  data_prefix=wav_s
 
   for tset in $test_set; do
     echo "Decoding $tset..."
-    desdir=$exp/${decode_type}_decode_average_ctc${ctcwt}_bm1_${beam1}_bm2_${beam2}_lmwt${lmwt}_ctclm${ctclm}_lp${lp}_ctclp${ctclp}_speech218_bth1_nj1/$tset/
+    desdir=$exp/${decode_type}_decode_average_ctc${ctcwt}_bm1_${beam1}_bm2_${beam2}_lmwt${lmwt}_ctclm${ctclm}_lp${lp}_ctclp${ctclp}_bth1_nj1/$tset/
     if [ ! -d $desdir ]; then
       mkdir -p $desdir
     fi
     
     split_scps=
     for n in $(seq $nj); do
-      split_scps="$split_scps $desdir/feats.$n.scp"
+      split_scps="$split_scps $desdir/${data_prefix}.$n.scp"
     done
-    utils/split_scp.pl data/$tset/feats.scp $split_scps || exit 1;
+    utils/split_scp.pl data/$tset/${data_prefix}.scp $split_scps || exit 1;
     
     $cmd JOB=1:$nj $desdir/log/decode.JOB.log \
-      CUDA_VISIBLE_DEVICES=JOB asr_decode.py \
-        --test_config conf/decode.yaml \
+      CUDA_VISIBLE_DEVICES="2" decode_asr.py \
+        --task "art" \
+        --test_config $decode_config \
         --lm_config conf/lm.yaml \
-        --data_path $desdir/feats.JOB.scp \
+        --data_path $desdir/${data_prefix}.JOB.scp \
         --resume_model $test_model \
         --result_file $desdir/token_results.JOB.txt \
         --batch_size $batch_size \
-        --decode_type $decode_type \
-        --ctc_weight $ctcwt \
         --rnnlm $rnnlm_model \
         --lm_weight $lmwt \
-        --max_decode_ratio 0 \
-        --use_cmvn \
-        --global_cmvn $global_cmvn \
         --print_freq 20 
     
     cat $desdir/token_results.*.txt | sort -k1,1 > $desdir/token_results.txt

@@ -1263,6 +1263,7 @@ class TransformerSentenceEncoderLayer(nn.Module):
                 key=x,
                 value=x,
                 key_padding_mask=self_attn_padding_mask,
+                attn_mask=self_attn_mask,
                 need_weights=False,
             )
 

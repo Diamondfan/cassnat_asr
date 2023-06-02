@@ -2,24 +2,24 @@ vocab_file: data/dict/vocab_wp.txt
 global_cmvn: data/fbank/cmvn_sp.ark
 use_cmvn: True
 use_BERT_tokenizer: False
-tokenizer: "data/dict/bpemodel_unigram_500.model"
+tokenizer: "data/dict/bpemodel_unigram_1024.model"
+bert_name: "bert-base-uncased"
+bert_path: "/data/ruchao/workdir/language_model/bert/" 
 
 #model configuration
 model_type: "conformer"
 input_size: 80
 N_enc: 12
 N_extra: 1
-N_self_dec: 5 #3
-N_mix_dec: 2 #4
-d_model: 512 #256
+d_model: 512
 d_ff: 2048
-n_head: 8 #4
+n_head: 8
 dropout: 0
 use_mlm: False
 apply_mask: False
-use_mask_embed: True
+mask_prob: 0
+use_mask_embed: False
 
-#conformer related conf
 use_conv_enc: True
 share_ff: False
 d_encff: 1024
@@ -40,9 +40,18 @@ padding_idx: 0
 text_padding_idx: 0
 
 use_gpu: True
-max_len: 13000
-filter_max: 13000
+dataset_type: "HubertDataset"   #"SpeechDataset, DynamicDataset"
+max_len: 5000
+batch_size: 1
+sample_rate: 16000
+normalize: False
+
+batch_type: "utterance"
+max_frmlen: 800 
+max_lablen: 150 
+filter_max: 5000
 filter_min: 0
+max_samplen: 500000  #392400
 
 #beam_decode
 decode_type: 'esa'
@@ -62,9 +71,12 @@ use_unimask: False
 left_trigger: 1
 right_trigger: 1
 use_best_path: False
-sample_num: 16
+sample_num: 8 #16
+sample_num2: 2 #1
 threshold: 0.9
+num_iters: 2 #1
 
 test_hitrate: False
 save_embedding: False
 print_utt2diff: False
+

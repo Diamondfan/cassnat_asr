@@ -3,8 +3,6 @@ use_cmvn: True
 global_cmvn: data/fbank/cmvn_sp.ark
 use_BERT_tokenizer: False
 tokenizer: "data/dict/bpemodel_unigram_500.model"
-bert_name: "bert-base-uncased"
-bert_path: "/data/ruchao/workdir/language_model/bert/" 
 
 #model configuration
 model_type: "conformer"
@@ -31,9 +29,11 @@ left_ctx: 0
 right_ctx: 0
 skip_frame: 1
 padding_idx: 0
+text_padding_idx: 0
 
 use_gpu: True
-filter_max: 15000
+max_len: 13000
+filter_max: 13000
 filter_min: 0
 
 #beam_decode

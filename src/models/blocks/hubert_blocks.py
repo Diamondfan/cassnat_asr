@@ -261,6 +261,8 @@ class TransformerEncoder(nn.Module):
             padding_mask, _ = pad_to_multiple(
                 padding_mask, self.required_seq_len_multiple, dim=-1, value=True
             )
+        
+        #import pdb; pdb.set_trace()
         x = F.dropout(x, p=self.dropout, training=self.training)
 
         # B x T x C -> T x B x C

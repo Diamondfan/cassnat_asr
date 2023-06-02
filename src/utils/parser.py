@@ -36,6 +36,7 @@ class DecodeParser(object):
         parser.add_argument("--test_config")
         parser.add_argument("--lm_config")
         parser.add_argument("--data_path")
+        parser.add_argument("--local_rank", default=0, type=int, help="model parallel decoding with deepspeed")
         parser.add_argument("--text_label", default="", type=str, help='text label')
         parser.add_argument("--utt2num_frames", default="", type=str, help='utt2frames to filter too long utterances')
         parser.add_argument("--task", default="art", type=str, help="the task for training, art, cassnat, ctc")

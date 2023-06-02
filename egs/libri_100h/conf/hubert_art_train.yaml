@@ -40,13 +40,13 @@ layer_norm_first: False
 encoder_layerdrop: 0
 conv_feature_layers: '[(512,10,5)] + [(512,3,2)] * 4 + [(512,2,2)] * 2'
 
-mask_prob: 0.65
+mask_prob: 0.60
 mask_selection: 'static'
 mask_other: 0.0
 mask_length: 10
 no_mask_overlap: False
 mask_min_space: 1
-mask_channel_prob: 0.0
+mask_channel_prob: 0.50
 mask_channel_selection: 'static'
 mask_channel_other: 0.0
 mask_channel_length: 64 #10
@@ -64,7 +64,7 @@ skip_frame: 1
 multi_optim: True
 warmup_type: "noam_warmup"  # noam_warmup, custom_exp, custom_linear
 noam_factor: [0.00005, 0.001, 0.001]       #[src_embed, encoder, ctc_gen and interctc gen,  decoders, text_encoder]  # learning rate for noam_wamup, factor for custom_exp
-warmup_steps: [15000, 15000, 15000]
+warmup_steps: [10000, 10000, 10000]
 freeze_steps: [0, 0, 0]
 total_steps: [25000, 250000, 25000]         # for custom_linear
 
@@ -85,17 +85,17 @@ anneal_lr_ratio: 0.5
 # dataloader
 dataset_type: "HubertDataset"   #"SpeechDataset, DynamicDataset"
 max_len: 5000
-batch_size: 4
+batch_size: 1
 sample_rate: 16000
 normalize: False
 
-batch_type: "utterance"
-max_frmlen: 800 
+batch_type: "samples"
+max_frmlen: 1000 
 max_lablen: 100 
 filter_max: 5000
 filter_min: 0
 
-max_samplen: 500000  #392400
+max_samplen: 1280000  #392400
 
 padding_idx: -1
 text_padding_idx: 0
@@ -104,7 +104,7 @@ grad_clip: 5
 weight_decay: 0
 
 use_gpu: True
-use_fp16: False
+use_fp16: True
 
 use_specaug: False
 specaug_start_epoch: 100000

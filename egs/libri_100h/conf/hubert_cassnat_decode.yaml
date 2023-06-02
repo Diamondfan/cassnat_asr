@@ -79,8 +79,8 @@ sample_rate: 16000
 normalize: False
 
 batch_type: "utterance"
-max_frmlen: 800 
-max_lablen: 150 
+max_frmlen: 1000 
+max_lablen: 100 
 filter_max: 5000
 filter_min: 0
 max_samplen: 500000  #392400
@@ -103,7 +103,7 @@ use_unimask: False
 left_trigger: 1
 right_trigger: 1
 use_best_path: False
-sample_num: 16 #20
+sample_num: 16 #50
 threshold: 0.9
 
 test_hitrate: False

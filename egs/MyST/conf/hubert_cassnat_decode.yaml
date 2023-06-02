@@ -2,12 +2,10 @@ vocab_file: data/dict/vocab_wp.txt
 global_cmvn: data/fbank/cmvn_sp.ark
 use_cmvn: True
 use_BERT_tokenizer: False
-tokenizer: "data/dict/bpemodel_unigram_1024.model"
-bert_name: "bert-base-uncased"
-bert_path: "/data/ruchao/workdir/language_model/bert/" 
+tokenizer: "data/dict/bpemodel_unigram_500.model"
 
 #model configuration
-model_type: "conformer"
+model_type: "hubert"
 input_size: 80
 N_extra: 1
 N_self_dec: 5
@@ -16,6 +14,8 @@ d_model: 512
 d_ff: 2048          
 n_head: 8
 dropout: 0
+use_mlm: False
+apply_mask: False
 
 #hubert layers
 layer_type: "transformer"
@@ -71,15 +71,15 @@ text_padding_idx: 0
 
 use_gpu: True
 dataset_type: "HubertDataset"   #"SpeechDataset, DynamicDataset"
-max_len: 5000
+max_len: 13000
 batch_size: 1
 sample_rate: 16000
 normalize: False
 
 batch_type: "utterance"
-max_frmlen: 800 
-max_lablen: 150 
-filter_max: 5000
+max_frmlen: 1000 
+max_lablen: 100 
+filter_max: 13000
 filter_min: 0
 max_samplen: 500000  #392400
 
@@ -101,7 +101,7 @@ use_unimask: False
 left_trigger: 1
 right_trigger: 1
 use_best_path: False
-sample_num: 50
+sample_num: 16 #50
 threshold: 0.9
 
 test_hitrate: False

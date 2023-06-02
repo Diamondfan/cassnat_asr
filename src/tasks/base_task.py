@@ -42,8 +42,15 @@ class BaseTask(object):
             checkpoint = torch.load(resume_model, map_location='cpu')
             model_state = checkpoint["model_state"]
             for name, param in self.model.named_parameters():
-                if name not in model_state:
+                if name not in model_state and not name.startswith('module'):
                     name = "module." + name
+
+                if name not in model_state:
+                    # to be compatible with model trained with a legacy version
+                    name = name.replace('encoder', 'hub_base', 1)
+                    name = name.replace('selfattn_decoder', 'embed_mapper', 1)
+                    name = name.replace('mixattn_decoder', 'decoder', 1)
+
                 param.data.copy_(model_state[name])
     
     def model_stats(self, rank, use_slurm, distributed, find_unused_parameters=True):
@@ -70,7 +77,7 @@ class BaseTask(object):
             torch.cuda.set_device(local_rank)
             self.model = self.model.cuda(local_rank)
 
-        if distributed:        
+        if distributed:      
             self.model = torch.nn.parallel.DistributedDataParallel(self.model, device_ids=[local_rank], find_unused_parameters=find_unused_parameters)
 
     def set_dataloader(self, args):

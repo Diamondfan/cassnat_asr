@@ -4,8 +4,8 @@
 # 2022, 2023 (Ruchao Fan)
 # SPAPL
 
-stage=1
-end_stage=1
+stage=3
+end_stage=3
 featdir=data/fbank
 
 unit=wp         #word piece
@@ -17,16 +17,17 @@ bpemode=unigram #bpe or unigram
 . parse_options.sh
 
 # art training
-train_config=conf/art_train.yaml
-data_config=conf/data_raw.yaml
-start_saving_epoch=30
+#train_config=conf/art_train.yaml
+#data_config=conf/data_raw.yaml
+#start_saving_epoch=30
 
 # art with hubert encoder training
-#train_config=conf/hubert_art_train.yaml
-#data_config=conf/data_hubert.yaml
-#start_saving_epoch=1
+train_config=conf/hubert_art_train.yaml
+data_config=conf/data_hubert.yaml
+start_saving_epoch=5
 
-asr_exp=exp/100h_sptokenizer_cfmer_interctc05_layer6_noam_warmup15k_lrpk1e-3_epoch60_2gpus/
+#asr_exp=exp/100h_sptokenizer_cfmer_interctc05_layer6_noam_warmup15k_lrpk1e-3_epoch60_2gpus/
+asr_exp=exp/hubert_art_lr5e-5_1e-3_samples_max80s_accum4_warmup10k_maskt06f05/
 
 if [ $stage -le 1 ] && [ $end_stage -ge 1 ]; then
   # transformer and conformer encoder training
@@ -50,7 +51,7 @@ fi
 
 out_name='averaged.mdl'
 if [ $stage -le 2 ] && [ $end_stage -ge 2 ]; then
-  last_epoch=23  # Need to be modified according to the convergence
+  last_epoch=31  # Need to be modified according to the convergence
   
   average_checkpoints.py \
     --exp_dir $asr_exp \
@@ -69,8 +70,8 @@ if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
   rnnlm_model=$lm_exp/averaged.mdl
   bpemodel=data/dict/bpemodel_${bpemode}_${nbpe}
   decode_type='ctc_att'
-  attbeam=20  # set in conf/decode.yaml, att beam
-  ctcbeam=20  # set in conf/decode.yaml, ctc beam
+  attbeam=10  # set in conf/decode.yaml, att beam
+  ctcbeam=10  # set in conf/decode.yaml, ctc beam
   lp=0        #set in conf/decode.yaml, length penalty
   ctcwt=0.4
   lmwt=0
@@ -79,12 +80,12 @@ if [ $stage -le 3 ] && [ $end_stage -ge 3 ]; then
   test_set="dev_clean dev_other test_clean test_other"
   
   # decode art model
-  decode_config=conf/art_decode.yaml
-  data_prefix=feats
+  #decode_config=conf/art_decode.yaml
+  #data_prefix=feats
 
   # decode art model with hubert encoder
-  #decode_config=conf/hubert_art_decode.yaml
-  #data_prefix=wav_s
+  decode_config=conf/hubert_art_decode.yaml
+  data_prefix=wav_s
 
   for tset in $test_set; do
     echo "Decoding $tset..."

@@ -1,10 +1,10 @@
 import soundfile as sf
 
-dir = ['development', 'test'] #'dev_clean', 'dev_other','test_clean', 'test_other'] #, 'train_100h_sp']
+dir = ["train_sp"] #, 'development', 'test'] #'dev_clean', 'dev_other','test_clean', 'test_other'] #, 'train_100h_sp']
 
 for d in dir:
     print("Processing {}".format(d))
-    wav_path = '/data/ruchao/workdir/cassnat_asr/egs/MyST/data/' + d + '/wav.scp'
+    wav_path = '/data/ruchao/workdir/cassnat_asr/egs/MyST/data/' + d + '/wav_true.scp'
 
     new_wav = '/data/ruchao/workdir/cassnat_asr/egs/MyST/data/' + d + '/wav_s.scp'
 
@@ -13,11 +13,11 @@ for d in dir:
         for line in fin:
             cont = line.strip().split(' ')
 
-            path = cont[-2]
+            path = cont[-1]
 
             audio,_ = sf.read(path)
 
-            #cont.append("blank")
+            cont.append("blank")
 
             cont.append(str(len(audio)))
 

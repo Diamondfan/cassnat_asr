@@ -10,12 +10,14 @@ class BaseOpt(object):
         for p in self.optimizer.param_groups:
             p['initial_lr'] = p['lr']
 
-    def step(self):
+    def step(self, step_optimizer=True):
         self._step += 1
         rate = self.rate()
         for p in self.optimizer.param_groups:
             p['lr'] = p['initial_lr'] * rate
-        self.optimizer.step()
+
+        if step_optimizer:
+            self.optimizer.step()
 
     def rate(self, step=None):
         raise NotImplementedError
@@ -219,6 +221,48 @@ class LRMulStepScheduler(BaseOpt):
             "s_warm": self.s_warm, "s_decay": self.s_decay, 
             "s_keep": self.s_keep, "optimizer": self.optimizer.state_dict()}
         return state_dict
+
+class MulLRMulStepOpt(MulBaseOpt):
+    "Optim wrapper that implements rate."
+    def __init__(self, optimizer, initial_lrs, decay_rates, s_warms, s_decays, s_keeps):
+        # factors: list   warmup_steps: list 
+        self.optimizer = optimizer
+        self.initial_lrs = initial_lrs
+        self.decay_rates = decay_rates
+        self.s_warms = s_warms
+        self.s_decays = s_decays
+        self.s_keeps = s_keeps
+        self.n_groups = len(optimizer.param_groups)
+        for i in range(self.n_groups):
+            optimizer.param_groups[i]['lr'] = initial_lrs[i]
+        freeze_steps = [0] * self.n_groups
+        super(MulLRMulStepOpt, self).__init__(optimizer, freeze_steps)
+
+    def rate(self, step = None):
+        "Implement `lrate` above"
+        if step is None:
+            step = self._step
+
+        rates = []
+        for i in range(self.n_groups):
+            rates.append(0)
+            if step <= self.s_warms[i]:
+                rates[i] = step / self.s_warms[i]
+            elif step <= self.s_decays[i]:
+                rates[i] = 1
+            elif step <= self.s_keeps[i]:
+                rates[i] = self.decay_rates[i] ** ((step - self.s_decays[i]) / (self.s_keeps[i] - self.s_decays[i]))
+            else:
+                rates[i] = self.decay_rates[i]
+        return rates
+
+    def state_dict(self):
+        state_dict = {
+            "_step": self._step, "initial_lrs": self.initial_lrs, "decay_rates": self.decay_rates,
+            "s_warms": self.s_warms, "s_decays": self.s_decays,
+            "s_keeps": self.s_keeps, "n_groups": self.n_groups, 
+            "optimizer": self.optimizer.state_dict()}
+        return state_dict
             
 def get_optim(optim_type, model, args):
     eps = args.eps if hasattr(args, 'eps') else 1e-9
@@ -248,13 +292,13 @@ def get_mul_optim(optim_type, update_params_group, args):
         updated_params.append({"params": param } )
 
     optimizer = torch.optim.Adam(updated_params, lr=args.learning_rate, betas=(0.9, 0.98), eps=eps, weight_decay=args.weight_decay)
-    assert optim_type == "noam", "support and have tested noam only currently"
-    factors = args.noam_factor
-    warmup_steps = args.warmup_steps
-    freeze_steps = args.freeze_steps
-    total_steps = args.total_steps
-    warmup_type = args.warmup_type
-
-    assert len(update_params_group) == len(factors)
-    return MulNoamOpt(optimizer, args.d_model, factors, warmup_steps, freeze_steps, total_steps, warmup_type)
-
+    assert optim_type in ["noam", "multistep"], "support and have tested noam only currently"
+    if optim_type == "noam":
+        assert len(update_params_group) == len(args.noam_factor)
+        multi_optimizer = MulNoamOpt(optimizer, args.d_model, args.noam_factor, args.warmup_steps, args.freeze_steps, args.total_steps, args.warmup_type)
+    elif optim_type == "multistep":
+        assert len(update_params_group) == len(args.initial_lr)
+        multi_optimizer = MulLRMulStepOpt(optimizer, args.initial_lr, args.decay_rate, args.s_warm, args.s_decay, args.s_keep)
+    else:
+        raise NotImplementedError
+    return multi_optimizer

@@ -1,11 +1,3 @@
-vocab_file: data/dict/vocab_wp.txt
-use_cmvn: True
-global_cmvn: data/fbank/cmvn_sp.ark
-use_BERT_tokenizer: False
-tokenizer: "data/dict/bpemodel_unigram_1024.model"
-bert_name: "bert-base-uncased"
-bert_path: "/data/ruchao/workdir/language_model/bert/" 
-
 #model configuration
 model_type: "hubert"
 input_size: 80
@@ -59,31 +51,4 @@ right_ctx: 0
 skip_frame: 1
 padding_idx: -1
 text_padding_idx: 0
-
-use_gpu: True
-dataset_type: "HubertDataset"   #"SpeechDataset, DynamicDataset"
-max_len: 5000
-batch_size: 1
-sample_rate: 16000
-normalize: False
-
-batch_type: "utterance"
-max_frmlen: 1000 
-max_lablen: 100 
-filter_max: 5000
-filter_min: 0
-max_samplen: 500000  #392400
-
-#beam_decode
-decode_type: "ctc_att"
-beam_width: 10 #20
-ctc_beam: 10 #20
-length_penalty: 0
-T: 1.0
-ctc_weight: 0.4
-max_decode_ratio: 0
-
-#For CTC only decoding
-ctc_pruning: 0
-ctc_lp: 0
-ctc_lm_weight: 0
+max_len: 13000

@@ -52,8 +52,8 @@ class SingleWavSet(object):
         file_dict = []
 
         with open(wav_path, 'r') as fin:
-            line = fin.readline()
-            for line in fin:
+            lines = fin.readlines()
+            for line in lines:
                 cont = line.strip().split(' ')
                 utt = cont[0]
                 path = cont[-3]
@@ -84,6 +84,7 @@ class SingleWavSet(object):
                     label_dict[utt].append(self.tokenizer.vocab['eos'])
                 else:
                     label_dict[utt] = [int(l) for l in label.split(' ')]
+                    
                 line = fin.readline()
         if self.rank == 0:
             print("Reading %d lines from %s" % (len(label_dict), lab_path))
@@ -122,7 +123,6 @@ class HubertDataset(Dataset):
             raise NotImplementedError
 
     def get_audio(self, path):
-
         audio, sr = sf.read(path)
 
         # audio = self.postprocess(audio,sr)
@@ -165,22 +165,16 @@ class HubertDataset(Dataset):
         for stream in self.data_streams:
             all_data.extend(stream.items)
         
-        all_data = sorted(all_data, key=lambda x: len(x[-1]), reverse=True)
+        all_data = sorted(all_data, key=lambda x: x[-2], reverse=True)
 
         batches = []
         start = 0
 
         while True:
-            #samples = all_data[start][-2]
-            #if samples > self.filter_max or samples < self.filter_min:
-            #    start += 1 
-            #    if start == len(all_data):
-            #        break
-            #    else:
-            #        continue
+            frmlen = all_data[start][-2]
             lablen = len(all_data[start][-1])
-            #obtain end index for batch by comparing total no. of samples, batch size and length of label/frames
-            factor = int(lablen / self.max_lablen)
+            
+            factor = max(int(frmlen / self.max_frmlen), int(lablen / self.max_lablen))
             bs = max(1, int(self.batch_size / (1 + factor)))
             end = min(len(all_data), start + bs)
 
@@ -203,26 +197,32 @@ class HubertDataset(Dataset):
         all_data = sorted(all_data, key=lambda x: x[-2], reverse=True)
 
         batches = []
-        start = 0
+        
+        this_batch = []
+        idx = 0
+        samples_in_batch = 0
         while True:
+            
+            samples = all_data[idx][-2]
+            samples_in_batch += samples
+            
+            if samples_in_batch > self.max_samplen:
+                if len(this_batch) > 0:
+                    this_batch.reverse()
+                    batches.append(this_batch)
 
-            samples = all_data[start][-2]
-
-            #obtain end index for batch by comparing total no. of samples, batch size and length of label/frames
-            factor = int(samples / self.max_samplen)
-            control = ((samples / self.max_samplen) - factor)
-            factor = factor if control < 0.5 else factor + 1
-            bs = max(1, int(self.batch_size / factor)) if factor !=0 else self.batch_size
-            end = min(len(all_data), start + bs)
-
-            #slice all_data and append to batches
-            batch = all_data[start:end]
-            batch.reverse() #keep longest frame length first; doesn't matter for transformer, but matters for lstm
-            batches.append(batch)
-
-            if end == len(all_data):
+                this_batch = [all_data[idx]]
+                idx += 1
+                samples_in_batch = samples
+            else:
+                this_batch.append(all_data[idx])
+                idx += 1
+        
+            if idx == len(all_data):
+                this_batch.reverse()
+                batches.append(this_batch)
                 break
-            start = end
+                
         return batches
             
     def __getitem__(self, idx):
